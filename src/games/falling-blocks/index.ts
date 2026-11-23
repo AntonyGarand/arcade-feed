@@ -2,6 +2,7 @@ import './style.css';
 import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { outCubic } from '../../kits/arena/ease';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
 import {
   COLS,
@@ -26,7 +27,7 @@ const FY = 8;
 const PANEL = FX + COLS * CELL + 10;
 const W = PANEL + 64;
 const H = FY * 2 + ROWS * CELL;
-const FLASH_S = 0.25;
+const CLEAR_S = 0.3;
 
 export const fallingBlocks: GameDef = {
   id: 'falling-blocks',
@@ -74,38 +75,106 @@ export const fallingBlocks: GameDef = {
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());
+    const fx = arena.fx;
     let done = false;
-    let flash: number[] = [];
-    let flashT = 0;
+    let won = false;
+    /** Arena time the run ended (the stack greys out row by row on a loss). */
+    let endAt = 0;
     // Drag: the piece follows the finger column by column; going down soft-drops row by row.
     let anchor: { x: number; y: number; col: number } | null = null;
+    /** The board and piece just before the last action, to know what a lock or a clear removed. */
+    const snap = new Int8Array(COLS * ROWS);
+    let prePiece = s.piece;
+    /** Rows being cleared: their cells' colours (row-major), drawn fading out over CLEAR_S. */
+    let clearRows: number[] = [];
+    let clearCells: number[] = [];
+    let clearAt = -1;
+    /** Cells of the piece that just locked, flashing white. */
+    let lockCells: number[] = [];
+    let lockAt = -1;
+    /** Hard-drop streak: the piece's columns and the rows it fell through. */
+    let streak: { cols: number[]; from: number; to: number; at: number } | null = null;
 
     const status = () => ctx.status(P(Math.max(0, s.goal - s.lines), ['line to go', 'lines to go'], ['ligne à faire', 'lignes à faire']));
 
-    function apply(ev: StepEvents) {
+    function remember() {
+      snap.set(s.grid);
+      prePiece = s.piece;
+    }
+
+    function apply(ev: StepEvents, dropped = 0) {
       if (done) return;
+      const c = arena.colors;
       if (ev.locked) {
         anchor = null;
+        const p = prePiece;
+        const y0 = p.y + dropped;
+        lockCells = [];
+        for (const [cx, cy] of shapeCells(p.k, p.rot)) if (y0 + cy >= 0) lockCells.push((y0 + cy) * COLS + p.x + cx);
+        lockAt = arena.time;
         if (ev.cleared.length) {
-          flash = ev.cleared;
-          flashT = FLASH_S;
+          clearRows = ev.cleared.slice();
+          clearCells = [];
+          for (const r of clearRows)
+            for (let col = 0; col < COLS; col++) {
+              const i = r * COLS + col;
+              const k = lockCells.includes(i) ? p.k : snap[i];
+              clearCells.push(k);
+              const fill = k === GARBAGE ? c.muted : (c.p[k] ?? c.muted);
+              fx.burst(FX + (col + 0.5) * CELL, FY + (r + 0.5) * CELL, fill, 3, 120, 3, 0.55);
+            }
+          clearAt = arena.time;
+          lockCells = [];
+          const n = ev.cleared.length;
+          const my = FY + (clearRows.reduce((a, r) => a + r, 0) / n + 0.5) * CELL;
+          fx.text(FX + (COLS * CELL) / 2, my, `+${LINE_POINTS[n]}`, n > 1 ? c.accent : c.fg, 13 + n * 2);
+          if (n > 1) {
+            const word = ['', '', L('Double!', 'Double!'), L('Triple!', 'Triple!'), L('Quadruple!', 'Quadruple!')][Math.min(4, n)];
+            fx.text(FX + (COLS * CELL) / 2, my - 22, word, c.accent, 15 + n * 2, 1.1);
+          }
+          fx.shake(1 + n, 0.25);
           status();
         }
       }
       ctx.score(s.score);
-      if (ev.won) {
+      if (ev.won || ev.over) {
         done = true;
+        won = ev.won;
+        endAt = arena.time;
+        if (won) {
+          for (let i = 0; i < 4; i++) fx.burst(FX + (COLS * CELL) / 2, FY + ROWS * CELL * 0.5, c.p[i], 10, 200, 4, 0.9, 'square', 200);
+          fx.flash(c.good, 0.22, 0.5);
+        } else {
+          fx.shake(4, 0.4);
+          fx.flash(c.bad, 0.2, 0.4);
+        }
+        arena.linger(1.4);
         draw();
-        ctx.win();
-      } else if (ev.over) {
-        done = true;
-        draw();
-        ctx.lose();
+        if (won) ctx.win();
+        else ctx.lose();
       }
     }
 
-    function cell(g: CanvasRenderingContext2D, x: number, y: number, fill: string, shadow = false) {
-      arena.box(g, FX + x * CELL, FY + y * CELL, CELL, CELL, fill, 2, shadow);
+    function hard() {
+      remember();
+      const n = dropDistance(s);
+      const p = s.piece;
+      const cols = [...new Set(shapeCells(p.k, p.rot).map(([cx]) => p.x + cx))];
+      const top = Math.min(...shapeCells(p.k, p.rot).map(([, cy]) => p.y + cy));
+      streak = { cols, from: top, to: top + n, at: arena.time };
+      const ev = hardDrop(s);
+      if (n > 0) {
+        fx.shake(1.5, 0.15);
+        const bottom = Math.max(...shapeCells(p.k, p.rot).map(([, cy]) => p.y + cy)) + n + 1;
+        for (const col of cols)
+          fx.burst(FX + (col + 0.5) * CELL, FY + bottom * CELL, arena.colors.muted, 2, 60, 2.5, 0.35, 'dot', 120, -Math.PI / 2, 2.4);
+      }
+      apply(ev, n);
+    }
+
+    function soft() {
+      remember();
+      apply(softDrop(s));
     }
 
     function draw() {
@@ -113,51 +182,126 @@ export const fallingBlocks: GameDef = {
       if (!g) return;
       const c = arena.colors;
       const tone = (k: number) => (k === GARBAGE ? c.muted : c.p[k]);
-      g.fillStyle = c.cellAlt;
-      g.fillRect(FX, FY, COLS * CELL, ROWS * CELL);
-      for (let i = 0; i < COLS * ROWS; i++) if (s.grid[i] >= 0) cell(g, i % COLS, Math.floor(i / COLS), tone(s.grid[i]));
-      if (flashT > 0) {
-        g.globalAlpha = flashT / FLASH_S;
-        g.fillStyle = c.accent;
-        for (const r of flash) g.fillRect(FX, FY + r * CELL, COLS * CELL, CELL);
+      arena.field(g, FX, FY, COLS * CELL, ROWS * CELL, CELL, 3);
+      // On a loss, the stack greys out from the bottom up.
+      const grey = done && !won ? Math.floor(((arena.time - endAt) / 0.9) * ROWS) : -1;
+      for (let i = 0; i < COLS * ROWS; i++) {
+        const k = s.grid[i];
+        if (k < 0) continue;
+        const row = Math.floor(i / COLS);
+        const x = FX + (i % COLS) * CELL;
+        const y = FY + row * CELL;
+        const dead = grey >= 0 && ROWS - row <= grey;
+        arena.block(g, x, y, CELL, CELL, dead ? c.muted : tone(k), 2.5, false);
+        if (k === GARBAGE && !dead) {
+          // Rubble: a couple of pits.
+          g.fillStyle = arena.tone(c.muted).lo;
+          g.beginPath();
+          g.arc(x + CELL * 0.32, y + CELL * 0.36, 1.2, 0, Math.PI * 2);
+          g.arc(x + CELL * 0.66, y + CELL * 0.58, 1, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+      // The piece that just locked flashes white.
+      const la = arena.time - lockAt;
+      if (lockCells.length && la < 0.16) {
+        g.globalAlpha = 0.7 * (1 - la / 0.16);
+        g.fillStyle = c.paper;
+        for (const i of lockCells) g.fillRect(FX + (i % COLS) * CELL, FY + Math.floor(i / COLS) * CELL, CELL, CELL);
+        g.globalAlpha = 1;
+      }
+      // Cleared rows: their cells shrink away inside a white band that closes up.
+      const ca = (arena.time - clearAt) / CLEAR_S;
+      if (clearRows.length && ca < 1) {
+        const e = outCubic(ca);
+        clearRows.forEach((r, j) => {
+          const y = FY + r * CELL;
+          for (let col = 0; col < COLS; col++) {
+            const k = clearCells[j * COLS + col];
+            const sz = CELL * (1 - e);
+            if (sz > 0.5) arena.block(g, FX + col * CELL + (CELL - sz) / 2, y + (CELL - sz) / 2, sz, sz, tone(k), 2, false, 0.6);
+          }
+          g.globalAlpha = 0.85 * (1 - ca);
+          g.fillStyle = c.paper;
+          const bh = CELL * (1 - e * 0.8);
+          g.fillRect(FX, y + (CELL - bh) / 2, COLS * CELL, bh);
+          g.globalAlpha = 1;
+        });
+      }
+      // Hard-drop streak.
+      if (streak && arena.time - streak.at < 0.18) {
+        const f = 1 - (arena.time - streak.at) / 0.18;
+        g.fillStyle = arena.tone(tone(prePiece.k)).glow;
+        g.globalAlpha = f;
+        for (const col of streak.cols)
+          g.fillRect(
+            FX + col * CELL + 2,
+            FY + Math.max(0, streak.from) * CELL,
+            CELL - 4,
+            Math.max(0, streak.to - Math.max(0, streak.from)) * CELL,
+          );
         g.globalAlpha = 1;
       }
       if (!done) {
         const { k, rot, x, y } = s.piece;
         const ghost = y + dropDistance(s);
-        g.strokeStyle = c.fg;
-        g.lineWidth = arena.lw * 0.6;
+        const t = arena.tone(tone(k));
+        g.fillStyle = t.glow;
+        g.strokeStyle = t.edge;
+        g.lineWidth = arena.lw * 0.5;
         g.setLineDash([3, 2]);
         for (const [cx, cy] of shapeCells(k, rot))
-          if (ghost + cy >= 0) g.strokeRect(FX + (x + cx) * CELL + 2, FY + (ghost + cy) * CELL + 2, CELL - 4, CELL - 4);
+          if (ghost + cy >= 0) {
+            g.beginPath();
+            g.roundRect(FX + (x + cx) * CELL + 1.5, FY + (ghost + cy) * CELL + 1.5, CELL - 3, CELL - 3, arena.r(2));
+            g.globalAlpha = 0.55;
+            g.fill();
+            g.globalAlpha = 1;
+            g.stroke();
+          }
         g.setLineDash([]);
-        for (const [cx, cy] of shapeCells(k, rot)) if (y + cy >= 0) cell(g, x + cx, y + cy, tone(k), true);
+        for (const [cx, cy] of shapeCells(k, rot))
+          if (y + cy >= 0) arena.block(g, FX + (x + cx) * CELL, FY + (y + cy) * CELL, CELL, CELL, tone(k), 2.5, true);
       }
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.8;
-      g.strokeRect(FX, FY, COLS * CELL, ROWS * CELL);
 
-      // Side panel: the next block, then progress towards the goal.
-      g.fillStyle = c.fg;
-      g.font = "600 10px 'Space Grotesk Variable', system-ui, sans-serif";
+      // Side panel: the next block in a tray, then progress towards the goal.
+      const px = PANEL + 2;
+      const pw = 50;
+      g.fillStyle = c.muted;
+      g.font = `700 9px ${arena.family}`;
       g.textAlign = 'center';
-      g.fillText(L('NEXT', 'SUIVANT'), PANEL + 27, FY + 10);
+      g.fillText(L('NEXT', 'SUIVANT'), px + pw / 2, FY + 9);
+      arena.block(g, px, FY + 14, pw, 40, c.cellAlt, 6, true, 0);
       const nk = s.queue[0];
       const nc = shapeCells(nk, 0);
       const minX = Math.min(...nc.map(([x]) => x));
       const spanX = Math.max(...nc.map(([x]) => x)) - minX + 1;
       const minY = Math.min(...nc.map(([, y]) => y));
-      const sz = 11;
+      const spanY = Math.max(...nc.map(([, y]) => y)) - minY + 1;
+      const sz = 10;
+      const bob = Math.sin(arena.time * 3) * 0.8;
       for (const [x, y] of nc)
-        arena.box(g, PANEL + 27 - (spanX * sz) / 2 + (x - minX) * sz, FY + 20 + (y - minY) * sz, sz, sz, tone(nk), 2, false);
-      const barTop = FY + 70;
-      const barH = ROWS * CELL - 90;
-      const fill = Math.min(1, s.lines / s.goal) * barH;
-      arena.box(g, PANEL + 17, barTop, 20, barH, c.cell);
-      if (fill > 0) arena.box(g, PANEL + 17, barTop + barH - fill, 20, fill, c.accent, 3, false);
+        arena.block(
+          g,
+          px + pw / 2 - (spanX * sz) / 2 + (x - minX) * sz,
+          FY + 34 - (spanY * sz) / 2 + (y - minY) * sz + bob,
+          sz,
+          sz,
+          tone(nk),
+          2,
+          false,
+        );
+      const barTop = FY + 74;
+      const barH = ROWS * CELL - 96;
+      const fill = Math.min(1, s.lines / s.goal) * (barH - 6);
+      g.fillStyle = c.muted;
+      g.fillText(L('LINES', 'LIGNES'), px + pw / 2, barTop - 6);
+      arena.block(g, PANEL + 15, barTop, 24, barH, c.cellAlt, 8, true, 0);
+      if (fill > 0) arena.block(g, PANEL + 18, barTop + barH - 3 - fill, 18, fill, c.accent, 6, false);
       g.fillStyle = c.fg;
-      g.font = "700 12px 'Space Grotesk Variable', system-ui, sans-serif";
-      g.fillText(`${s.lines}/${s.goal}`, PANEL + 27, barTop + barH + 18);
+      g.font = `800 13px ${arena.family}`;
+      g.fillText(`${s.lines}/${s.goal}`, px + pw / 2, barTop + barH + 18);
+      arena.overlay(g);
     }
 
     const stopGestures = gestures(arena.canvas, {
@@ -172,9 +316,10 @@ export const fallingBlocks: GameDef = {
         const want = anchor.col + Math.round((p.x - anchor.x) / CELL);
         while (s.piece.x < want && move(s, 1));
         while (s.piece.x > want && move(s, -1));
-        while (anchor && p.y - anchor.y > CELL * 1.2) {
-          anchor.y += CELL;
-          apply(softDrop(s));
+        // A lock clears the anchor (`apply`): the next piece starts a fresh drag.
+        for (let a: typeof anchor = anchor; a && p.y - a.y > CELL * 1.2; a = anchor) {
+          a.y += CELL;
+          soft();
         }
         draw();
       },
@@ -185,7 +330,7 @@ export const fallingBlocks: GameDef = {
       onRelease(p, from, v) {
         if (done) return;
         const dy = p.y - from.y;
-        if (v.y > 450 && dy > CELL * 1.5 && Math.abs(dy) > Math.abs(p.x - from.x)) apply(hardDrop(s));
+        if (v.y > 450 && dy > CELL * 1.5 && Math.abs(dy) > Math.abs(p.x - from.x)) hard();
         anchor = null;
         draw();
       },
@@ -196,8 +341,11 @@ export const fallingBlocks: GameDef = {
     return {
       draw,
       frame(dt) {
-        if (flashT > 0) flashT = Math.max(0, flashT - dt);
-        if (!done) apply(step(s, dt));
+        arena.update(dt);
+        if (!done) {
+          remember();
+          apply(step(s, dt));
+        }
         draw();
       },
       onKey(e) {
@@ -205,10 +353,10 @@ export const fallingBlocks: GameDef = {
         const dir = keyDir(e.key);
         if (dir === -1 && k !== 'x' && k !== 'z' && k !== ' ') return false;
         if (e.type !== 'keydown' || done) return true;
-        if (k === ' ') apply(hardDrop(s));
+        if (k === ' ') hard();
         else if (k === 'z') rotate(s, -1);
         else if (dir === 0 || k === 'x') rotate(s, 1);
-        else if (dir === 2) apply(softDrop(s));
+        else if (dir === 2) soft();
         else move(s, dir === 1 ? 1 : -1);
         draw();
         return true;
