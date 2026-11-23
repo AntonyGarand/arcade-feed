@@ -24,12 +24,30 @@ npm run check         # fmt:check, lint, typecheck, knip, test — what CI runs
 | Category     | Game (id)                         | One level                                                          |
 | ------------ | --------------------------------- | ------------------------------------------------------------------ |
 | Match        | Swap (`swap`)                     | match-3: reach a target score within a move limit                  |
+| Match        | Clusters (`clusters`)             | pop same-colour groups until at most a few blocks are left         |
 | Aim & bounce | Bricks (`bricks`)                 | break every brick with a paddle and three lives                    |
 | Aim & bounce | Pegs (`pegs`)                     | shoot balls through a peg field to clear the orange pegs           |
+| Aim & bounce | Bubble Pop (`bubbles`)            | clear every bubble before the dropping ceiling crosses the line    |
+| Aim & bounce | Sky Guard (`skyguard`)            | intercept a wave of missiles with at least one city standing       |
+| Aim & bounce | Mini Golf (`golf`)                | sink one seeded hole within the stroke limit                       |
+| Aim & bounce | Archery (`archery`)               | reach a points total with a few arrows, against gravity and wind   |
 | Reflex       | Dodge (`dodge`)                   | survive a timed run of falling and flying hazards                  |
 | Reflex       | Snake (`snake`)                   | eat a number of pellets on a walled map without crashing           |
+| Reflex       | Whack (`whack`)                   | tap a number of critters before the timer, never the spiky decoys  |
+| Reflex       | Rocks (`rocks`)                   | shoot every rock and its fragments in a wrap-around field          |
+| Reflex       | Formation (`formation`)           | clear a marching formation before it lands                         |
+| Reflex       | Paddle Duel (`duel`)              | beat the rival paddle to a target score                            |
+| Run & fly    | Flutter (`flutter`)               | flap through a number of gates                                     |
+| Run & fly    | Runner (`runner`)                 | jump and duck your way to the finish line                          |
+| Run & fly    | Lander (`lander`)                 | touch down softly and upright on a pad with limited fuel           |
+| Run & fly    | Crossing (`crossing`)             | hop across roads and rivers to fill the home slots in time         |
 | Stack & drop | Falling Blocks (`falling-blocks`) | clear a number of lines from a rubble start without topping out    |
 | Stack & drop | Fruit Merge (`merge`)             | drop and merge pieces up to a target size before the jar overflows |
+| Stack & drop | Tower (`tower`)                   | time each drop to stack a tower to a target height                 |
+| Think        | Doubles (`doubles`)               | slide and combine tiles up to a target within a move limit         |
+| Think        | Mines (`mines`)                   | open every safe cell of a no-guess mine field against the clock    |
+| Think        | Crates (`crates`)                 | push every crate onto a goal within a move limit                   |
+| Think        | Echo (`echo`)                     | repeat a growing sequence of pads for a number of rounds           |
 
 ## Layout
 
@@ -54,7 +72,7 @@ test/              vitest (happy-dom): registry contract, store, per-game rules
 Create `src/games/<id>/index.ts` exporting a `GameDef` (see `src/core/types.ts` and `src/games/bricks/` as the example):
 
 - `name` / `rules` getters via `L()`, both ≤ 60 characters; `help()` with a goal, 3–6 steps (rules then controls) and tips.
-- `category`: `match`, `aim`, `reflex` or `stack` (`src/core/categories.ts`).
+- `category`: `match`, `aim`, `reflex`, `move`, `stack` or `think` (`src/core/categories.ts`).
 - `stars(d)` → `[two, three]` score thresholds, `par(d)` → typical run length in seconds.
 - `create(ctx)`: build into `ctx.root` (usually `new Arena(ctx.root, W, H, redraw)`), report with `ctx.score()`, `ctx.lives()`, `ctx.status()`, end with `ctx.win()` / `ctx.lose()`. Return `{ frame, draw, onKey, destroy }`. `onKey` gets keydown and keyup.
 - Pointer input on the canvas (`touch-action: none` is set by the arena), so drags never scroll the feed.
