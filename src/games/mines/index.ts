@@ -51,8 +51,8 @@ export const mines: GameDef = {
     ),
     steps: [
       L(
-        'Your first tap is always safe and opens an area. The clock starts then.',
-        'Votre première touche est toujours sûre et ouvre une zone. Le chrono part à ce moment.',
+        'The clock runs from the start. Your first tap is always safe and opens an area.',
+        'Le chrono part dès le début. Votre première touche est toujours sûre et ouvre une zone.',
       ),
       L(
         'A number tells how many mines touch that cell, diagonals included.',
@@ -117,11 +117,11 @@ export const mines: GameDef = {
     const button = { x: PAD, y: H - BAR + 6, w: 118, h: BAR - 14 };
 
     const status = () => {
+      shown = Math.max(0, Math.ceil(s.limit - s.time));
       if (!s.placed) {
-        ctx.status(L('Tap any cell to start', 'Touchez une case pour commencer'));
+        ctx.status(L(`Tap any cell to open an area · ${shown} s`, `Touchez une case pour ouvrir une zone · ${shown} s`));
         return;
       }
-      shown = Math.max(0, Math.ceil(s.limit - s.time));
       ctx.status(
         [P(Math.max(0, minesLeft(s)), ['mine left', 'mines left'], ['mine restante', 'mines restantes']), `${shown} s`].join(' · '),
       );
@@ -309,7 +309,7 @@ export const mines: GameDef = {
       const tx = mx + 46;
       const tw = W - PAD - tx;
       arena.box(g, tx, my - 7, tw, 14, c.cell, 7, false);
-      g.fillStyle = left <= 10 && s.placed ? c.bad : c.accent;
+      g.fillStyle = left <= 10 ? c.bad : c.accent;
       g.beginPath();
       g.roundRect(tx + 2, my - 5, Math.max(0, (tw - 4) * (left / s.limit)), 10, 5);
       g.fill();
@@ -366,7 +366,7 @@ export const mines: GameDef = {
         flash = Math.max(0, flash - dt * 2.5);
         shake = Math.max(0, shake - dt);
         const ev = tick(s, dt);
-        if (s.placed && Math.ceil(s.limit - s.time) !== shown) status();
+        if (Math.ceil(s.limit - s.time) !== shown) status();
         draw();
         if (ev.over) ctx.lose();
       },

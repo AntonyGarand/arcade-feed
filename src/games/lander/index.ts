@@ -53,8 +53,8 @@ export const lander: GameDef = {
         'Touchez le sol lentement (la jauge de vitesse devient verte) et presque droit. Sinon, c’est l’écrasement.',
       ),
       L(
-        'Hold anywhere to fire the engine; while holding, drag left or right to tilt. Let go and the ship straightens up.',
-        'Maintenez le doigt n’importe où pour allumer le moteur; en le tenant, glissez à gauche ou à droite pour pencher. Relâchez et le vaisseau se redresse.',
+        'Hold the middle of the field to fire the engine, and drag sideways while holding to tilt. Hold the left or right third to tilt without the engine. Let go and the ship straightens up.',
+        'Maintenez le doigt au milieu du terrain pour allumer le moteur, et glissez de côté en le tenant pour pencher. Maintenez le tiers gauche ou droit pour pencher sans moteur. Relâchez et le vaisseau se redresse.',
       ),
       L(
         'A crash costs an attempt; the next one starts over with a full tank.',
@@ -222,6 +222,31 @@ export const lander: GameDef = {
           }
         g.globalAlpha = 1;
       }
+      // The touch zones, for the first seconds of the run.
+      if (s.time < 5) {
+        g.globalAlpha = Math.min(1, 5 - s.time) * 0.8;
+        g.font = FONT;
+        g.fillStyle = c.muted;
+        g.textAlign = 'left';
+        g.fillText(L('◀ tilt', '◀ pencher'), 10, 48);
+        g.textAlign = 'right';
+        g.fillText(L('tilt ▶', 'pencher ▶'), W - 10, 48);
+        g.textAlign = 'center';
+        g.fillText(L('hold: engine', 'maintenir : moteur'), W / 2, 48);
+        g.globalAlpha = 1;
+        g.strokeStyle = c.muted;
+        g.lineWidth = arena.lw * 0.5;
+        g.setLineDash([2, 5]);
+        g.globalAlpha = Math.min(1, 5 - s.time) * 0.4;
+        g.beginPath();
+        for (const x of [W / 3, (2 * W) / 3]) {
+          g.moveTo(x, 38);
+          g.lineTo(x, H * 0.55);
+        }
+        g.stroke();
+        g.setLineDash([]);
+        g.globalAlpha = 1;
+      }
       // Gauges: fuel, and speed against the safe limit (the tick), green when slow enough.
       const speed = Math.max(Math.abs(s.vx) / SAFE_VX, Math.max(0, s.vy) / SAFE_VY);
       const safe = slowEnough(s) && Math.abs(s.angle) <= SAFE_TILT;
@@ -252,25 +277,43 @@ export const lander: GameDef = {
     }
 
     const syncKeys = () => {
-      s.turn = (keys.has('right') ? 1 : 0) - (keys.has('left') ? 1 : 0);
+      if (!sides.size) s.turn = (keys.has('right') ? 1 : 0) - (keys.has('left') ? 1 : 0);
       if (pointer === -1) s.thrust = keys.has('up');
     };
 
-    // Touch / mouse: hold to fire the engine, drag sideways while holding to tilt.
+    // Touch / mouse. Pressing in the middle third fires the engine, and dragging sideways while holding
+    // tilts; pressing in the left or right third only tilts that way (no engine). Fingers combine.
+    const sides = new Map<number, -1 | 1>();
+    const syncTouch = () => {
+      let turn = 0;
+      for (const k of sides.values()) turn += k;
+      s.turn = Math.sign(turn) || (keys.has('right') ? 1 : 0) - (keys.has('left') ? 1 : 0);
+    };
     const down = (e: PointerEvent) => {
-      if (pointer !== -1 || e.button > 0) return;
-      pointer = e.pointerId;
+      if (e.button > 0) return;
+      const x = arena.toWorld(e).x;
       arena.canvas.setPointerCapture?.(e.pointerId);
-      pressX = arena.toWorld(e).x;
+      if (x < W / 3 || x > (2 * W) / 3) {
+        sides.set(e.pointerId, x < W / 3 ? -1 : 1);
+        syncTouch();
+        return;
+      }
+      if (pointer !== -1) return;
+      pointer = e.pointerId;
+      pressX = x;
       s.thrust = true;
-      s.tilt = s.angle;
+      s.tilt = sides.size ? null : s.angle;
     };
     const move = (e: PointerEvent) => {
-      if (e.pointerId !== pointer) return;
+      if (e.pointerId !== pointer || sides.size) return;
       const dx = arena.toWorld(e).x - pressX;
       s.tilt = Math.max(-1, Math.min(1, dx / DRAG_FULL)) * MAX_TILT;
     };
     const up = (e: PointerEvent) => {
+      if (sides.delete(e.pointerId)) {
+        syncTouch();
+        return;
+      }
       if (e.pointerId !== pointer) return;
       pointer = -1;
       s.tilt = null;

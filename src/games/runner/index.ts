@@ -133,7 +133,42 @@ export const runner: GameDef = {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      // Far skyline, drifting slowly.
+      // Sky: a sun, two layers of clouds and a tall far skyline, each drifting slower the further away.
+      arena.disc(g, 238, 74, 22, c.p[3]);
+      const cloud = (x: number, y: number, r: number) => {
+        g.beginPath();
+        g.arc(x, y, r, Math.PI * 0.5, Math.PI * 1.5);
+        g.arc(x + r * 0.9, y - r * 0.55, r * 0.95, Math.PI, Math.PI * 2);
+        g.arc(x + r * 2, y, r, Math.PI * 1.5, Math.PI * 0.5);
+        g.closePath();
+        g.fill();
+        g.stroke();
+      };
+      g.strokeStyle = c.ink;
+      g.lineWidth = arena.lw * 0.6;
+      for (const [speed, y0, r, span] of [
+        [0.05, 56, 9, 170],
+        [0.12, 118, 13, 210],
+      ] as const) {
+        g.fillStyle = speed < 0.1 ? c.cellAlt : c.cell;
+        const shift = (s.x * speed) % span;
+        const first = Math.floor((s.x * speed) / span);
+        for (let i = 0; i < 3; i++) {
+          const n = first + i;
+          cloud(i * span - shift + ((n * 53) % 60), y0 + ((n * 29) % 3) * 12, r);
+        }
+      }
+      g.fillStyle = c.cell;
+      g.globalAlpha = 0.6;
+      for (let i = -1; i < 8; i++) {
+        const k = Math.floor((s.x * 0.12) / 48);
+        const n = i + k;
+        const x = i * 48 - ((s.x * 0.12) % 48);
+        const tall = 110 + ((n * 41) % 6) * 16;
+        g.fillRect(x, GROUND - tall, 40, tall);
+      }
+      g.globalAlpha = 1;
+      // Near skyline, drifting slowly.
       g.fillStyle = c.cellAlt;
       for (let i = -1; i < 9; i++) {
         const k = Math.floor(s.x * 0.25) / 40;
