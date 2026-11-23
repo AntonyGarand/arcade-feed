@@ -138,12 +138,7 @@ export const dodge: GameDef = {
           g.fill();
         }
         arena.disc(g, s.px, s.py, PLAYER_R, c.accent);
-        g.fillStyle = c.ink;
-        for (const dx of [-3.5, 3.5]) {
-          g.beginPath();
-          g.arc(s.px + dx, s.py - 2, 1.8, 0, Math.PI * 2);
-          g.fill();
-        }
+        for (const dx of [-3.5, 3.5]) arena.disc(g, s.px + dx, s.py - 2, 2.4, c.cell);
       }
     }
 
