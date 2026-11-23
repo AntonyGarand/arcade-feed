@@ -140,11 +140,6 @@ dialog.sheet::backdrop {
   border-radius: 14px;
 }
 
-.help-goal {
-  font-size: 16px;
-  font-weight: 600;
-  margin: 10px 0 6px;
-}
 .help-steps {
   margin: 0;
   padding: 0;
@@ -172,12 +167,6 @@ dialog.sheet::backdrop {
   color: var(--on-tone);
   font-weight: 700;
   font-size: 13px;
-}
-.help-tips {
-  margin: 0;
-  padding-left: 20px;
-  display: grid;
-  gap: 6px;
 }
 .help-levels {
   margin-top: 18px;
@@ -275,4 +264,97 @@ dialog.sheet::backdrop {
 .lab-bar .small {
   flex: 1;
   text-align: center;
+}
+
+/* ---------- sheet polish ---------- */
+/* Phones: a grab handle on the bottom sheet. */
+@media (max-width: 640px) {
+  dialog.sheet::before {
+    content: '';
+    align-self: center;
+    flex: none;
+    width: 40px;
+    height: 5px;
+    margin-top: 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--ink) 30%, transparent);
+  }
+  .sheet-head {
+    padding-top: 8px;
+  }
+}
+.sheet-lede {
+  margin: 8px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+}
+/* A setting in a sheet: small caps title, the control, a hint. */
+.sheet-body .field {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1.5px solid color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.sheet-body .field h3 {
+  margin: 0 0 10px;
+  color: var(--muted);
+}
+.sheet-body .field .muted.small {
+  margin: 8px 0 0;
+}
+.game-settings .seg {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* how-to-play */
+.help-goal {
+  margin: 12px 0 4px;
+  padding: 10px 14px 12px;
+  background: var(--accent-soft);
+  border: 2px solid var(--ink);
+  border-radius: var(--r);
+}
+.help-goal p {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.help-goal-tag {
+  display: inline-block;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: var(--cell);
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
+}
+.help-steps li {
+  line-height: 1.4;
+  padding-top: 2px;
+}
+.help-tips {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.help-tips li {
+  position: relative;
+  padding-left: 26px;
+  line-height: 1.4;
+}
+.help-tips li::before {
+  content: '★';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  color: var(--star);
+  -webkit-text-stroke: 1px var(--ink);
+  font-size: 15px;
 }

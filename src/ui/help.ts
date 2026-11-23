@@ -33,7 +33,7 @@ function openHelp(def: GameDef, onClose?: () => void) {
     puzzle: def.id,
     className: 'help',
     body: [
-      h('p', { class: 'help-goal' }, help?.goal ?? def.rules),
+      h('div', { class: 'help-goal' }, h('span', { class: 'help-goal-tag' }, L('Goal', 'Objectif')), h('p', null, help?.goal ?? def.rules)),
       help?.steps.length
         ? h(
             'section',
