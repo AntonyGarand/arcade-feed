@@ -16,7 +16,7 @@ export const CATEGORIES: Category[] = [
       return L('Match', 'Associer');
     },
     get blurb() {
-      return L('Swap, link and pop colours.', 'Échangez, reliez et éclatez les couleurs.');
+      return L('Swap, chain and pop colours.', 'Échangez, enchaînez et éclatez les couleurs.');
     },
   },
   {
@@ -25,7 +25,7 @@ export const CATEGORIES: Category[] = [
       return L('Aim & bounce', 'Viser et rebondir');
     },
     get blurb() {
-      return L('Angles, shots and ricochets.', 'Angles, tirs et ricochets.');
+      return L('Angles, shots, ropes and flippers.', 'Angles, tirs, cordes et flippers.');
     },
   },
   {
@@ -34,7 +34,7 @@ export const CATEGORIES: Category[] = [
       return L('Reflex', 'Réflexes');
     },
     get blurb() {
-      return L('Dodge, tap and time it right.', 'Esquivez, touchez et visez le bon moment.');
+      return L('Dodge, slice, chase and time it right.', 'Esquivez, tranchez, fuyez et visez le bon moment.');
     },
   },
   {
@@ -43,7 +43,7 @@ export const CATEGORIES: Category[] = [
       return L('Run & fly', 'Courir et voler');
     },
     get blurb() {
-      return L('Jump, flap, cross and land.', 'Sautez, volez, traversez et posez-vous.');
+      return L('Jump, bounce, flap, cross and land.', 'Sautez, bondissez, volez, traversez et posez-vous.');
     },
   },
   {
@@ -61,7 +61,7 @@ export const CATEGORIES: Category[] = [
       return L('Think', 'Réflexion');
     },
     get blurb() {
-      return L('Slide, sweep, push and remember.', 'Glissez, déminez, poussez et retenez.');
+      return L('Slide, sweep, dig, pipe and remember.', 'Glissez, déminez, creusez, raccordez et retenez.');
     },
   },
 ];
