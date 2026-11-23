@@ -1,0 +1,46 @@
+{
+  "name": "arcade-feed",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An endless feed of one-level arcade games — arcade.garand.dev",
+  "homepage": "https://arcade.garand.dev",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AntonyGarand/arcade-feed.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsrs --noEmit -p .",
+    "lint": "oxlint --type-aware --deny-warnings",
+    "lint:fix": "oxlint --type-aware --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "knip": "knip",
+    "test": "vitest run --dir test",
+    "test:watch": "vitest",
+    "check": "npm run fmt:check && npm run lint && npm run typecheck && npm run knip && npm run test",
+    "fix": "oxfmt && oxlint --type-aware --fix"
+  },
+  "dependencies": {
+    "@fontsource-variable/space-grotesk": "^5.3.0"
+  },
+  "devDependencies": {
+    "happy-dom": "^21.0.4",
+    "knip": "^6.46.1",
+    "oxfmt": "^0.79.0",
+    "oxlint": "~1.94.0",
+    "oxlint-tsgolint": "^7.0.2008",
+    "playwright-core": "^1.65.1",
+    "tsrs": "^7.1.0-beta.tsrs3",
+    "vite": "^8.3.8",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^5.1.1"
+  },
+  "engines": {
+    "node": ">=26"
+  }
+}

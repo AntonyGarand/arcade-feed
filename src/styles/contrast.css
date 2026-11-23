@@ -1,0 +1,29 @@
+/* More contrast (OS setting). Last, so it overrides everything above. */
+
+/* ---------- more contrast (OS setting) ---------- */
+/* Secondary text goes full strength and dimmed text takes the regular muted tone. */
+@media (prefers-contrast: more) {
+  :root {
+    --muted: var(--fg);
+    --faint: #5e584e;
+  }
+  :root[data-theme='dark'] {
+    --faint: #aaa397;
+  }
+}
+/* The dark blocks of the other styles (themes.css) outrank :root: match them. */
+@media (prefers-contrast: more) {
+  :root[data-style][data-theme='dark'] {
+    --muted: var(--fg);
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root[data-style]:not([data-theme='light']) {
+    --muted: var(--fg);
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --faint: #aaa397;
+  }
+}

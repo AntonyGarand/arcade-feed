@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  // Games are discovered with import.meta.glob('./*/index.ts'), so every game's index.ts is an entry.
+  "entry": ["src/games/*/index.ts", "scripts/*.mjs"],
+  "project": ["src/**/*.ts", "scripts/**/*.mjs", "test/**/*.ts"],
+}

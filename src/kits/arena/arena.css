@@ -1,0 +1,14 @@
+/* Canvas playfield (kits/arena): sized like every board, framed like a card. */
+.arena {
+  display: block;
+  width: var(--board);
+  height: auto;
+  background: var(--cell);
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--r);
+  box-shadow: var(--sh) var(--sh) 0 var(--drop);
+  /* The feed scrolls vertically: drags on the field must stay in the game. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}

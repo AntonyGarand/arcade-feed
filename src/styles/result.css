@@ -1,0 +1,364 @@
+/* Win and lost panels laid over a finished board. */
+
+/* ---------- win panel (laid over a solved board) ---------- */
+.win {
+  --muted: color-mix(in srgb, var(--fg) 80%, var(--cell));
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  /* A tall card can outgrow the board: scroll inside the panel instead of being clipped
+     by .stage. Auto margins centre it when it fits and collapse to 0 when it doesn't (unlike
+     place-items: center, which overflows both ends with the top unreachable). Scroll chaining is
+     left on so a swipe past the end still moves the feed. */
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 38px 12px 12px;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  backdrop-filter: blur(3px);
+  animation: win-fade 0.25s ease-out;
+  cursor: pointer;
+  transition:
+    background 0.2s,
+    backdrop-filter 0.2s;
+}
+.win.peek {
+  background: transparent;
+  backdrop-filter: none;
+}
+.win.peek .win-card {
+  opacity: 0;
+  transform: translateY(12px) scale(0.96);
+  pointer-events: none;
+}
+.win-card {
+  position: relative;
+  width: min(100%, 340px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 30px 16px 14px;
+  margin: auto; /* the panel's 38px top padding leaves room for the badge */
+  border: var(--bw) solid var(--ink);
+  border-radius: calc(var(--r) * 1.6);
+  background: var(--cell);
+  box-shadow: var(--sh) var(--sh) 0 var(--drop);
+  overflow: visible;
+  text-align: center;
+  animation: win-pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1);
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
+}
+.win-badge {
+  position: absolute;
+  top: -28px;
+  left: 50%;
+  translate: -50% 0;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border: var(--bw) solid var(--ink);
+  border-radius: 50%;
+  background: var(--good);
+  box-shadow: 3px 3px 0 var(--drop);
+}
+.win-check {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: var(--on-tone);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: win-draw 0.4s 0.2s ease-out forwards;
+}
+.win-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+.win-sub {
+  margin: -4px 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.win-time {
+  width: 100%;
+  padding: 6px 12px 8px;
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--r);
+  background: var(--accent);
+  color: var(--on-tone);
+  box-shadow: 3px 3px 0 var(--drop);
+}
+.win-time .win-label,
+.win-time .win-was {
+  color: color-mix(in srgb, var(--on-tone) 70%, transparent);
+}
+.win-time .win-tag {
+  background: var(--cell);
+  color: var(--fg);
+}
+.win-label {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.win-tag {
+  padding: 1px 8px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--hi);
+  color: var(--on-tone);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.win-clock {
+  display: block;
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.win-was {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.win-stats {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.win-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  border: 2px solid var(--ink);
+  border-radius: var(--r-cell);
+  background: var(--cell-alt);
+  min-width: 0;
+}
+.win-tile span {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.win-tile strong {
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.win-streak {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.win-level {
+  font-size: 14px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  color: var(--on-tone);
+  background: var(--accent);
+}
+.win-level.down {
+  background: var(--cell-alt);
+  color: var(--fg);
+}
+@media (max-height: 760px) {
+  .win-card {
+    gap: 5px;
+  }
+  .win-clock {
+    font-size: 32px;
+  }
+  .win-title {
+    font-size: 20px;
+  }
+}
+.win-advance {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 5px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--ink);
+  opacity: 0.35;
+  transform-origin: left;
+  animation: win-drain linear forwards;
+}
+.win.peek .win-advance {
+  animation: none;
+  display: none;
+}
+@keyframes win-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes win-pop {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.92);
+  }
+}
+@keyframes win-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes win-drain {
+  to {
+    transform: scaleX(0);
+  }
+}
+@media (max-width: 360px) {
+  .win-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .win,
+  .win-card {
+    animation: none;
+  }
+  .win-check {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}
+.card.is-skipped .stage {
+  opacity: 0.35;
+}
+/* The lost twin of the win panel: red cross badge, calmer time block. */
+.win.lost .win-badge {
+  background: var(--bad);
+}
+.win.lost .win-check {
+  stroke-dasharray: 30;
+  stroke-dashoffset: 30;
+}
+.win.lost .win-time {
+  background: var(--cell-alt);
+  color: var(--fg);
+}
+.win.lost .win-time .win-label,
+.win.lost .win-time .win-was {
+  color: var(--muted);
+}
+.win.lost .win-card {
+  animation: win-shake 0.6s ease-out;
+}
+.win-hint {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+@keyframes win-shake {
+  0% {
+    opacity: 0;
+    transform: translateY(16px) scale(0.92);
+  }
+  45% {
+    opacity: 1;
+    transform: none;
+  }
+  60% {
+    transform: translateX(-6px);
+  }
+  75% {
+    transform: translateX(5px);
+  }
+  90% {
+    transform: translateX(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .win.lost .win-card {
+    animation: none;
+  }
+}
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 40px;
+}
+.status {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.status.result {
+  color: var(--fg);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+.status.result strong {
+  padding: 2px 10px;
+  border: var(--bw) solid var(--ink);
+  border-radius: 999px;
+  background: var(--cell);
+  color: var(--fg);
+  box-shadow: 2px 2px 0 var(--drop);
+}
+.status.result strong.good {
+  background: var(--good);
+  color: var(--on-tone);
+}
+.status.result strong.bad {
+  background: var(--bad);
+  color: var(--on-tone);
+}
+.actions,
+.controls,
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  font-weight: 600;
+}

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#fff6e5" />
+    <meta
+      name="description"
+      content="An endless feed of one-level arcade games: swap, bounce, dodge and aim. Free, no account, no ads.&#10;Un fil sans fin de jeux d’arcade en un niveau : échangez, rebondissez, esquivez, visez. Gratuit, sans compte, sans pub."
+    />
+    <title>Arcade Feed</title>
+    <link rel="canonical" href="https://arcade.garand.dev/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Arcade Feed" />
+    <meta property="og:title" content="Arcade Feed" />
+    <meta
+      property="og:description"
+      content="An endless feed of one-level arcade games: swap, bounce, dodge and aim. Free, no account, no ads.&#10;Un fil sans fin de jeux d’arcade en un niveau : échangez, rebondissez, esquivez, visez. Gratuit, sans compte, sans pub."
+    />
+    <meta property="og:url" content="https://arcade.garand.dev/" />
+    <meta property="og:locale" content="en_CA" />
+    <meta property="og:locale:alternate" content="fr_CA" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="arcade" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <script>
+      // Plausible pageviews -> stats.garand.dev (own site + "garand.dev" rollup).
+      // Opt out: Settings > Anonymous stats (arcade-feed:analytics-off), or localStorage.plausible_ignore = "true".
+      (function () {
+        if (!/(^|\.)garand\.dev$/.test(location.hostname)) return;
+        try {
+          if (localStorage.getItem('plausible_ignore') === 'true') return;
+          if (localStorage.getItem('arcade-feed:analytics-off') === '1') return;
+        } catch (e) {}
+        var last;
+        function pageview() {
+          if (location.href === last) return;
+          last = location.href;
+          fetch('https://stats.garand.dev/api/event', {
+            method: 'POST',
+            keepalive: true,
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify({ n: 'pageview', u: last, d: location.hostname + ',garand.dev', r: document.referrer || null, h: 1 }),
+          }).catch(function () {});
+        }
+        pageview();
+        // Path routing: in-app navigations are history.pushState calls (src/app/nav.ts).
+        var push = history.pushState;
+        history.pushState = function () {
+          push.apply(history, arguments);
+          pageview();
+        };
+        addEventListener('popstate', pageview);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

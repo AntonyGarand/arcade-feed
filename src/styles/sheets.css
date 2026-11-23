@@ -1,0 +1,278 @@
+/* Icon buttons and bottom sheets (guide, game settings, share). */
+
+/* ---------- icon buttons (?, cog) ---------- */
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  /* Next to text that wraps onto two lines, a flex row would squash the circle into an oval. */
+  flex: none;
+  align-self: center;
+  aspect-ratio: 1;
+  padding: 0;
+  border: var(--bw) solid var(--ink);
+  border-radius: 50%;
+  background: var(--cell);
+  color: var(--fg);
+  font-weight: 700;
+  font-size: 17px;
+  line-height: 1;
+  box-shadow: 2px 2px 0 var(--drop);
+  transition:
+    transform 0.06s,
+    box-shadow 0.06s;
+}
+.icon-btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+.icon-btn .icon {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.help-btn.fresh {
+  background: var(--accent);
+  color: var(--on-tone);
+  animation: nudge 1.8s ease-in-out 3;
+}
+@keyframes nudge {
+  0%,
+  70%,
+  100% {
+    transform: none;
+  }
+  80% {
+    transform: rotate(-12deg) scale(1.08);
+  }
+  90% {
+    transform: rotate(10deg) scale(1.08);
+  }
+}
+
+/* ---------- sheets (guide, game settings) ---------- */
+dialog.sheet {
+  width: min(540px, calc(100vw - 24px));
+  max-height: min(86dvh, 760px);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  color: var(--fg);
+  background: var(--cell);
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--r);
+  box-shadow: 6px 6px 0 var(--drop);
+}
+dialog.sheet:not([open]) {
+  display: none;
+}
+/* keep scroll gestures on the sheet or its backdrop from scrolling the feed behind it */
+dialog.sheet:modal {
+  overscroll-behavior: contain;
+}
+dialog.sheet::backdrop {
+  overflow: hidden; /* ::backdrop isn't a scroll container, so it would ignore overscroll-behavior */
+  overscroll-behavior: contain;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+@media (max-width: 640px) {
+  /* bottom sheet on phones */
+  dialog.sheet {
+    width: 100vw;
+    max-width: 100vw;
+    margin: auto 0 0;
+    border-radius: 16px 16px 0 0;
+    border-bottom: 0;
+    box-shadow: 0 -4px 0 var(--drop);
+    animation: sheet-up 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(40%);
+    opacity: 0;
+  }
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 18px 6px;
+}
+.sheet-head h2 {
+  display: inline-block;
+  font-size: 22px;
+  padding: 4px 12px 5px;
+  background: var(--accent);
+  color: var(--on-tone);
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--r);
+  box-shadow: var(--sh) var(--sh) 0 var(--drop);
+  transform: rotate(-1.5deg);
+}
+.sheet-body {
+  overflow: auto;
+  padding: 4px 18px 12px;
+  overscroll-behavior: contain;
+}
+.sheet-body h3 {
+  margin: 18px 0 8px;
+}
+.sheet-foot {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 18px max(12px, env(safe-area-inset-bottom));
+  border-top: 2px dashed var(--ink);
+}
+.seg.wrap {
+  flex-wrap: wrap;
+  border-radius: 14px;
+}
+
+.help-goal {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 10px 0 6px;
+}
+.help-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  display: grid;
+  gap: 8px;
+}
+.help-steps li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+.help-steps li::before {
+  content: counter(step);
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-tone);
+  font-weight: 700;
+  font-size: 13px;
+}
+.help-tips {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+}
+.help-levels {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 2px dashed var(--ink);
+}
+
+/* animated walkthrough inside the guide */
+/* result line extras */
+.record {
+  font-weight: 700;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--hi);
+  color: var(--on-tone);
+}
+.confetti {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  overflow: hidden;
+}
+.confetti i {
+  position: absolute;
+  border: 2px solid var(--ink);
+  border-radius: 2px;
+}
+
+/* long (often French) status lines wrap themselves instead of stacking the footer buttons */
+.card-foot .status {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.25;
+}
+.card-foot .actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* new-version banner + toast */
+.update-banner {
+  position: fixed;
+  left: 10px;
+  right: 10px;
+  bottom: calc(var(--tabs) + 12px);
+  max-width: 520px;
+  margin: 0 auto;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px 10px 16px;
+  background: var(--hi);
+  color: var(--on-tone);
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--r);
+  box-shadow: var(--sh) var(--sh) 0 var(--drop);
+  font-size: 14px;
+  animation: sheet-up 0.25s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.update-banner .btn.ghost {
+  color: var(--on-tone);
+}
+.toast {
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: fit-content;
+  margin: 0 auto;
+  bottom: calc(var(--tabs) + 12px);
+  z-index: 60;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--cell);
+  border: var(--bw) solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 3px 3px 0 var(--drop);
+  animation: sheet-up 0.25s ease;
+}
+.app-version {
+  margin-top: 28px;
+  text-align: center;
+}
+
+.lab-bar .small {
+  flex: 1;
+  text-align: center;
+}

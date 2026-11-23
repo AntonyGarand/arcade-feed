@@ -1,0 +1,31 @@
+// Per-tab memory of where the player was, so a reload (pull-to-refresh, language switch, app
+// update) lands back on the same page and the same feed card instead of starting over.
+// sessionStorage lives as long as the tab: opening the app fresh still starts at the feed.
+
+/** True when this page load is a reload of the same tab (not a fresh visit). */
+export const isReload = (() => {
+  try {
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    return nav?.type === 'reload';
+  } catch {
+    return false;
+  }
+})();
+
+/** The stored JSON value, unchecked: callers validate its shape. */
+export function sessionGet(key: string): unknown {
+  try {
+    const v = sessionStorage.getItem(`arcade-feed:${key}`);
+    return v == null ? undefined : (JSON.parse(v) as unknown);
+  } catch {
+    return undefined;
+  }
+}
+
+export function sessionSet(key: string, value: unknown) {
+  try {
+    sessionStorage.setItem(`arcade-feed:${key}`, JSON.stringify(value));
+  } catch {
+    /* storage unavailable: a reload just starts over */
+  }
+}
