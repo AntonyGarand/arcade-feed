@@ -3,6 +3,7 @@ import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
+import { sfx } from '../../kits/sound/sound';
 import {
   BULLET_R,
   createLevel,
@@ -251,8 +252,11 @@ export const rocks: GameDef = {
     return {
       draw,
       frame(dt) {
+        const cool = s.cool;
         const ev = step(s, dt);
+        if (s.cool > cool) sfx('shoot', { vol: 0.5 });
         for (const b of ev.blasts) {
+          if (!b.ship) sfx('pop', { pitch: b.r >= 30 ? -8 : b.r >= 17 ? -3 : 3 });
           const n = b.ship ? 14 : 4 + Math.round(b.r / 3);
           for (let i = 0; i < n; i++) {
             const a = (i / n) * Math.PI * 2 + b.x * 0.1;

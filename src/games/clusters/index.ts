@@ -4,6 +4,7 @@ import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { DX, DY, gestures, keyDir, type Point } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { sfx } from '../../kits/sound/sound';
 import { CLEAR_BONUS, colsFor, createLevel, goalFor, groupAt, groupPoints, LEFT_BONUS, pop, rowsFor, settle, type Outcome } from './rules';
 
 const CELL = 30;
@@ -128,7 +129,11 @@ export const clusters: GameDef = {
       if (over || slide < SLIDE_S || i < 0) return;
       const k = s.grid[i];
       const out = pop(s, i);
-      if (!out) return;
+      if (!out) {
+        sfx('error', { vol: 0.7 });
+        return;
+      }
+      sfx('pop', { pitch: Math.min(10, out.removed.length) });
       from = out.from;
       slide = 0;
       let sx = 0;
@@ -301,7 +306,10 @@ export const clusters: GameDef = {
         else if (dir !== -1) {
           const c = (cursor % cols) + DX[dir];
           const r = Math.floor(cursor / cols) + DY[dir];
-          if (c >= 0 && r >= 0 && c < cols && r < rows) cursor = r * cols + c;
+          if (c >= 0 && r >= 0 && c < cols && r < rows) {
+            cursor = r * cols + c;
+            sfx('tick', { vol: 0.6 });
+          }
         } else tap(cursor);
         status();
         draw();

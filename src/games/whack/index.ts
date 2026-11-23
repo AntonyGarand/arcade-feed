@@ -3,6 +3,7 @@ import { L } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { DX, DY, gestures, keyDir } from '../../kits/gesture/gesture';
+import { sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
 import {
   bop,
@@ -278,12 +279,19 @@ export const whack: GameDef = {
       const r = bop(s, h);
       if (!r.out) return;
       const { x, y } = centre(h);
-      if (r.out === 'whiff') puff = { hole: h, t: WHIFF_S };
-      else if (r.out === 'decoy' || r.out === 'lose') {
+      if (r.out === 'whiff') {
+        puff = { hole: h, t: WHIFF_S };
+        sfx('tick');
+      } else if (r.out === 'decoy' || r.out === 'lose') {
         ouch = 0.35;
         floats.push({ x, y: y - cell * 0.3, text: '✕', life: 0.7, good: false });
         ctx.lives(s.lives, LIVES);
-      } else floats.push({ x, y: y - cell * 0.3, text: `+${r.points}`, life: 0.7, good: true });
+        if (r.out === 'decoy') sfx('error');
+      } else {
+        floats.push({ x, y: y - cell * 0.3, text: `+${r.points}`, life: 0.7, good: true });
+        if (r.out === 'gold') sfx('power');
+        else sfx('pop', { pitch: s.score % 5 });
+      }
       ctx.score(s.score);
       status();
       draw();

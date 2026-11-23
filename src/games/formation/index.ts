@@ -3,6 +3,7 @@ import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
+import { sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
 import {
   aliveCount,
@@ -240,12 +241,15 @@ export const formation: GameDef = {
       draw,
       frame(dt) {
         const ev = step(s, dt);
-        for (const p of ev.pops)
+        if (ev.fired) sfx('shoot', { vol: 0.4 });
+        for (const p of ev.pops) {
+          if (p.k >= 0) sfx('pop', { pitch: p.k % 5 });
           for (let i = 0; i < 10; i++) {
             const a = (i / 10) * Math.PI * 2 + p.x;
             const sp = 50 + ((i * 29) % 60);
             sparks.push({ x: p.x, y: p.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.5, k: p.k });
           }
+        }
         for (let i = sparks.length - 1; i >= 0; i--) {
           const p = sparks[i];
           p.x += p.vx * dt;

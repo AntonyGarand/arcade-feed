@@ -50,6 +50,10 @@ export interface Profile {
   /** Absent = Neo. */
   style?: Style;
   autoAdvance: boolean;
+  /** Sound effects; absent = on. */
+  sound?: boolean;
+  /** Vibration on impacts (phones); absent = on. */
+  haptics?: boolean;
   startLevel: Difficulty;
   types: Record<string, TypePrefs>;
   stats: Record<string, TypeStats>;
@@ -118,7 +122,7 @@ function save() {
 
 export const getProfile = () => profile;
 
-export function update(patch: Partial<Pick<Profile, 'name' | 'theme' | 'style' | 'autoAdvance' | 'startLevel'>>) {
+export function update(patch: Partial<Pick<Profile, 'name' | 'theme' | 'style' | 'autoAdvance' | 'startLevel' | 'sound' | 'haptics'>>) {
   Object.assign(profile, patch);
   save();
   emit('profile');

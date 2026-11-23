@@ -2,6 +2,7 @@ import './style.css';
 import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { sfx } from '../../kits/sound/sound';
 import { BALL_R, brickCount, createLevel, H, launch, LIFE_BONUS, LIVES, PADDLE_H, PADDLE_Y, step, W } from './rules';
 
 export const bricks: GameDef = {
@@ -147,11 +148,13 @@ export const bricks: GameDef = {
 
     function onHits(gain: number) {
       const c = arena.colors;
+      let broke = false;
       for (let i = 0; i < before.length; i++) {
         const b = before[i];
         const cx = b.x + b.w / 2;
         const cy = b.y + b.h / 2;
         if (!s.bricks.includes(b)) {
+          broke = true;
           const fill = c.p[b.c];
           fx.burst(cx, cy, fill, 14, 130, 4, 0.6);
           fx.burst(cx, cy, arena.tone(fill).hi, 6, 90, 2.5, 0.45, 'dot');
@@ -161,6 +164,8 @@ export const bricks: GameDef = {
           fx.burst(s.bx, s.by, c.muted, 5, 80, 2, 0.35, 'spark', 0);
         }
       }
+      if (broke) sfx('pop', { pitch: Math.min(12, s.combo * 2) });
+      else sfx('hit', { pitch: 4 });
       if (gain > 0) fx.text(s.bx, s.by - 8, `+${gain}`, s.combo >= 3 ? c.accent : c.fg, s.combo >= 3 ? 14 : 11);
       if (s.combo >= 4 && s.combo % 2 === 0) fx.shake(1.5, 0.15);
       before = s.bricks.slice();
@@ -197,6 +202,7 @@ export const bricks: GameDef = {
         // Paddle bounce: the ball turned upwards at paddle height.
         if (vy > 0 && s.vy < 0 && !s.held && s.by >= PADDLE_Y - BALL_R - 2) {
           squash = 1;
+          sfx('hit', { vol: 0.8 });
           fx.burst(s.bx, PADDLE_Y, arena.tone(c.accent).hi, 6, 70, 2.5, 0.3, 'spark', 0, -Math.PI / 2, Math.PI * 0.8);
         }
         if (ev.hit) {

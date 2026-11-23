@@ -5,6 +5,7 @@ import { Arena } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
 import { outBack, outCubic } from '../../kits/arena/ease';
 import { DX, DY, gestures, keyDir } from '../../kits/gesture/gesture';
+import { sfx } from '../../kits/sound/sound';
 import { COLS, createLevel, goalFor, PELLET_POINTS, QUICK, ROWS, speedFor, step, turn } from './rules';
 
 const CELL = 20;
@@ -290,6 +291,7 @@ export const snake: GameDef = {
           const x = cx(s.body[0]);
           const y = cy(s.body[0]);
           eatAt = arena.time;
+          sfx('coin', { pitch: s.body.length % 5, vol: 0.6 });
           fx.burst(x, y, c.p[0], 10, 100, 3, 0.45);
           fx.ring(x, y, c.p[0], 4, CELL * 1.4, 0.3, arena.lw);
           fx.text(x, y - 12, `+${s.score - score}`, c.fg, 12);

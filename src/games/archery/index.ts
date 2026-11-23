@@ -3,6 +3,7 @@ import { L } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, type Point } from '../../kits/gesture/gesture';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   aimPath,
   ARROW_LEN,
@@ -316,7 +317,10 @@ export const archery: GameDef = {
       setAim(s, Math.atan2(-dy, dx), Math.hypot(dx, dy) / PULL_MAX);
     };
     const fire = () => {
-      if (!ended && shoot(s)) status();
+      if (!ended && shoot(s)) {
+        sfx('shoot');
+        status();
+      }
     };
     const stopGestures = gestures(arena.canvas, {
       toWorld: (e) => arena.toWorld(e),
@@ -347,7 +351,11 @@ export const archery: GameDef = {
           if (ev.points) {
             shake = 1;
             shaken = s.stuck.at(-1)?.t ?? -1;
-          }
+            if (ev.points >= 10) {
+              sfx('power');
+              haptic(20);
+            } else sfx('hit', { pitch: ev.points / 2 });
+          } else sfx('error');
           pops.push({ x: ev.x - 6, y: ev.y - 14, t: 1, text: ev.points ? `+${ev.points}` : L('Miss', 'Raté'), good: ev.points > 0 });
           ctx.score(s.score);
           status();

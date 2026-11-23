@@ -4,6 +4,7 @@ import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { DX, DY, gestures, keyDir, type Point } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { sfx } from '../../kits/sound/sound';
 import {
   CLEAR_BONUS,
   CRATE_POINTS,
@@ -123,9 +124,13 @@ export const crates: GameDef = {
     function after(res: MoveResult, from: number[], pushed: number) {
       if (!res.moved) {
         bump = 0.15;
+        sfx('error');
         draw();
         return;
       }
+      if (res.placed && pushed >= 0) sfx('coin');
+      else if (res.pushed) sfx('hit');
+      else sfx('tick', { vol: 0.4 });
       route = from;
       routeT = 0;
       slide = res.pushed ? pushed : -1;
@@ -156,6 +161,7 @@ export const crates: GameDef = {
       const path = pathTo(s, to);
       if (!path?.length) {
         bump = 0.15;
+        sfx('error');
         return;
       }
       const cells = [s.player];

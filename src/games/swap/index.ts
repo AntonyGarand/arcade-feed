@@ -5,6 +5,7 @@ import { Arena, type Trace } from '../../kits/arena/arena';
 import { outBack, outCubic } from '../../kits/arena/ease';
 import { DX, DY, gestures, keyDir, type Point } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { sfx } from '../../kits/sound/sound';
 import { adjacent, clearStep, collapse, createLevel, findMatches, MOVE_BONUS, movesFor, settle, trySwap, validMoves } from './rules';
 
 const CELL = 40;
@@ -118,8 +119,13 @@ export const swap: GameDef = {
       idle = 0;
       hint = null;
       phase = trySwap(s, a, b) ? 'swap' : 'bounce';
-      if (phase === 'swap') status();
-      else arena.fx.shake(1.5, 0.2);
+      if (phase === 'swap') {
+        sfx('flip', { vol: 0.6 });
+        status();
+      } else {
+        sfx('error');
+        arena.fx.shake(1.5, 0.2);
+      }
     }
 
     function startClear(): boolean {
@@ -231,6 +237,8 @@ export const swap: GameDef = {
     /** Gems just cleared: bursts in their colours, the points at the middle of the match. */
     function popped(cells: number[], kinds: number[], gain: number) {
       if (!cells.length) return;
+      if (s.chain > 1) sfx('combo', { step: s.chain });
+      else sfx('pop', { pitch: Math.min(6, cells.length - 3) });
       const c = arena.colors;
       let mx = 0;
       let my = 0;

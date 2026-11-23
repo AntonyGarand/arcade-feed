@@ -3,6 +3,7 @@ import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
+import { sfx } from '../../kits/sound/sound';
 import {
   BAR_GAP,
   COIN_POINTS,
@@ -280,10 +281,15 @@ export const runner: GameDef = {
       }
     }
 
+    const jump = () => {
+      const was = s.grounded && !s.falling;
+      press(s);
+      if (was && !s.grounded) sfx('jump', { vol: 0.6 });
+    };
     const stopGestures = gestures(arena.canvas, {
       toWorld: (e) => arena.toWorld(e),
       slop: 18,
-      onDown: () => press(s),
+      onDown: () => jump(),
       onSwipe: (dir) => {
         if (dir === 2) duck(s);
       },
@@ -304,7 +310,9 @@ export const runner: GameDef = {
         const wasDucking = ducking(s);
         const ev = step(s, dt);
         if (ev.coin) pops.push({ x: RX, y: s.y + heightOf(s), age: 0, kind: 'coin' });
+        if (ev.coin) sfx('coin', { pitch: (s.score / COIN_POINTS) % 4 });
         if (ev.landed && !wasDucking) pops.push({ x: RX, y: s.y, age: 0, kind: 'dust' });
+        if (ev.landed && !wasDucking) sfx('hit', { vol: 0.35, pitch: 6 });
         if (ev.hurt) {
           pops.push({ x: RX, y: Math.max(0, s.y) + 12, age: 0, kind: 'hit' });
           flash = 1;
@@ -320,7 +328,7 @@ export const runner: GameDef = {
         const k = e.key.toLowerCase();
         const down = e.type === 'keydown';
         if (k === ' ' || k === 'arrowup' || k === 'w') {
-          if (down && !e.repeat) press(s);
+          if (down && !e.repeat) jump();
           else if (!down) release(s);
           return true;
         }

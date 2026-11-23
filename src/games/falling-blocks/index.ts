@@ -4,6 +4,7 @@ import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { outCubic } from '../../kits/arena/ease';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   COLS,
   createLevel,
@@ -106,6 +107,11 @@ export const fallingBlocks: GameDef = {
       if (done) return;
       const c = arena.colors;
       if (ev.locked) {
+        if (ev.cleared.length) {
+          sfx('combo', { step: ev.cleared.length + 1 });
+          sfx('pop', { vol: 0.6 });
+          if (ev.cleared.length >= 4) haptic(30);
+        } else sfx('hit', { vol: 0.7 });
         anchor = null;
         const p = prePiece;
         const y0 = p.y + dropped;
@@ -165,11 +171,22 @@ export const fallingBlocks: GameDef = {
       const ev = hardDrop(s);
       if (n > 0) {
         fx.shake(1.5, 0.15);
+        haptic(15);
         const bottom = Math.max(...shapeCells(p.k, p.rot).map(([, cy]) => p.y + cy)) + n + 1;
         for (const col of cols)
           fx.burst(FX + (col + 0.5) * CELL, FY + bottom * CELL, arena.colors.muted, 2, 60, 2.5, 0.35, 'dot', 120, -Math.PI / 2, 2.4);
       }
       apply(ev, n);
+    }
+
+    function nudge(dx: number) {
+      const ok = move(s, dx);
+      if (ok) sfx('tick', { vol: 0.3 });
+      return ok;
+    }
+
+    function turn(dir: 1 | -1) {
+      if (rotate(s, dir)) sfx('tick', { vol: 0.4, pitch: 5 });
     }
 
     function soft() {
@@ -314,8 +331,8 @@ export const fallingBlocks: GameDef = {
         if (!from || done) return;
         anchor ??= { x: p.x, y: p.y, col: s.piece.x };
         const want = anchor.col + Math.round((p.x - anchor.x) / CELL);
-        while (s.piece.x < want && move(s, 1));
-        while (s.piece.x > want && move(s, -1));
+        while (s.piece.x < want && nudge(1));
+        while (s.piece.x > want && nudge(-1));
         // A lock clears the anchor (`apply`): the next piece starts a fresh drag.
         for (let a: typeof anchor = anchor; a && p.y - a.y > CELL * 1.2; a = anchor) {
           a.y += CELL;
@@ -324,7 +341,7 @@ export const fallingBlocks: GameDef = {
         draw();
       },
       onTap() {
-        if (!done) rotate(s, 1);
+        if (!done) turn(1);
         draw();
       },
       onRelease(p, from, v) {
@@ -354,10 +371,10 @@ export const fallingBlocks: GameDef = {
         if (dir === -1 && k !== 'x' && k !== 'z' && k !== ' ') return false;
         if (e.type !== 'keydown' || done) return true;
         if (k === ' ') hard();
-        else if (k === 'z') rotate(s, -1);
-        else if (dir === 0 || k === 'x') rotate(s, 1);
+        else if (k === 'z') turn(-1);
+        else if (dir === 0 || k === 'x') turn(1);
         else if (dir === 2) soft();
-        else move(s, dir === 1 ? 1 : -1);
+        else nudge(dir === 1 ? 1 : -1);
         draw();
         return true;
       },

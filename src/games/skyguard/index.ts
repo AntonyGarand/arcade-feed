@@ -4,6 +4,7 @@ import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   ammoFor,
   AMMO_POINTS,
@@ -232,7 +233,10 @@ export const skyguard: GameDef = {
     }
 
     const shoot = (x: number, y: number, force = -1) => {
-      if (fire(s, x, y, force)) status();
+      if (fire(s, x, y, force)) {
+        sfx('shoot', { vol: 0.8 });
+        status();
+      } else sfx('error', { vol: 0.7 });
     };
     const stopGestures = gestures(arena.canvas, {
       toWorld: (e) => arena.toWorld(e),
@@ -264,6 +268,11 @@ export const skyguard: GameDef = {
         const ev = step(s, dt);
         flash = Math.max(0, flash - dt * 2);
         if (ev.impacts.some((i) => i.wrecked)) flash = 1;
+        if (ev.killed) sfx('pop', { pitch: Math.min(8, ev.killed * 2) });
+        if (ev.impacts.length) {
+          sfx('boom');
+          if (ev.impacts.some((i) => i.wrecked)) haptic(30);
+        }
         if (ev.killed || ev.cleared) ctx.score(s.score);
         if (ev.killed || ev.impacts.length || incoming(s) !== before) status();
         draw();
