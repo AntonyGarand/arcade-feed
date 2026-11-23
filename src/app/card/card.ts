@@ -12,6 +12,7 @@ import { Clock } from './clock';
 import { fitBoard } from './fit';
 import { FrameLoop } from './loop';
 import { openGameSettings } from './settings-sheet';
+import { haptic, sfx } from '../../kits/sound/sound';
 
 export interface CardOptions {
   /** Games tab: fixed level (doesn't touch feed prefs), no auto-advance, "New level" instead of "Next". */
@@ -175,7 +176,11 @@ export class Card {
     // Up to five hearts in a row; more than that would crowd the header, so it becomes one heart and a count.
     if (max > 5) el.replaceChildren(h('i', { class: left ? 'on' : '' }), h('b', null, `${left}`));
     else el.replaceChildren(...Array.from({ length: max }, (_, i) => h('i', { class: i < left ? 'on' : '' })));
-    if (lost) bump(el);
+    if (lost) {
+      bump(el);
+      sfx('hurt');
+      haptic(60);
+    }
   }
 
   private syncScore(n: number) {
@@ -239,7 +244,10 @@ export class Card {
   /** Start or resume the run (the gate's tap, Space or Enter). */
   go() {
     if (this.phase !== 'ready' && this.phase !== 'paused') return;
-    if (this.phase === 'ready') telemetry.track('game.start', this.trackAttrs());
+    if (this.phase === 'ready') {
+      telemetry.track('game.start', this.trackAttrs());
+      sfx('start');
+    }
     this.phase = 'playing';
     this.syncGate();
   }
@@ -381,6 +389,11 @@ export class Card {
         'game.level_change': res.levelChange ? res.levelChange.to - res.levelChange.from : 0,
       });
     this.el.classList.add(`is-${o}`);
+    if (cleared) sfx('win');
+    else if (o === 'lost') {
+      sfx('lose');
+      haptic([50, 60, 90]);
+    }
     this.syncLevelLabel();
     if (o === 'skipped') {
       this.foot.replaceChildren(h('span', { class: 'status result' }, h('strong', null, L('Skipped', 'Passé'))));

@@ -3,6 +3,7 @@ import { LEVELS, LEVEL_NAMES, type GameDef } from '../core/types';
 import { h, segmented } from '../ui/dom';
 import { L, LOCALES, P, locale, setLocale, type Locale } from '../core/i18n';
 import { analyticsEnabled, setAnalyticsEnabled } from '../core/analytics';
+import { canVibrate, sfx } from '../kits/sound/sound';
 
 /** One setting: its name and an optional hint on the left, the control on the right (below on phones). */
 const setting = (name: string, hint: string | null, control: HTMLElement) =>
@@ -111,6 +112,25 @@ export function renderSettings(el: HTMLElement, defs: GameDef[]) {
       ),
       group(
         L('Play', 'Jeu'),
+        setting(
+          L('Sound', 'Son'),
+          L('Little 8-bit sound effects.', 'Petits effets sonores 8 bits.'),
+          onOff(
+            p.sound !== false,
+            (on) => {
+              update({ sound: on });
+              if (on) sfx('coin');
+            },
+            L('Sound', 'Son'),
+          ),
+        ),
+        canVibrate()
+          ? setting(
+              L('Vibration', 'Vibration'),
+              L('A short buzz on hits and lost lives.', 'Une courte vibration aux chocs et aux vies perdues.'),
+              onOff(p.haptics !== false, (on) => update({ haptics: on }), L('Vibration', 'Vibration')),
+            )
+          : null,
         setting(
           L('Auto-advance', 'Avance automatique'),
           L('Scroll to the next game after a clear.', 'Passer au jeu suivant après une réussite.'),
