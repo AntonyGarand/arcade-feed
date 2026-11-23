@@ -46,7 +46,12 @@ const practice = h('a', { class: 'practice', href: '/', title: L('Back to the mi
 const header = h(
   'header',
   { class: 'top' },
-  h('a', { class: 'brand', href: '/' }, h('span', { class: 'logo' }, h('i'), h('i'), h('i'), h('i')), 'arcade feed'),
+  h(
+    'a',
+    { class: 'brand', href: '/' },
+    h('img', { class: 'logo', src: '/favicon.svg', alt: '', width: '25', height: '25' }),
+    'arcade feed',
+  ),
   h('div', { class: 'top-extra' }, streak, practice),
   h('nav', { class: 'tabs', 'aria-label': L('Main', 'Principal') }, ...Object.values(tabs)),
 );

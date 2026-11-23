@@ -21,27 +21,9 @@
   letter-spacing: -0.03em;
 }
 .logo {
-  display: grid;
-  grid-template-columns: repeat(2, 11px);
-  gap: 3px;
-}
-.logo i {
-  width: 11px;
-  height: 11px;
-  border: 2px solid var(--ink);
-  border-radius: 3px;
-}
-.logo i:nth-child(1) {
-  background: var(--p4);
-}
-.logo i:nth-child(2) {
-  background: var(--p7);
-}
-.logo i:nth-child(3) {
-  background: var(--p2);
-}
-.logo i:nth-child(4) {
-  background: var(--p3);
+  display: block;
+  width: 25px;
+  height: 25px;
 }
 .top-extra {
   display: flex;
