@@ -19,6 +19,18 @@ npm run check         # fmt:check, lint, typecheck, knip, test — what CI runs
 4. The game calls `ctx.win()` or `ctx.lose()`. Stars come from the final score (`GameDef.stars(d)` gives the ★★ and ★★★ thresholds; any clear earns ★). The result panel shows score, best, time; Again replays the same seed, Next scrolls on (auto after a clear).
 5. Auto-levelling (Easy → Master): up after two ★★★ clears in a row or three clears with ★★+, down after two losses or skips in a row. Picking a level locks it.
 
+## Games
+
+| Category     | Game (id)                         | One level                                                          |
+| ------------ | --------------------------------- | ------------------------------------------------------------------ |
+| Match        | Swap (`swap`)                     | match-3: reach a target score within a move limit                  |
+| Aim & bounce | Bricks (`bricks`)                 | break every brick with a paddle and three lives                    |
+| Aim & bounce | Pegs (`pegs`)                     | shoot balls through a peg field to clear the orange pegs           |
+| Reflex       | Dodge (`dodge`)                   | survive a timed run of falling and flying hazards                  |
+| Reflex       | Snake (`snake`)                   | eat a number of pellets on a walled map without crashing           |
+| Stack & drop | Falling Blocks (`falling-blocks`) | clear a number of lines from a rubble start without topping out    |
+| Stack & drop | Fruit Merge (`merge`)             | drop and merge pieces up to a target size before the jar overflows |
+
 ## Layout
 
 ```
@@ -29,6 +41,8 @@ src/
   app/             feed, nav, update banner, card/ (card, frame loop, clock, fit, settings sheet)
   pages/           Games, single game, Profile, Settings
   kits/arena/      canvas playfield in world units: DPR scaling, theme colours, pointer → world, neo-brutalist boxes
+  kits/gesture/    pointer gestures on the canvas (press, drag, swipe, tap, release) and arrow/WASD key directions
+  kits/glyph/      shapes that pair with palette colours, a second cue for colour-matched pieces
   games/<id>/      one game per folder: index.ts (auto-registered), rules.ts (pure logic), style.css
   styles/          tokens and shared components (from puzzle feed) + arcade.css (gate, stars)
 test/              vitest (happy-dom): registry contract, store, per-game rules
