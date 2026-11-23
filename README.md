@@ -40,7 +40,8 @@ src/
   ui/              DOM helpers, sheets, help dialog, result panel, confetti
   app/             feed, nav, update banner, card/ (card, frame loop, clock, fit, settings sheet)
   pages/           Games, single game, Profile, Settings
-  kits/arena/      canvas playfield in world units: DPR scaling, theme colours, pointer → world, neo-brutalist boxes
+  kits/arena/      canvas playfield in world units: DPR scaling, theme colours, pointer → world, style-aware pieces
+                   (box, block, ball, gem, field), fx (bursts, rings, floating text, shake, flash), easing
   kits/gesture/    pointer gestures on the canvas (press, drag, swipe, tap, release) and arrow/WASD key directions
   kits/glyph/      shapes that pair with palette colours, a second cue for colour-matched pieces
   games/<id>/      one game per folder: index.ts (auto-registered), rules.ts (pure logic), style.css

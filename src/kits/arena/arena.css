@@ -12,3 +12,8 @@
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* Soft style: a blurred shadow below the field instead of a hard offset one. */
+:root[data-style='soft'] .arena {
+  box-shadow: 0 calc(var(--sh) * 1.2) calc(var(--sh) * 4) var(--drop);
+}

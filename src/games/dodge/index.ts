@@ -1,7 +1,8 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
-import { Arena } from '../../kits/arena/arena';
+import { Arena, type Trace } from '../../kits/arena/arena';
+import { approach } from '../../kits/arena/ease';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
 import {
@@ -72,9 +73,19 @@ export const dodge: GameDef = {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const max = livesFor(ctx.difficulty);
     const arena = new Arena(ctx.root, W, H, () => draw());
+    const fx = arena.fx;
     const held = new Set<number>();
     let offset = { x: 0, y: 0 };
     let shown = -1;
+    /** Where the player looks (smoothed direction of travel). */
+    let lookX = 0;
+    let lookY = -0.4;
+    const TRAIL = 8;
+    const trail = new Float32Array(TRAIL * 2);
+    let trailN = 0;
+    let trailAt = 0;
+    let ended = false;
+    const star: Trace = (g, r) => glyphPath(g, STAR, 0, 0, r);
 
     const status = () => {
       const left = Math.max(0, Math.ceil(s.duration - s.time));
@@ -84,62 +95,148 @@ export const dodge: GameDef = {
       );
     };
 
+    /** Hazard stripes across a box, in the shaded tone of the hazard. */
+    function stripes(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
+      g.save();
+      g.beginPath();
+      g.roundRect(x + 1, y + 1, w - 2, h - 2, arena.r(2));
+      g.clip();
+      g.strokeStyle = arena.tone(arena.colors.bad).lo;
+      g.lineWidth = 3;
+      g.beginPath();
+      for (let d = -h; d < w; d += 9) {
+        g.moveTo(x + d, y + h);
+        g.lineTo(x + d + h, y);
+      }
+      g.stroke();
+      g.restore();
+    }
+
+    /** A spinning saw blade of radius r. */
+    function saw(g: CanvasRenderingContext2D, x: number, y: number, r: number, spin: number) {
+      const c = arena.colors;
+      const t = arena.tone(c.bad);
+      g.save();
+      g.translate(x, y);
+      g.rotate(spin);
+      g.beginPath();
+      const teeth = 10;
+      for (let i = 0; i < teeth * 2; i++) {
+        const a = (i * Math.PI) / teeth;
+        const rr = i % 2 ? r * 0.74 : r;
+        if (i) g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+        else g.moveTo(rr, 0);
+      }
+      g.closePath();
+      g.fillStyle = c.bad;
+      g.fill();
+      g.strokeStyle = t.edge;
+      g.lineWidth = arena.lw * 0.7;
+      g.lineJoin = 'round';
+      g.stroke();
+      g.fillStyle = t.lo;
+      g.beginPath();
+      g.arc(0, 0, r * 0.42, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = t.hi;
+      g.beginPath();
+      g.arc(0, 0, r * 0.16, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+
     function draw() {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
+      arena.field(g, 0, 0, W, H, 20, 0, false);
       // Time bar along the top.
       g.fillStyle = c.cellAlt;
-      g.fillRect(0, 0, W, 6);
-      g.fillStyle = c.accent;
-      g.fillRect(0, 0, W * Math.min(1, s.time / s.duration), 6);
+      g.fillRect(0, 0, W, 7);
+      const f = Math.min(1, s.time / s.duration);
+      if (f > 0) arena.block(g, -4, -4, W * f + 4, 11, c.accent, 4, false, 0.6);
 
       for (const p of starsOut(s)) {
-        g.fillStyle = c.p[3];
-        g.strokeStyle = c.ink;
-        g.lineWidth = arena.lw * 0.7;
-        glyphPath(g, STAR, p.x, p.y, PICKUP_R);
+        const tw = Math.sin(arena.time * 5 + p.x);
+        g.fillStyle = arena.tone(c.p[3]).glow;
+        g.beginPath();
+        g.arc(p.x, p.y, PICKUP_R * (1.5 + 0.2 * tw), 0, Math.PI * 2);
         g.fill();
-        g.stroke();
+        arena.gem(g, p.x, p.y, PICKUP_R, c.p[3], star, true, 1 + 0.08 * tw, Math.sin(arena.time * 2 + p.y) * 0.25);
       }
-      // Edge markers for what's about to enter.
+      // Edge markers for what's about to enter: pulsing arrows.
+      const pulse = 0.6 + 0.4 * Math.abs(Math.sin(arena.time * 9));
       g.fillStyle = c.bad;
-      g.strokeStyle = c.ink;
+      g.strokeStyle = arena.tone(c.bad).edge;
       g.lineWidth = arena.lw * 0.5;
+      g.lineJoin = 'round';
+      g.globalAlpha = pulse;
       for (const z of incoming(s)) {
         g.beginPath();
         if (z.kind === 'disc') {
           const y = z.y + z.h / 2;
           const x = z.vx > 0 ? 3 : W - 3;
           const k = z.vx > 0 ? 1 : -1;
-          g.moveTo(x, y - 6);
-          g.lineTo(x + 8 * k, y);
-          g.lineTo(x, y + 6);
+          g.moveTo(x, y - 7);
+          g.lineTo(x + 9 * k, y);
+          g.lineTo(x, y + 7);
         } else {
           const x = z.x + z.w / 2;
-          g.moveTo(x - 6, 8);
-          g.lineTo(x, 16);
-          g.lineTo(x + 6, 8);
+          g.moveTo(x - 7, 9);
+          g.lineTo(x, 18);
+          g.lineTo(x + 7, 9);
         }
         g.closePath();
         g.fill();
         g.stroke();
       }
+      g.globalAlpha = 1;
       for (const z of s.live) {
-        if (z.kind === 'disc') arena.disc(g, z.x + z.w / 2, z.y + z.h / 2, z.w / 2, c.bad);
-        else arena.box(g, z.x, z.y, z.w, z.h, c.bad, z.kind === 'bar' ? 2 : 4);
-      }
-      // The player: blinking while safe after a hit.
-      if (!s.invulnerable || Math.floor(s.invulnerable * 10) % 2 === 0) {
-        if (arena.sh) {
-          g.fillStyle = c.drop;
+        if (z.kind === 'disc') saw(g, z.x + z.w / 2, z.y + z.h / 2, z.w / 2, arena.time * 7 * Math.sign(z.vx || 1));
+        else {
+          arena.block(g, z.x, z.y, z.w, z.h, c.bad, z.kind === 'bar' ? 2 : 4);
+          stripes(g, z.x, z.y, z.w, z.h - 2);
+          g.strokeStyle = arena.tone(c.bad).edge;
+          g.lineWidth = arena.lw * 0.8;
           g.beginPath();
-          g.arc(s.px + arena.sh * 0.6, s.py + arena.sh * 0.6, PLAYER_R, 0, Math.PI * 2);
+          g.roundRect(z.x, z.y, z.w, z.h, arena.r(z.kind === 'bar' ? 2 : 4));
+          g.stroke();
+        }
+      }
+      // The player: a trail, then the ball blinking while safe after a hit, eyes looking ahead.
+      if (!ended || s.lives > 0) {
+        g.fillStyle = arena.tone(c.accent).glow;
+        for (let i = 0; i < trailN; i++) {
+          const k = (trailAt - 1 - i + TRAIL) % TRAIL;
+          const fi = 1 - i / TRAIL;
+          g.globalAlpha = fi * 0.7;
+          g.beginPath();
+          g.arc(trail[k * 2], trail[k * 2 + 1], PLAYER_R * (0.3 + 0.55 * fi), 0, Math.PI * 2);
           g.fill();
         }
-        arena.disc(g, s.px, s.py, PLAYER_R, c.accent);
-        for (const dx of [-3.5, 3.5]) arena.disc(g, s.px + dx, s.py - 2, 2.4, c.cell);
+        g.globalAlpha = 1;
+        if (!s.invulnerable || Math.floor(s.invulnerable * 10) % 2 === 0) {
+          arena.ball(g, s.px, s.py, PLAYER_R, c.accent);
+          const ex = lookX * 2.2;
+          const ey = lookY * 2.2;
+          for (const dx of [-3.6, 3.6]) {
+            const x = s.px + dx + ex * 0.6;
+            const y = s.py - 1.5 + ey * 0.6;
+            g.fillStyle = c.paper;
+            g.strokeStyle = arena.tone(c.accent).edge;
+            g.lineWidth = arena.lw * 0.4;
+            g.beginPath();
+            g.arc(x, y, 2.9, 0, Math.PI * 2);
+            g.fill();
+            g.stroke();
+            g.fillStyle = c.coal;
+            g.beginPath();
+            g.arc(x + ex * 0.5, y + ey * 0.5, 1.45, 0, Math.PI * 2);
+            g.fill();
+          }
+        }
       }
+      arena.overlay(g);
     }
 
     const stopGestures = gestures(arena.canvas, {
@@ -166,12 +263,56 @@ export const dodge: GameDef = {
       draw,
       frame(dt) {
         const before = s.score;
+        const ox = s.px;
+        const oy = s.py;
+        const picks = s.pickups;
         const ev = step(s, dt);
+        arena.update(dt);
+        const c = arena.colors;
         // A drag target outside the field is clamped like the dot.
         if (s.target) s.target = { x: s.px, y: s.py };
+        // Eyes follow the direction of travel; the trail records the path.
+        const mx = s.px - ox;
+        const my = s.py - oy;
+        const m = Math.hypot(mx, my);
+        if (m > 0.3) {
+          lookX = approach(lookX, mx / m, 12, dt);
+          lookY = approach(lookY, my / m, 12, dt);
+        }
+        if (m > 0.5 || trailN) {
+          trail[trailAt * 2] = s.px;
+          trail[trailAt * 2 + 1] = s.py;
+          trailAt = (trailAt + 1) % TRAIL;
+          trailN = m > 0.5 ? Math.min(TRAIL, trailN + 1) : Math.max(0, trailN - 1);
+        }
         if (s.score !== before) ctx.score(s.score);
-        if (ev.hurt) ctx.lives(s.lives, max);
+        if (s.pickups > picks) {
+          const p = s.stars.find((q) => q.taken && Math.hypot(q.x - s.px, q.y - s.py) < PICKUP_R + PLAYER_R + 2);
+          const x = p?.x ?? s.px;
+          const y = p?.y ?? s.py;
+          fx.burst(x, y, c.p[3], 12, 120, 3.5, 0.5, 'square', 120);
+          fx.ring(x, y, c.p[3], PICKUP_R, PICKUP_R * 3, 0.35, arena.lw);
+          fx.text(x, y - 14, `+${PICKUP_POINTS}`, c.p[3], 13);
+        }
+        if (ev.hurt) {
+          ctx.lives(s.lives, max);
+          fx.shake(6, 0.35);
+          fx.flash(c.bad, 0.3, 0.35);
+          fx.burst(s.px, s.py, c.bad, 14, 150, 3.5, 0.5);
+          fx.ring(s.px, s.py, c.bad, PLAYER_R, PLAYER_R * 4, 0.4, arena.lw * 1.4);
+        }
         if (ev.picked || Math.ceil(s.duration - s.time) !== shown) status();
+        if (ev.won) {
+          ended = true;
+          for (let i = 0; i < 4; i++) fx.burst(s.px, s.py, c.p[i], 10, 190, 4, 0.9, 'square', 200);
+          fx.ring(s.px, s.py, c.good, PLAYER_R, 90, 0.6, arena.lw * 1.5);
+          fx.flash(c.good, 0.22, 0.5);
+          arena.linger();
+        } else if (ev.over) {
+          ended = true;
+          fx.burst(s.px, s.py, c.accent, 16, 170, 4, 0.7);
+          arena.linger();
+        }
         draw();
         if (ev.won) ctx.win();
         else if (ev.over) ctx.lose();
