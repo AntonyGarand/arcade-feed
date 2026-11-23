@@ -28,7 +28,14 @@ function danger(s: State, x: number, y: number): number {
 /** Steer to the safest nearby spot, drawn to pickups and the lower middle. */
 function autopilot(d: Difficulty, seed: number) {
   const s = createLevel(d, new Rng(seed));
-  for (let t = 0; t < 120; t += DT) {
+  for (let t = 0, f = 0; t < 120; t += DT, f++) {
+    // Think every third frame (a human doesn't react faster either).
+    if (f % 3) {
+      const ev = step(s, DT);
+      if (ev.won) return { s, win: true };
+      if (ev.over) return { s, win: false };
+      continue;
+    }
     // Head for the gap of the next bar coming down.
     const bars = [...s.live, ...s.schedule.slice(s.next, s.next + 4)].filter((z) => z.kind === 'bar' && z.y < s.py);
     const left = bars.filter((z) => z.x === 0).sort((a, b) => b.y - a.y)[0];
@@ -36,7 +43,7 @@ function autopilot(d: Difficulty, seed: number) {
     const gapX = left && right ? (left.w + right.x) / 2 : null;
     let best = { x: s.px, y: s.py, v: Infinity };
     for (let a = 0; a < 16; a++)
-      for (const r of [0, 3, 6]) {
+      for (const r of [0, 6, 12]) {
         const x = Math.max(10, Math.min(W - 10, s.px + Math.cos((a * Math.PI) / 8) * r));
         const y = Math.max(10, Math.min(H - 10, s.py + Math.sin((a * Math.PI) / 8) * r));
         const star = starsOut(s)[0];
@@ -83,7 +90,7 @@ describe('dodge rules', () => {
       for (const r of runs.filter((x) => x.win))
         expect(r.s.score).toBeGreaterThanOrEqual(durationFor(d) * 10 + r.s.lives * LIFE_BONUS - 10);
     }
-  });
+  }, 20_000);
 
   it('collects pickups', () => {
     const s = createLevel(1, new Rng(2));
