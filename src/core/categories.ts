@@ -1,4 +1,4 @@
-export type CategoryId = 'match' | 'aim' | 'reflex' | 'stack';
+export type CategoryId = 'match' | 'aim' | 'reflex' | 'move' | 'stack' | 'think';
 
 import { L } from './i18n';
 
@@ -38,12 +38,30 @@ export const CATEGORIES: Category[] = [
     },
   },
   {
+    id: 'move',
+    get name() {
+      return L('Run & fly', 'Courir et voler');
+    },
+    get blurb() {
+      return L('Jump, flap, cross and land.', 'Sautez, volez, traversez et posez-vous.');
+    },
+  },
+  {
     id: 'stack',
     get name() {
       return L('Stack & drop', 'Empiler et lâcher');
     },
     get blurb() {
       return L('Fit, merge and build up.', 'Placez, fusionnez et montez.');
+    },
+  },
+  {
+    id: 'think',
+    get name() {
+      return L('Think', 'Réflexion');
+    },
+    get blurb() {
+      return L('Slide, sweep, push and remember.', 'Glissez, déminez, poussez et retenez.');
     },
   },
 ];
