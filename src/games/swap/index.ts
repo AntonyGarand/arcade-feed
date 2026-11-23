@@ -1,7 +1,8 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
-import { Arena } from '../../kits/arena/arena';
+import { Arena, type Trace } from '../../kits/arena/arena';
+import { outBack, outCubic } from '../../kits/arena/ease';
 import { DX, DY, gestures, keyDir, type Point } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
 import { adjacent, clearStep, collapse, createLevel, findMatches, MOVE_BONUS, movesFor, settle, trySwap, validMoves } from './rules';
@@ -15,6 +16,8 @@ const CLEAR_S = 0.2;
 const FALL_S = 0.22;
 /** Seconds without a move before a valid swap starts blinking. */
 const HINT_S = 7;
+/** Each gem's shape, traced around (0, 0) for `Arena.gem`. */
+const TRACES: Trace[] = TONE.map((_, k) => (g, r) => glyphPath(g, k, 0, 0, r));
 
 type Phase = 'idle' | 'swap' | 'bounce' | 'clear' | 'fall' | 'done';
 
@@ -116,6 +119,7 @@ export const swap: GameDef = {
       hint = null;
       phase = trySwap(s, a, b) ? 'swap' : 'bounce';
       if (phase === 'swap') status();
+      else arena.fx.shake(1.5, 0.2);
     }
 
     function startClear(): boolean {
@@ -132,53 +136,60 @@ export const swap: GameDef = {
       s.chain = 0;
       status();
       phase = out ? 'done' : 'idle';
-      if (out === 'win') ctx.win();
-      else if (out === 'lose') ctx.lose();
+      const c = arena.colors;
+      if (out === 'win') {
+        for (let i = 0; i < n * n; i += 3) {
+          const { x, y } = centre(i);
+          arena.fx.burst(x, y, c.p[TONE[s.grid[i]] ?? 0], 3, 120, 3.5, 0.8, 'square', 160);
+        }
+        arena.fx.flash(c.good, 0.22, 0.5);
+        arena.linger();
+        ctx.win();
+      } else if (out === 'lose') {
+        arena.fx.shake(4, 0.35);
+        arena.fx.flash(c.bad, 0.2, 0.4);
+        arena.linger();
+        ctx.lose();
+      }
     }
 
     function drawGem(g: CanvasRenderingContext2D, k: number, x: number, y: number, scale = 1) {
-      const c = arena.colors;
-      const r = CELL * 0.4 * scale;
-      if (arena.sh) {
-        g.fillStyle = c.drop;
-        glyphPath(g, k, x + arena.sh * 0.5, y + arena.sh * 0.5, r);
-        g.fill();
-      }
-      g.fillStyle = c.p[TONE[k]];
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.8;
-      glyphPath(g, k, x, y, r);
-      g.fill();
-      g.stroke();
+      arena.gem(g, x, y, CELL * 0.4, arena.colors.p[TONE[k]], TRACES[k], true, scale);
     }
-
-    const ease = (x: number) => 1 - (1 - Math.min(1, x)) ** 2;
 
     function draw() {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      g.fillStyle = c.cellAlt;
+      arena.field(g, PAD, PAD, n * CELL, n * CELL, 0, 6);
+      // Soft checkerboard on the board.
+      g.fillStyle = c.cell;
+      g.globalAlpha = 0.45;
       for (let i = 0; i < n * n; i++)
         if (((i % n) + Math.floor(i / n)) % 2) {
           const { x, y } = centre(i);
           g.fillRect(x - CELL / 2, y - CELL / 2, CELL, CELL);
         }
-      const ring = (i: number, colour: string, width: number) => {
+      g.globalAlpha = 1;
+      const ring = (i: number, colour: string, width: number, dash = true) => {
         const { x, y } = centre(i);
         g.strokeStyle = colour;
         g.lineWidth = width;
-        g.setLineDash([5, 3]);
+        if (dash) g.setLineDash([5, 3]);
         g.beginPath();
-        g.roundRect(x - CELL / 2 + 2, y - CELL / 2 + 2, CELL - 4, CELL - 4, 6);
+        g.roundRect(x - CELL / 2 + 2, y - CELL / 2 + 2, CELL - 4, CELL - 4, arena.r(6));
         g.stroke();
         g.setLineDash([]);
       };
       if (sel >= 0) {
         const { x, y } = centre(sel);
-        arena.box(g, x - CELL / 2 + 2, y - CELL / 2 + 2, CELL - 4, CELL - 4, c.accent, 6, false);
+        arena.block(g, x - CELL / 2 + 2, y - CELL / 2 + 2, CELL - 4, CELL - 4, arena.tone(c.accent).hi, 6, false, 0);
       }
-      if (hint && phase === 'idle' && Math.sin(idle * 6) > 0) for (const i of hint) ring(i, c.fg, arena.lw);
+      if (hint && phase === 'idle') {
+        g.globalAlpha = 0.35 + 0.65 * Math.abs(Math.sin(idle * 3.5));
+        for (const i of hint) ring(i, c.fg, arena.lw * 1.1, false);
+        g.globalAlpha = 1;
+      }
 
       for (let i = 0; i < n * n; i++) {
         const k = s.grid[i];
@@ -189,18 +200,56 @@ export const swap: GameDef = {
           // After a valid swap the gems already sit in their new cells: slide them in from the old ones.
           // A refused swap nudges them towards each other and back.
           const o = centre(i === sa ? sb : sa);
-          const f = phase === 'swap' ? 1 - ease(t / SWAP_S) : Math.sin((Math.PI * Math.min(t, 2 * SWAP_S)) / (2 * SWAP_S)) * 0.45;
+          const f = phase === 'swap' ? 1 - outCubic(t / SWAP_S) : Math.sin((Math.PI * Math.min(t, 2 * SWAP_S)) / (2 * SWAP_S)) * 0.45;
           x += (o.x - x) * f;
           y += (o.y - y) * f;
-        } else if (phase === 'clear' && popping.has(i)) scale = 1 - ease(t / CLEAR_S) * 0.9;
-        else if (phase === 'fall' && s.fell[i]) y -= s.fell[i] * CELL * (1 - ease(t / FALL_S));
+          // The moving gems ride a little larger, as if lifted.
+          scale = 1 + 0.12 * Math.sin(Math.PI * Math.min(1, t / (phase === 'swap' ? SWAP_S : 2 * SWAP_S)));
+        } else if (phase === 'clear' && popping.has(i)) {
+          // Swell, then shrink away.
+          const f = t / CLEAR_S;
+          scale = f < 0.3 ? 1 + 0.18 * outCubic(f / 0.3) : 1.18 * (1 - outCubic((f - 0.3) / 0.7));
+        } else if (phase === 'fall' && s.fell[i]) y -= s.fell[i] * CELL * (1 - outBack(t / FALL_S, 1.2));
+        else if (i === sel) scale = 1 + 0.07 * Math.sin(arena.time * 8);
         if (y < PAD - CELL / 2) continue;
         drawGem(g, k, x, y, scale);
+        if (phase === 'clear' && popping.has(i) && scale > 0.05) {
+          g.globalAlpha = Math.min(1, (t / CLEAR_S) * 1.6) * 0.75;
+          g.fillStyle = c.paper;
+          glyphPath(g, k, x, y, CELL * 0.4 * scale);
+          g.fill();
+          g.globalAlpha = 1;
+        }
       }
       if (cursor >= 0) ring(cursor, c.ink, arena.lw * 1.2);
       // Gems falling in slide out from under the top edge.
       g.fillStyle = c.cell;
-      g.fillRect(0, 0, size, PAD);
+      g.fillRect(-10, -10, size + 20, PAD + 10 - arena.lw * 0.4);
+      arena.overlay(g);
+    }
+
+    /** Gems just cleared: bursts in their colours, the points at the middle of the match. */
+    function popped(cells: number[], kinds: number[], gain: number) {
+      if (!cells.length) return;
+      const c = arena.colors;
+      let mx = 0;
+      let my = 0;
+      cells.forEach((i, j) => {
+        const { x, y } = centre(i);
+        mx += x;
+        my += y;
+        const fill = c.p[TONE[kinds[j]] ?? 0];
+        arena.fx.burst(x, y, fill, 6, 110, 3.5, 0.5);
+        arena.fx.burst(x, y, arena.tone(fill).hi, 3, 70, 2.5, 0.4, 'dot', 120);
+      });
+      mx /= cells.length;
+      my /= cells.length;
+      arena.fx.ring(mx, my, c.fg, 6, CELL * (0.8 + cells.length * 0.15), 0.35, arena.lw);
+      arena.fx.text(mx, my, `+${gain}`, s.chain > 1 ? c.accent : c.fg, 13 + Math.min(6, cells.length - 3) * 1.5);
+      if (s.chain > 1) {
+        arena.fx.text(size / 2, size * 0.42, `cascade ×${s.chain}`, c.accent, 16 + s.chain * 2, 1.1);
+        arena.fx.shake(1 + s.chain * 0.8, 0.25);
+      }
     }
 
     const stopGestures = gestures(arena.canvas, {
@@ -234,13 +283,18 @@ export const swap: GameDef = {
       draw,
       frame(dt) {
         t += dt;
+        arena.update(dt);
         if (phase === 'idle') {
           idle += dt;
           if (idle > HINT_S && !hint) hint = validMoves(s.grid, n)[0] ?? null;
         } else if (phase === 'swap' && t >= SWAP_S) startClear();
         else if (phase === 'bounce' && t >= SWAP_S * 2) phase = 'idle';
         else if (phase === 'clear' && t >= CLEAR_S) {
+          const before = s.score;
+          const cells = [...popping];
+          const kinds = cells.map((i) => s.grid[i]);
           clearStep(s);
+          popped(cells, kinds, s.score - before);
           collapse(s);
           ctx.score(s.score);
           status();
