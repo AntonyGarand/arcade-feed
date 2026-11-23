@@ -26,9 +26,10 @@ export function setAnalyticsEnabled(on: boolean) {
 const client = createTelemetry({
   service: 'arcade-feed',
   version: __APP_VERSION__,
-  // Only the real site: no events from `vite dev`, previews or forks.
+  // Only the real site (the Android build serves itself as arcade.garand.dev): no events from
+  // `vite dev`, previews or forks.
   enabled: import.meta.env.PROD && location.hostname === 'arcade.garand.dev',
-  common: { 'app.lang': locale() },
+  common: { 'app.lang': locale(), 'app.platform': import.meta.env.VITE_PLATFORM || 'web' },
 });
 
 export const telemetry = {

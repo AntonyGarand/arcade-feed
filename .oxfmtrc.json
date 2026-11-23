@@ -3,5 +3,5 @@
   "printWidth": 140,
   "singleQuote": true,
   "trailingComma": "all",
-  "ignorePatterns": ["dist/**", "shots*/**", "package-lock.json", ".claude/**"]
+  "ignorePatterns": ["dist/**", "shots*/**", "package-lock.json", ".claude/**", "android-foss/**"]
 }

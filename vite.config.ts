@@ -38,12 +38,15 @@ function pagesFallback(): Plugin {
   };
 }
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  // `npm run build:android` (mode "android", see .env.android) bundles dist/ into the F-Droid APK:
+  // no source maps or service worker there.
+  const android = mode === 'android';
   return {
     // Fixed port (puzzle feed uses 5180).
     server: { port: 5190, strictPort: true },
     preview: { port: 5191 },
-    build: { target: 'es2022', sourcemap: true },
+    build: { target: 'es2022', sourcemap: !android },
     define: { __APP_VERSION__: JSON.stringify(buildVersion()) },
     test: {
       environment: 'happy-dom',
@@ -55,6 +58,8 @@ export default defineConfig(() => {
       // icons) is precached by a Workbox service worker. A new version downloads in the background and
       // src/app/update.ts shows a "new version" banner; reloading activates it.
       VitePWA({
+        // Still resolves virtual:pwa-register, but emits no service worker or manifest.
+        disable: android,
         registerType: 'prompt',
         injectRegister: false,
         manifest: {

@@ -1,0 +1,18 @@
+{
+  "appId": "dev.garand.arcade.foss",
+  "appName": "Arcade Feed",
+  "webDir": "dist",
+  "android": {
+    "path": "android-foss"
+  },
+  "server": {
+    "hostname": "arcade.garand.dev",
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "native",
+      "initialViewportFitValueHint": "cover"
+    }
+  }
+}

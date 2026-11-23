@@ -11,6 +11,8 @@ npm run dev           # http://localhost:5190 (puzzle feed uses 5180)
 npm run check         # fmt:check, lint, typecheck, knip, test — what CI runs
 ```
 
+The Android app (on the F-Droid repo at https://fdroid.garand.dev) bundles the same build: see [android-foss/README.md](android-foss/README.md). Releases are `vX.Y.Z` tags.
+
 ## How a card works
 
 1. The card deals a level (`GameDef.create`) and shows it behind a **start gate** (rules, ★★ / ★★★ goals, best score). Nothing moves until the player taps Play (or Space / Enter).
@@ -75,6 +77,7 @@ src/
   kits/sound/      8-bit sound effects synthesised with Web Audio (no files), and short vibrations
   games/<id>/      one game per folder: index.ts (auto-registered), rules.ts (pure logic), style.css
   styles/          tokens and shared components (from puzzle feed) + arcade.css (gate, stars)
+android-foss/      Capacitor Android app for F-Droid (npm run build:android)
 test/              vitest (happy-dom): registry contract, store, per-game rules
 ```
 
