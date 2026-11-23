@@ -3,6 +3,7 @@ import { L } from '../../core/i18n';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, keyDir, type Dir } from '../../kits/gesture/gesture';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   COLS,
   createLevel,
@@ -289,8 +290,11 @@ export const crossing: GameDef = {
       const out = hop(s, dir);
       if (!out) return;
       facing = dir;
-      if (out === 'move') from = before;
-      else {
+      if (out === 'move') {
+        from = before;
+        sfx('jump', { vol: 0.45, pitch: dir === 0 ? 2 : 0 });
+      } else {
+        if (out === 'home') sfx('power');
         const col = Math.round(before.x);
         lastSlot = SLOTS.indexOf(col);
         burst(col, GOAL_ROW, true);
@@ -337,6 +341,11 @@ export const crossing: GameDef = {
         if (ev.died) {
           wreck = { x: s.x, row: s.row, water: s.lanes[s.row].kind === 'river' };
           burst(s.x, s.row, false);
+          if (wreck.water) sfx('splash');
+          else {
+            sfx('boom', { vol: 0.8 });
+            haptic(25);
+          }
           ctx.lives(s.lives, LIVES);
         }
         if (ev.respawned) from = { x: s.x, row: s.row };

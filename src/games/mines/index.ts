@@ -3,6 +3,7 @@ import { L, P } from '../../core/i18n';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { DX, DY, gestures, keyDir, type Point } from '../../kits/gesture/gesture';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   CELL_POINTS,
   CLEAN_BONUS,
@@ -145,8 +146,11 @@ export const mines: GameDef = {
             age[i] = -0.025 * Math.max(Math.abs((i % s.cols) - fc), Math.abs(Math.floor(i / s.cols) - fr));
           }
         ctx.score(s.score);
+        if (!ev.boom) sfx(ev.opened > 1 ? 'pop' : 'tick', { pitch: ev.opened > 1 ? Math.min(8, ev.opened / 4) : 0 });
       }
       if (ev.boom) {
+        sfx('boom');
+        haptic(30);
         flash = 1;
         shake = 0.35;
         ctx.lives(Math.max(0, s.lives), max);
@@ -162,6 +166,7 @@ export const mines: GameDef = {
     const open = (i: number) => after(reveal(s, i), i);
     const flag = (i: number) => {
       if (toggleFlag(s, i)) {
+        sfx('hit', { pitch: s.flag[i] ? 0 : -4, vol: 0.6 });
         status();
         draw();
       }

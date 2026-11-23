@@ -2,6 +2,7 @@ import './style.css';
 import { L } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { sfx } from '../../kits/sound/sound';
 import { AI_Y, BALL_R, blockAt, createLevel, goalFor, H, MARGIN_BONUS, PADDLE_H, POINT, RALLY_POINTS, step, W, YOU_Y } from './rules';
 
 const FONT = "'Space Grotesk Variable', system-ui, sans-serif";
@@ -191,12 +192,16 @@ export const duel: GameDef = {
         const ev = step(s, dt);
         if (ev.hit === 'you') {
           youPop = 1;
+          sfx('hit', { pitch: Math.min(s.rally, 10) });
           burst(s.bx, YOU_Y, true);
         } else if (ev.hit === 'ai') {
           aiPop = 1;
+          sfx('hit', { pitch: -4, vol: 0.7 });
           burst(s.bx, AI_Y + PADDLE_H, false);
         }
+        if (ev.wall) sfx('tick', { vol: 0.6 });
         if (ev.point) {
+          sfx(ev.point === 'you' ? 'coin' : 'error');
           flashSide = ev.point === 'ai' ? 1 : -1;
           flash = 1;
           trail.length = 0;

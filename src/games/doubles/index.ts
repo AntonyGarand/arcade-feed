@@ -3,6 +3,7 @@ import { L, P } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
+import { haptic, sfx } from '../../kits/sound/sound';
 import { createLevel, MOVE_BONUS, movesFor, play, type Move, type Outcome } from './rules';
 
 const W = 300;
@@ -180,10 +181,16 @@ export const doubles: GameDef = {
       const m = play(s, dir);
       if (!m) {
         shake = 0.15;
+        sfx('error');
         return;
       }
       last = m;
       t = 0;
+      if (m.merged.length) {
+        const top = Math.max(...m.merged.map((i) => s.grid[i]));
+        sfx('pop', { pitch: Math.min(14, Math.log2(top) - 1) * 1.5 });
+        if (top >= 64) haptic(20);
+      } else sfx('tick');
       if (m.out) {
         over = true;
         pending = m.out;

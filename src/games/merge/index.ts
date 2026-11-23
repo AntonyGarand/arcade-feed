@@ -5,6 +5,7 @@ import { Arena } from '../../kits/arena/arena';
 import { outBack } from '../../kits/arena/ease';
 import { gestures } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { haptic, sfx } from '../../kits/sound/sound';
 import { aim, createLevel, drop, dropBudget, DROP_BONUS, DROP_Y, FLOOR, H, LINE, OVERFLOW_S, RADII, step, W } from './rules';
 
 /** Palette slot per size, so neighbouring sizes contrast. */
@@ -261,6 +262,8 @@ export const merge: GameDef = {
         if (born.has(b)) continue;
         born.set(b, arena.time);
         if (b.age < 0.5) continue; // a fresh drop, not a merge
+        sfx('pop', { pitch: b.k * 2 - 4 });
+        if (b.k >= 5) haptic(15);
         const fill = c.p[TONE[b.k]];
         const r = RADII[b.k];
         fx.burst(b.x, b.y, fill, 8 + b.k * 2, 90 + r * 3, 3.5, 0.5);
@@ -274,7 +277,10 @@ export const merge: GameDef = {
     const at = (p: { x: number }) => aim(s, p.x);
     const release = (p: { x: number }) => {
       at(p);
-      if (!done && drop(s)) status();
+      if (!done && drop(s)) {
+        sfx('tick', { vol: 0.5, pitch: -5 });
+        status();
+      }
     };
     const stopGestures = gestures(arena.canvas, {
       toWorld: (e) => arena.toWorld(e),
@@ -326,7 +332,10 @@ export const merge: GameDef = {
           return true;
         }
         if (k === ' ' || k === 'enter' || k === 'arrowdown' || k === 's') {
-          if (e.type === 'keydown' && !done && drop(s)) status();
+          if (e.type === 'keydown' && !done && drop(s)) {
+            sfx('tick', { vol: 0.5, pitch: -5 });
+            status();
+          }
           return true;
         }
         return false;

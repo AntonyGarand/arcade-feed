@@ -4,6 +4,7 @@ import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { sfx } from '../../kits/sound/sound';
 import {
   createLevel,
   IDLE_S,
@@ -88,6 +89,8 @@ export const echo: GameDef = {
     });
     let tapped = { pad: -1, t: 0 };
     let shown = '';
+    /** Playback step already sounded. */
+    let heard = -1;
 
     const status = () => {
       const turn =
@@ -204,7 +207,11 @@ export const echo: GameDef = {
     function tap(k: number) {
       if (s.phase !== 'input') return;
       tapped = { pad: k, t: TAP_S };
-      report(press(s, k));
+      const out = press(s, k);
+      if (out === 'slip' || out === 'lose') sfx('error');
+      else sfx('combo', { step: k + 1 });
+      if (out === 'round') sfx('power');
+      report(out);
     }
 
     const stopGestures = gestures(arena.canvas, {
@@ -223,6 +230,13 @@ export const echo: GameDef = {
       draw,
       frame(dt) {
         const ev = step(s, dt);
+        if (s.phase === 'show') {
+          const i = Math.floor(s.t / s.beat);
+          if (i !== heard && lit(s) >= 0) {
+            heard = i;
+            sfx('combo', { step: s.seq[i] + 1 });
+          }
+        } else heard = -1;
         tapped.t = Math.max(0, tapped.t - dt);
         if (ev.phase) status();
         report(ev.timeout);

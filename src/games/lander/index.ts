@@ -2,6 +2,7 @@ import './style.css';
 import { L } from '../../core/i18n';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   createLevel,
   DRAG_FULL,
@@ -87,6 +88,7 @@ export const lander: GameDef = {
     const max = s.lives;
     const arena = new Arena(ctx.root, W, H, () => draw());
     const keys = new Set<string>();
+    let thrustOn = false;
     let pointer = -1;
     let pressX = 0;
     /** Seconds since the last crash or landing (for the effects). */
@@ -335,14 +337,21 @@ export const lander: GameDef = {
       frame(dt) {
         fx += dt;
         const ev = step(s, dt);
+        if (s.thrust !== thrustOn) {
+          thrustOn = s.thrust;
+          if (thrustOn) sfx('tick', { vol: 0.5 });
+        }
         if (ev.crashed) {
           fx = 0;
           crashAt = { x: s.x, y: s.y };
+          sfx('boom');
+          haptic(30);
           ctx.lives(s.lives, max);
         }
         if (ev.landed) {
           fx = 0;
           ctx.score(s.score);
+          sfx('hit', { vol: 0.7 });
         }
         status();
         draw();

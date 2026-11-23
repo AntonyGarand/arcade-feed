@@ -4,6 +4,7 @@ import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { outCubic } from '../../kits/arena/ease';
 import { gestures } from '../../kits/gesture/gesture';
+import { sfx } from '../../kits/sound/sound';
 import {
   aimAt,
   aimPath,
@@ -181,6 +182,7 @@ export const pegs: GameDef = {
     }
 
     /** Effects for what changed this frame: newly lit pegs, popped pegs, a rising multiplier. */
+    let lits = 0;
     function react(gain: number) {
       const c = arena.colors;
       for (let i = 0; i < n; i++) {
@@ -188,17 +190,20 @@ export const pegs: GameDef = {
         const base = p.target ? c.p[0] : c.p[1];
         if (p.lit && litAt[i] < 0) {
           litAt[i] = arena.time;
+          sfx('hit', { pitch: Math.min(12, lits++) });
           fx.ring(p.x, p.y, base, PEG_R, PEG_R * 3, 0.3, arena.lw);
           fx.burst(p.x, p.y, arena.tone(base).hi, p.target ? 6 : 3, 80, 2.2, 0.35, 'spark', 0);
           if (p.target) fx.text(p.x, p.y - 10, `+${gain}`, c.p[0], 12);
         }
         if (p.gone && !popped[i]) {
           popped[i] = 1;
+          sfx('pop', { vol: 0.7 });
           fx.burst(p.x, p.y, base, p.target ? 10 : 6, 100, 3, 0.5);
         }
       }
       if (multiplier(s) > lastMult) {
         lastMult = multiplier(s);
+        sfx('power');
         fx.text(s.bx, s.by - 14, `×${lastMult}`, c.accent, 15);
       }
     }
@@ -208,6 +213,8 @@ export const pegs: GameDef = {
       if (!shoot(s)) return;
       status();
       shotStart = s.score;
+      lits = 0;
+      sfx('shoot');
       lastMult = 1;
       trailN = 0;
       const c = arena.colors;
@@ -268,6 +275,7 @@ export const pegs: GameDef = {
           const shot = s.score - shotStart;
           if (shot > 0) fx.text(W / 2, H * 0.45, `+${shot}`, lastMult > 1 ? c.accent : c.fg, 14 + Math.min(8, lastMult * 2), 1.1);
           if (ev.caught) {
+            sfx('coin');
             fx.burst(s.bucketX, BUCKET_Y, c.accent, 12, 120, 3, 0.55, 'square', 260, -Math.PI / 2, Math.PI * 0.8);
             fx.text(s.bucketX, BUCKET_Y - 16, L('+1 ball', '+1 balle'), c.good, 12);
           } else fx.burst(Math.max(8, Math.min(W - 8, s.bx)), H - 2, c.muted, 6, 80, 2.5, 0.35, 'dot', 200, -Math.PI / 2, 1);

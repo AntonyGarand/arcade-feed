@@ -4,6 +4,7 @@ import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, type Point } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { sfx } from '../../kits/sound/sound';
 import {
   aimAt,
   along,
@@ -267,6 +268,10 @@ export const bubbles: GameDef = {
 
     function landed(ev: Landing) {
       const lag = ev.lowered ? RH : 0;
+      if (ev.popped.length) sfx('pop', { pitch: Math.min(8, ev.popped.length) });
+      else sfx('hit', { pitch: -2 });
+      if (ev.dropped.length) sfx('combo', { step: Math.min(8, ev.dropped.length) });
+      if (ev.lowered) sfx('hit', { pitch: -9, vol: 0.7 });
       // Positions as drawn before the ceiling catches up.
       for (const i of ev.popped) bursts.push({ x: cellX(i), y: cellY(s, i) - lag, k: ev.colour, t: 0 });
       // Fallers scatter a little, varied by cell (the level's rng is kept for the shots).
@@ -292,7 +297,10 @@ export const bubbles: GameDef = {
       if (!over) aimAt(s, p.x, p.y);
     };
     const fire = () => {
-      if (!over && shoot(s)) draw();
+      if (!over && shoot(s)) {
+        sfx('shoot', { vol: 0.8 });
+        draw();
+      }
     };
     const stopGestures = gestures(arena.canvas, {
       toWorld: (e) => arena.toWorld(e),
@@ -305,8 +313,10 @@ export const bubbles: GameDef = {
         if (from ? !swapPress && p.y < LINE_Y : p.y < LINE_Y) aim(p);
       },
       onTap(p) {
-        if (swapPress) swapNext(s);
-        else {
+        if (swapPress) {
+          swapNext(s);
+          sfx('flip', { vol: 0.6 });
+        } else {
           if (p.y < LINE_Y) aim(p);
           fire();
         }
@@ -361,7 +371,10 @@ export const bubbles: GameDef = {
           return true;
         }
         if (k === 'arrowdown' || k === 's' || k === 'x') {
-          if (down && !over) swapNext(s);
+          if (down && !over) {
+            swapNext(s);
+            sfx('flip', { vol: 0.6 });
+          }
           return true;
         }
         return false;

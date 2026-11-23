@@ -2,6 +2,7 @@ import './style.css';
 import { L } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   BH,
   BLOCK_POINTS,
@@ -209,6 +210,11 @@ export const tower: GameDef = {
       const i = s.blocks.length - 1;
       const b = s.blocks[r.over ? 0 : i];
       const cx = r.over ? W / 2 : b.x + b.w / 2;
+      const rise = Math.min(i, 14);
+      if (r.kind === 'perfect') sfx('power', { pitch: Math.min(rise / 2, 6) });
+      else if (r.kind === 'cut') sfx('hit', { pitch: rise - 4 });
+      else sfx('error');
+      if (r.kind === 'perfect') haptic(15);
       if (r.kind === 'perfect') {
         flash = 1;
         pops.push({ x: cx, y: floorY(i) - 12, w: 13, t: 1, text: `${L('Perfect', 'Parfait')}${s.streak > 1 ? ` ×${s.streak}` : ''}` });

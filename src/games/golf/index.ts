@@ -3,6 +3,7 @@ import { L } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, type Point } from '../../kits/gesture/gesture';
+import { sfx } from '../../kits/sound/sound';
 import { BALL_R, createLevel, CUP_R, H, limitFor, putt, setAim, step, STROKE_POINTS, W, WALL } from './rules';
 
 /** Drag length (world units) for a full-power putt. */
@@ -282,6 +283,7 @@ export const golf: GameDef = {
     const fire = () => {
       if (ended || !putt(s)) return;
       trail = [];
+      sfx('hit', { pitch: 5 });
       status();
     };
     const stopGestures = gestures(arena.canvas, {
@@ -313,8 +315,12 @@ export const golf: GameDef = {
           trail.push({ x: s.bx, y: s.by });
           if (trail.length > 8) trail.shift();
         } else trail = [];
-        if (ev.bump > 60) burst(s.bx, s.by, 4);
+        if (ev.bump > 60) {
+          burst(s.bx, s.by, 4);
+          sfx('hit', { pitch: -3, vol: Math.min(1, ev.bump / 200) });
+        }
         if (ev.splash) {
+          sfx('splash');
           penalty = 1.2;
           rings.push({ x: s.bx, y: s.by, t: 1 });
           status();
@@ -322,6 +328,7 @@ export const golf: GameDef = {
         if (ev.stopped) status();
         if (ev.cleared) {
           sunk = true;
+          sfx('power');
           rings.push({ x: s.cup.x, y: s.cup.y, t: 1 });
           burst(s.cup.x, s.cup.y, 14);
           ctx.score(s.score);

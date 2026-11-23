@@ -4,6 +4,7 @@ import type { GameDef } from '../../core/types';
 import { Arena, type Trace } from '../../kits/arena/arena';
 import { approach } from '../../kits/arena/ease';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
+import { sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
 import {
   createLevel,
@@ -293,6 +294,7 @@ export const dodge: GameDef = {
           fx.burst(x, y, c.p[3], 12, 120, 3.5, 0.5, 'square', 120);
           fx.ring(x, y, c.p[3], PICKUP_R, PICKUP_R * 3, 0.35, arena.lw);
           fx.text(x, y - 14, `+${PICKUP_POINTS}`, c.p[3], 13);
+          sfx('coin', { pitch: s.pickups % 4 });
         }
         if (ev.hurt) {
           ctx.lives(s.lives, max);

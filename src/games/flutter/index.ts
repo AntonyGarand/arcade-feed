@@ -3,6 +3,7 @@ import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { sfx } from '../../kits/sound/sound';
 import {
   COL_W,
   createLevel,
@@ -220,6 +221,7 @@ export const flutter: GameDef = {
     const doFlap = () => {
       const first = !s.started;
       flap(s);
+      sfx('jump', { vol: 0.5, pitch: (s.passed % 3) - 1 });
       wing = 0;
       if (first) status();
     };
@@ -242,6 +244,8 @@ export const flutter: GameDef = {
         const before = s.score;
         const ev = step(s, dt);
         if (ev.passed) pops.push({ x: FX, y: 40, age: 0, kind: 'gate' });
+        if (ev.passed) sfx('coin', { vol: 0.7 });
+        if (ev.picked) sfx('power', { vol: 0.8 });
         if (ev.picked) pops.push({ x: FX + 14, y: s.y - 12, age: 0, kind: 'star' });
         if (ev.hurt) {
           pops.push({ x: FX, y: s.y, age: 0, kind: 'hit' });
