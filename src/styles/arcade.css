@@ -1,4 +1,4 @@
-/* Arcade pieces of the card: the start / pause gate over the level, star rows, game tile art. */
+/* Arcade pieces of the card: the start / pause gate over the level, star rows, button icons. */
 
 /* ---------- start / pause gate ---------- */
 /* Covers the level until the player taps: a run never starts (or resumes) by itself while scrolling. */
@@ -6,39 +6,72 @@
   position: absolute;
   inset: 0;
   z-index: 4;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  scrollbar-width: none;
   padding: 12px;
-  background: color-mix(in srgb, var(--bg) 55%, transparent);
-  backdrop-filter: blur(2px);
+  background: color-mix(in srgb, var(--bg) 58%, transparent);
+  backdrop-filter: blur(3px);
   cursor: pointer;
   animation: win-fade 0.2s ease-out;
+  container-type: size;
 }
 .gate[hidden] {
   display: none;
 }
 .gate-card {
-  width: min(100%, 300px);
+  position: relative;
+  width: min(100%, 320px);
+  margin: auto;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 18px 16px 16px;
+  gap: 10px;
+  padding: 16px 18px 14px;
   text-align: center;
   background: var(--cell);
   border: var(--bw) solid var(--ink);
   border-radius: calc(var(--r) * 1.6);
   box-shadow: var(--sh) var(--sh) 0 var(--drop);
+  animation: win-pop 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.gate-art {
+  width: 104px;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  margin-top: -2px;
+  background-color: var(--accent);
+  background-image: radial-gradient(color-mix(in srgb, var(--on-tone) 16%, transparent) 1.1px, transparent 1.5px);
+  background-size: 10px 10px;
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--r);
+  box-shadow: 3px 3px 0 var(--drop);
+  transform: rotate(-3deg);
+}
+.gate-art .art {
+  width: 84%;
+  height: 84%;
+}
+.gate-name {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
 }
 .gate-rules {
-  margin: 0;
+  margin: -4px 0 0;
   font-weight: 600;
   line-height: 1.35;
+  color: var(--muted);
 }
 .gate-title {
   margin: 0;
-  font-size: 22px;
-  font-weight: 700;
+  font-size: 24px;
+  font-weight: 800;
 }
 .gate-goals {
   margin: 0;
@@ -46,18 +79,128 @@
   flex-wrap: wrap;
   justify-content: center;
   gap: 6px;
-  font-size: 13px;
-  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-.gate-goals span {
-  padding: 1px 9px;
+.gate-goal {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 64px;
+  padding: 3px 10px 4px;
   border: 2px solid var(--ink);
-  border-radius: 999px;
+  border-radius: var(--r-cell);
+  background: var(--cell-alt);
+  line-height: 1.15;
+}
+.gate-goal small {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.gate-goal.stars small {
+  color: var(--star);
+  -webkit-text-stroke: 0.6px var(--ink);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+.gate-goal strong {
+  font-size: 16px;
+  font-weight: 800;
+}
+.gate-goal.best {
+  background: var(--accent-soft);
+}
+.gate-meta {
+  margin: -2px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .gate-go {
-  font-size: 18px;
-  padding: 10px 26px;
+  gap: 8px;
+  height: 48px;
+  padding: 0 30px;
+  font-size: 19px;
+  border-radius: 999px;
+  animation: go-pulse 1.8s ease-in-out 0.4s infinite;
+}
+.gate-go:hover {
+  animation: none;
+}
+@keyframes go-pulse {
+  0%,
+  100% {
+    transform: none;
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+.gate-hint {
+  margin: -2px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+/* Touch screens have no keyboard to press. */
+@media (hover: none) {
+  .gate-hint {
+    display: none;
+  }
+}
+.gate-pause {
+  display: flex;
+  gap: 7px;
+  padding: 12px 15px;
+  background: var(--accent);
+  border: var(--bw) solid var(--ink);
+  border-radius: 50%;
+  box-shadow: 3px 3px 0 var(--drop);
+}
+.gate-pause i {
+  width: 7px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--on-tone);
+}
+/* Short stages (small phones, landscape): drop the art and the extras so Play always shows. */
+@container (max-height: 380px) {
+  .gate-art,
+  .gate-hint,
+  .gate-meta {
+    display: none;
+  }
+  .gate-card {
+    gap: 8px;
+    padding: 12px 14px;
+  }
+}
+@container (max-height: 250px) {
+  .gate-rules,
+  .gate-goals {
+    display: none;
+  }
+}
+
+/* ---------- button icons ---------- */
+.btn-icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.btn-icon.fill {
+  fill: currentColor;
+  stroke-width: 1.5;
+}
+.btn:has(.btn-icon) {
+  gap: 7px;
 }
 
 /* ---------- stars ---------- */
@@ -69,53 +212,59 @@
   line-height: 1;
 }
 .win-stars {
-  font-size: 30px;
+  font-size: 44px;
+  gap: 6px;
+  margin: 2px 0 4px;
+}
+.win-stars span:nth-child(2) {
+  transform: translateY(-8px) scale(1.15);
 }
 .lvl-stars {
   gap: 1px;
-  font-size: 13px;
-  margin-right: 6px;
+  font-size: 14px;
 }
 .win-stars span,
 .lvl-stars span {
-  color: var(--faint);
+  display: inline-block;
+  color: color-mix(in srgb, var(--faint) 40%, transparent);
 }
 .win-stars span.on,
 .lvl-stars span.on {
-  color: var(--accent-ink);
+  color: var(--star);
+  -webkit-text-stroke: 1px var(--ink);
 }
 .win-stars span.on {
-  animation: win-star 0.35s ease-out backwards;
+  -webkit-text-stroke-width: 2px;
+  paint-order: stroke fill;
+  animation: win-star 0.45s cubic-bezier(0.2, 1.6, 0.4, 1) backwards;
+  animation-delay: 0.25s;
 }
 .win-stars span.on:nth-child(2) {
-  animation-delay: 0.12s;
+  animation-delay: 0.45s;
 }
 .win-stars span.on:nth-child(3) {
-  animation-delay: 0.24s;
+  animation-delay: 0.65s;
+}
+.win-stars span.on:nth-child(2) {
+  animation-name: win-star-mid;
 }
 @keyframes win-star {
   from {
-    transform: scale(0.2);
+    transform: scale(2.4) rotate(-30deg);
     opacity: 0;
   }
 }
-.lab-meta .lvl-stars {
-  align-self: center;
-  margin: 0;
-}
-
-/* ---------- game tiles ---------- */
-.tile-art {
-  display: grid;
-  place-items: center;
-  font-size: 34px;
-  font-weight: 700;
-  background: var(--accent);
-  color: var(--on-tone);
+@keyframes win-star-mid {
+  from {
+    transform: translateY(-8px) scale(2.6) rotate(-30deg);
+    opacity: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .gate,
+  .gate-card,
+  .gate-go,
   .win-stars span.on {
     animation: none;
   }

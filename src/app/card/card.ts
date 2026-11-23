@@ -4,9 +4,10 @@ import { Rng } from '../../core/rng';
 import { getProfile, prefs, record, setLevel, stats, type Outcome } from '../../core/store';
 import { LEVEL_IDS, LEVEL_NAMES, starsFor, type Difficulty, type GameDef, type GameInstance } from '../../core/types';
 import { confetti } from '../../ui/confetti';
-import { btn, cogIcon, h } from '../../ui/dom';
+import { cogIcon, h, s } from '../../ui/dom';
 import { helpButton } from '../../ui/help';
-import { resultCard, starRow } from '../../ui/result';
+import { levelTag, resultCard, starRow } from '../../ui/result';
+import { gameArt } from '../art';
 import { Clock } from './clock';
 import { fitBoard } from './fit';
 import { FrameLoop } from './loop';
@@ -41,6 +42,7 @@ export class Card {
   private statusEl!: HTMLElement;
   private levelEl!: HTMLElement;
   private scoreEl!: HTMLElement;
+  private scoreVal!: HTMLElement;
   private livesEl!: HTMLElement;
   private inst: GameInstance = {};
   private root: HTMLElement | null = null;
@@ -90,7 +92,8 @@ export class Card {
   }
 
   private build() {
-    this.scoreEl = h('span', { class: 'score', title: L('Score', 'Score') }, '0');
+    this.scoreVal = h('strong', null, '0');
+    this.scoreEl = h('span', { class: 'score', title: L('Score', 'Score') }, h('small', null, L('Score', 'Score')), this.scoreVal);
     this.livesEl = h('span', { class: 'lives', title: L('Lives', 'Vies'), hidden: true });
     this.levelEl = h('span', { class: 'level-label' });
     this.stage = h('div', { class: 'stage' });
@@ -154,7 +157,7 @@ export class Card {
   private syncLevelLabel() {
     const auto = !this.opts.lab && !prefs(this.def.id).manual;
     const best = stats(this.def.id).stars[this.level] ?? 0;
-    this.levelEl.replaceChildren(starRow(best, 'lvl-stars'), LEVEL_NAMES[this.level] + (auto ? ' · auto' : ''));
+    this.levelEl.replaceChildren(levelTag(this.level, auto), starRow(best, 'lvl-stars'));
   }
 
   /** Re-sync the level label without regenerating (e.g. auto→manual elsewhere). */
@@ -176,7 +179,7 @@ export class Card {
   private syncScore(n: number) {
     const up = n > this.score;
     this.score = n;
-    this.scoreEl.textContent = String(n);
+    this.scoreVal.textContent = String(n);
     if (up) bump(this.scoreEl);
   }
 
@@ -199,7 +202,7 @@ export class Card {
     this.mounted = true;
     this.phase = 'ready';
     this.score = 0;
-    this.scoreEl.textContent = '0';
+    this.scoreVal.textContent = '0';
     this.el.classList.remove('is-cleared', 'is-lost', 'is-skipped');
     this.livesEl.hidden = true;
     this.livesEl.dataset['left'] = '';
@@ -265,27 +268,42 @@ export class Card {
   private readyGate() {
     const best = stats(this.def.id).best[this.level];
     const [two, three] = this.def.stars(this.level);
+    const goal = (label: string, value: number | string, cls = '') =>
+      h('span', { class: `gate-goal ${cls}`.trim() }, h('small', null, label), h('strong', null, value));
     return h(
       'div',
-      { class: 'gate-card' },
+      { class: 'gate-card ready' },
+      h('div', { class: 'gate-art' }, gameArt(this.def)),
+      h('p', { class: 'gate-name' }, this.def.name),
       h('p', { class: 'gate-rules' }, this.def.rules),
       h(
         'p',
         { class: 'gate-goals' },
-        h('span', null, `★★ ${two}`),
-        h('span', null, `★★★ ${three}`),
-        best != null ? h('span', null, `${L('Best', 'Record')} ${best}`) : null,
+        goal('★★', two, 'stars'),
+        goal('★★★', three, 'stars'),
+        best != null ? goal(L('Best', 'Record'), best, 'best') : null,
       ),
-      h('button', { type: 'button', class: 'btn primary gate-go' }, L('▶ Play', '▶ Jouer')),
+      h(
+        'p',
+        { class: 'gate-meta' },
+        LEVEL_NAMES[this.level],
+        ' · ',
+        L(`about ${fmtPar(this.def.par(this.level))}`, `environ ${fmtPar(this.def.par(this.level))}`),
+      ),
+      h('button', { type: 'button', class: 'btn primary gate-go' }, playGlyph(), L('Play', 'Jouer')),
+      h('p', { class: 'gate-hint' }, L('or press Space', 'ou appuyez sur Espace')),
     );
   }
 
   private pauseGate() {
     return h(
       'div',
-      { class: 'gate-card' },
+      { class: 'gate-card paused' },
+      h('div', { class: 'gate-pause', 'aria-hidden': 'true' }, h('i'), h('i')),
       h('p', { class: 'gate-title' }, L('Paused', 'Pause')),
-      h('button', { type: 'button', class: 'btn primary gate-go' }, L('▶ Resume', '▶ Reprendre')),
+      h('p', { class: 'gate-meta' }, `${L('Score', 'Score')} ${this.score}`),
+      h('button', { type: 'button', class: 'btn primary gate-go' }, playGlyph(), L('Resume', 'Reprendre')),
+      h('p', { class: 'gate-hint' }, L('Space or Enter to resume', 'Espace ou Entrée pour reprendre')),
     );
   }
 
@@ -409,13 +427,23 @@ export class Card {
         'span',
         { class: 'status result' },
         cleared ? h('strong', { class: 'good' }, L('Cleared', 'Réussi')) : h('strong', { class: 'bad' }, L('Game over', 'Partie terminée')),
-        ` · ${this.score} ${L('points', 'points')}`,
+        h('span', { class: 'status-pts' }, `${this.score} ${L('points', 'points')}`),
       ),
       h(
         'div',
         { class: 'actions' },
-        btn(L('Again', 'Rejouer'), () => this.mount({ level: this.level, seed: this.seed }), 'ghost'),
-        btn(this.opts.lab ? L('New level', 'Nouveau niveau') : L('Next ↓', 'Suivant ↓'), () => this.onNext(this), 'primary'),
+        h(
+          'button',
+          { type: 'button', class: 'btn again', onclick: () => this.mount({ level: this.level, seed: this.seed }) },
+          glyph('M4 12a8 8 0 1 0 2.4-5.7', 'M4 4v4.5h4.5'),
+          L('Again', 'Rejouer'),
+        ),
+        h(
+          'button',
+          { type: 'button', class: 'btn primary next', onclick: () => this.onNext(this) },
+          this.opts.lab ? L('New level', 'Nouveau niveau') : L('Next', 'Suivant'),
+          this.opts.lab ? glyph('M5 12h14', 'M13 6l6 6-6 6') : glyph('M12 5v14', 'M6 13l6 6 6-6'),
+        ),
       ),
     );
     if (advance) {
@@ -432,6 +460,15 @@ export class Card {
     this.gen++;
   }
 }
+
+/** A typical run length, rounded for the start gate: "45 s", "2 min". */
+const fmtPar = (sec: number) => (sec < 90 ? `${Math.round(sec / 5) * 5 || sec} s` : `${Math.round(sec / 60)} min`);
+
+/** Small stroked icon for buttons (24×24 paths, currentColor). */
+const glyph = (...paths: string[]) =>
+  s('svg', { viewBox: '0 0 24 24', class: 'btn-icon', 'aria-hidden': 'true' }, ...paths.map((d) => s('path', { d })));
+const playGlyph = () =>
+  s('svg', { viewBox: '0 0 24 24', class: 'btn-icon fill', 'aria-hidden': 'true' }, s('path', { d: 'M8 5.5v13l10.5-6.5z' }));
 
 /** Replay the little "bump" animation on a counter that just changed. */
 function bump(el: HTMLElement) {

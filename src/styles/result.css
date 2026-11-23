@@ -143,7 +143,7 @@
 .win-stats {
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
 }
 .win-tile {
@@ -179,18 +179,149 @@
   font-size: 14px;
   font-weight: 700;
 }
+.win-tile.new {
+  background: var(--hi);
+  color: var(--on-tone);
+}
+.win-tile.new span {
+  color: inherit;
+  opacity: 0.75;
+}
+/* Level change: a banner that pops in after the stars. */
 .win-level {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-size: 14px;
   font-weight: 700;
-  padding: 3px 10px;
-  border: 2px solid var(--ink);
+  padding: 4px 14px 4px 6px;
+  border: var(--bw) solid var(--ink);
   border-radius: 999px;
   color: var(--on-tone);
-  background: var(--accent);
+  background: var(--good);
+  box-shadow: 2px 2px 0 var(--drop);
+  animation: win-star 0.45s 0.9s cubic-bezier(0.2, 1.6, 0.4, 1) backwards;
+}
+.win-level strong {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 70%, transparent);
+}
+.win-level-icon {
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--on-tone);
+  fill: none;
+  stroke: var(--good);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .win-level.down {
   background: var(--cell-alt);
   color: var(--fg);
+  animation: none;
+}
+.win-level.down strong {
+  background: var(--cell);
+}
+.win-level.down .win-level-icon {
+  background: var(--muted);
+  stroke: var(--cell-alt);
+}
+/* Score against the star goals. */
+.win-bar {
+  position: relative;
+  height: 12px;
+  margin: 8px 2px 18px;
+  border: 2px solid var(--on-tone);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 55%, transparent);
+}
+.win-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--to);
+  border-radius: 999px;
+  background: var(--on-tone);
+  animation: win-grow 0.8s 0.15s cubic-bezier(0.3, 0.9, 0.3, 1) backwards;
+}
+@keyframes win-grow {
+  from {
+    width: 0;
+  }
+}
+.win-mark,
+.win-best {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--on-tone);
+}
+.win-mark b {
+  position: absolute;
+  top: calc(100% + 1px);
+  left: 50%;
+  translate: -50% 0;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--on-tone) 55%, transparent);
+}
+.win-mark.hit b {
+  color: var(--on-tone);
+}
+.win-best {
+  width: 0;
+  margin-left: 0;
+  background: none;
+  border-left: 2px dashed var(--on-tone);
+}
+.win.lost .win-bar {
+  border-color: var(--ink);
+  background: var(--cell);
+}
+.win.lost .win-fill,
+.win.lost .win-mark {
+  background: var(--fg);
+}
+.win.lost .win-best {
+  border-color: var(--fg);
+}
+.win.lost .win-mark b {
+  color: var(--muted);
+}
+/* Three stars: the badge goes gold and gets a burst of rays. */
+.win.perfect .win-badge {
+  background: var(--star);
+}
+.win.perfect .win-badge {
+  z-index: 1;
+}
+.win.perfect .win-card::before {
+  content: '';
+  position: absolute;
+  top: -44px;
+  left: 50%;
+  width: 88px;
+  height: 88px;
+  margin-left: -44px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--star) 70%, transparent) 0 12deg, transparent 12deg 30deg);
+  animation: win-rays 6s linear infinite;
+}
+@keyframes win-rays {
+  to {
+    rotate: 1turn;
+  }
 }
 @media (max-height: 760px) {
   .win-card {
@@ -240,14 +371,12 @@
     transform: scaleX(0);
   }
 }
-@media (max-width: 360px) {
-  .win-stats {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .win,
-  .win-card {
+  .win-card,
+  .win-fill,
+  .win-level,
+  .win.perfect .win-card::before {
     animation: none;
   }
   .win-check {
@@ -361,4 +490,29 @@
   justify-content: center;
   gap: 14px;
   font-weight: 600;
+}
+
+/* Footer actions after a run: round, roomy buttons; Next is the big one. */
+.card-foot .actions .btn {
+  height: 42px;
+  padding: 0 16px;
+  border-radius: 999px;
+}
+.card-foot .actions .btn.next {
+  padding: 0 14px 0 20px;
+  font-size: 15px;
+}
+.win-title {
+  font-size: 26px;
+  text-transform: none;
+  letter-spacing: -0.02em;
+}
+.status-pts {
+  white-space: nowrap;
+  font-weight: 700;
+}
+@media (max-height: 760px) {
+  .win-title {
+    font-size: 22px;
+  }
 }
