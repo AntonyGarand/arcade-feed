@@ -129,9 +129,9 @@ describe('mines rules', () => {
     expect(reveal(s, bombs[1]).over).toBe(true);
 
     const t = createLevel(1, new Rng(4));
-    expect(tick(t, 1000).over).toBe(false); // the clock waits for the first tap
+    expect(tick(t, 1).over).toBe(false); // the clock runs before the first tap too
     reveal(t, mid(t));
-    expect(tick(t, timeFor(1) - 1).over).toBe(false);
+    expect(tick(t, timeFor(1) - 2).over).toBe(false);
     expect(tick(t, 2).over).toBe(true);
   });
 
@@ -182,9 +182,9 @@ describe('mines card', () => {
         }
       }
       expect(m.outcome).toBe('win');
-      // The card's clock ran a second longer (the frames above).
+      // The card's clock ran about 4 s longer (the frames above, before and after the first tap).
       expect(m.score).toBeLessThan(s.score);
-      expect(m.score).toBeGreaterThanOrEqual(s.score - 2 * TIME_POINTS);
+      expect(m.score).toBeGreaterThanOrEqual(s.score - 5 * TIME_POINTS);
       expect(m.inst.onKey!(key('q'))).toBe(false);
       m.inst.destroy?.();
       m.root.remove();

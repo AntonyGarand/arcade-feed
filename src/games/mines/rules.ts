@@ -279,10 +279,10 @@ export function toggleFlag(s: State, i: number): boolean {
 /** Mines not yet flagged or gone off (can go negative with too many flags). */
 export const minesLeft = (s: State) => s.count - s.flag.filter(Boolean).length - s.boom.filter(Boolean).length;
 
-/** Run the clock (from the first tap). */
+/** Run the clock (from the start of the run; the first tap only lays the mines). */
 export function tick(s: State, dt: number): Events {
   const ev = none();
-  if (s.done || !s.placed) return ev;
+  if (s.done) return ev;
   s.time += dt;
   if (s.time >= s.limit) {
     s.time = s.limit;
