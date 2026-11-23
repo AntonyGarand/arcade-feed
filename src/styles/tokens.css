@@ -21,6 +21,8 @@
   --good-ink: #0f7a3c;
   --bad-ink: #c62f35;
   --hi: #ffd23f; /* site highlight (nav, primary buttons) */
+  /* earned stars: a gold fill, always drawn with an --ink outline so they hold 3:1 on any surface */
+  --star: #ffc21a;
   /* "black" cells (shaded / walls): always darker than an open cell, in both themes, so rules that say
      black / white or shaded read true either way */
   --shade: #111111;

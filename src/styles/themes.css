@@ -136,6 +136,10 @@
 :root[data-style='newsprint'] [data-puzzle] {
   --accent: #b3ab9c;
 }
+/* Newsprint stars are inked, not gilded. */
+:root[data-style='newsprint'] {
+  --star: var(--fg);
+}
 
 /* Flat styles have no shadow to press into: shell buttons dip slightly instead of jumping diagonally. */
 :root:is([data-style='minimal'], [data-style='newsprint']) :is(.btn:active, .lab-tile:has(.tile-link:active)) {
