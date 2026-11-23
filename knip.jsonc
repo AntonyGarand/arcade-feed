@@ -3,4 +3,6 @@
   // Games are discovered with import.meta.glob('./*/index.ts'), so every game's index.ts is an entry.
   "entry": ["src/games/*/index.ts", "scripts/*.mjs"],
   "project": ["src/**/*.ts", "scripts/**/*.mjs", "test/**/*.ts"],
+  // Loaded by the Capacitor CLI and the Gradle project in android-foss/, not imported from src/.
+  "ignoreDependencies": ["@capacitor/android", "@capacitor/core"],
 }

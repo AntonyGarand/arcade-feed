@@ -46,7 +46,8 @@ function toast(text: string) {
  * banner; "Reload" activates the new worker and reloads.
  */
 export function setupUpdates() {
-  if (import.meta.env.DEV) return;
+  // The Android build ships its files inside the APK and updates through app releases.
+  if (import.meta.env.DEV || import.meta.env.VITE_PLATFORM === 'android') return;
   if (!('serviceWorker' in navigator)) return;
   const updateSW = registerSW({
     onNeedRefresh() {
