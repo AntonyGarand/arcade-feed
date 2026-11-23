@@ -31,8 +31,16 @@ const ICONS = {
   stats: () => icon('M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4 21c1-4 4-6 8-6s7 2 8 6'),
   settings: () => cogIcon('tab-icon'),
 };
+const flame = () =>
+  s(
+    'svg',
+    { viewBox: '0 0 24 24', class: 'streak-icon', 'aria-hidden': 'true' },
+    s('path', {
+      d: 'M12 22c4 0 7-2.7 7-6.6 0-3.2-2-5.4-3.6-7.2-.4 1.6-1.2 2.6-2.4 3C13.4 7.6 11.6 4.4 8.6 2c.3 3.2-1.3 5.3-2.8 7.3C4.8 10.8 5 12.6 5 15.4 5 19.3 8 22 12 22z',
+    }),
+  );
 const tab = (key: keyof typeof ICONS, href: string, label: string) =>
-  h('a', { href, class: 'tab', 'data-tab': key }, ICONS[key](), h('span', null, label));
+  h('a', { href, class: 'tab', 'data-tab': key, title: label }, ICONS[key](), h('span', null, label));
 const tabs = {
   feed: tab('feed', '/', L('Feed', 'Fil')),
   games: tab('games', '/games', L('Games', 'Jeux')),
@@ -76,7 +84,7 @@ function applyTheme() {
 }
 function updateStreak() {
   const n = dayStreak();
-  streak.textContent = n > 1 ? L(`${n} day streak`, `${n} jours de suite`) : '';
+  streak.replaceChildren(...(n > 1 ? [flame(), h('span', null, L(`${n} day streak`, `${n} jours de suite`))] : []));
 }
 
 type View = 'feed' | 'games' | 'game' | 'stats' | 'settings';
@@ -92,7 +100,12 @@ function route() {
   const only = r === 'play' && def ? def.id : null;
   if (view === 'feed') feed.setOnly(only);
   practice.hidden = !(view === 'feed' && only);
-  if (only && def) practice.replaceChildren(h('span', { class: 'swatchlet', 'data-puzzle': def.id }), `${def.name} ✕`);
+  if (only && def)
+    practice.replaceChildren(
+      h('span', { class: 'swatchlet', 'data-puzzle': def.id }),
+      h('span', { class: 'practice-name' }, def.name),
+      h('span', { class: 'practice-x', 'aria-hidden': 'true' }, '✕'),
+    );
 
   if (view === 'game' && def) {
     if (gameOpen !== def.id) play.open(def);

@@ -160,7 +160,7 @@ export function resetAllToAuto() {
 
 /** A "day" for streaks starts at 4 am, so a late-night session counts as one day. */
 const DAY_START_HOURS = 4;
-const dayKey = (t = Date.now()) => new Date(t - DAY_START_HOURS * 3_600_000).toLocaleDateString('en-CA');
+export const dayKey = (t = Date.now()) => new Date(t - DAY_START_HOURS * 3_600_000).toLocaleDateString('en-CA');
 
 export interface RecordOutcome {
   levelChange?: { from: Difficulty; to: Difficulty };

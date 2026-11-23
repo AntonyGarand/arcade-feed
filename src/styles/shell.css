@@ -33,12 +33,25 @@
   min-width: 0;
 }
 .streak {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
   font-size: 13px;
   font-weight: 700;
-  padding: 3px 9px;
-  border: 2px dashed var(--ink);
+  padding: 0 12px 0 8px;
+  border: 2px solid var(--ink);
   border-radius: 999px;
+  background: var(--cell);
   white-space: nowrap;
+}
+.streak-icon {
+  width: 18px;
+  height: 18px;
+  fill: var(--p1);
+  stroke: var(--ink);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
 }
 .streak:empty {
   display: none;
@@ -62,7 +75,11 @@
   border-radius: 999px;
 }
 .tab:hover {
+  background: var(--cell);
   border-color: var(--ink);
+}
+.tab.on:hover {
+  background: var(--hi);
 }
 .tab.on {
   background: var(--hi);
@@ -165,10 +182,58 @@
 .level-label {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
+  padding-left: 2px;
+}
+/* Level pill: five pips up to the level, its name, "auto". */
+.lvl-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 9px 1px 7px;
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--cell);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+}
+.lvl-tag small {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--muted);
-  padding-left: 2px;
+}
+.lvl-pips {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1.5px;
+  height: 10px;
+}
+.lvl-pips i {
+  width: 3px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--faint) 45%, transparent);
+}
+.lvl-pips i:nth-child(1) {
+  height: 4px;
+}
+.lvl-pips i:nth-child(2) {
+  height: 5.5px;
+}
+.lvl-pips i:nth-child(3) {
+  height: 7px;
+}
+.lvl-pips i:nth-child(4) {
+  height: 8.5px;
+}
+.lvl-pips i:nth-child(5) {
+  height: 10px;
+}
+.lvl-pips i.on {
+  background: var(--fg);
 }
 .card-head h2 {
   display: inline-block;
@@ -197,17 +262,20 @@
 }
 .lives {
   display: flex;
-  gap: 2px;
-  padding: 3px 6px;
+  align-items: center;
+  gap: 3px;
+  height: 34px;
+  padding: 0 9px;
   border: var(--bw) solid var(--ink);
   border-radius: 999px;
   background: var(--cell);
+  box-shadow: 2px 2px 0 var(--drop);
 }
 .lives i {
-  width: 11px;
-  height: 10px;
+  width: 14px;
+  height: 13px;
   background: var(--bad);
-  clip-path: path('M5.5 10 0.8 5.2A2.8 2.8 0 0 1 5.5 1.4 2.8 2.8 0 0 1 10.2 5.2Z');
+  clip-path: path('M7 13 1 6.8A3.6 3.6 0 0 1 7 1.8 3.6 3.6 0 0 1 13 6.8Z');
 }
 .lives i:not(.on) {
   background: color-mix(in srgb, var(--muted) 45%, transparent);
@@ -221,16 +289,33 @@
     transform: scale(1.25) rotate(-4deg);
   }
 }
+/* Score pill: a small label over the number, in the game's colour. */
 .score {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  min-width: 52px;
+  padding: 0 10px;
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  font-size: 13px;
-  min-width: 2.6em;
-  text-align: center;
-  padding: 3px 6px;
+  line-height: 1;
   border: var(--bw) solid var(--ink);
   border-radius: 999px;
-  background: var(--cell);
+  background: var(--accent);
+  color: var(--on-tone);
+  box-shadow: 2px 2px 0 var(--drop);
+}
+.score small {
+  font-size: 8.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  opacity: 0.75;
+}
+.score strong {
+  font-size: 16px;
+  font-weight: 800;
 }
 .select {
   appearance: none;
@@ -272,4 +357,33 @@
 }
 .stage {
   position: relative;
+}
+.lives b {
+  margin-left: 1px;
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.brand {
+  white-space: nowrap;
+}
+.practice-name {
+  max-width: 160px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Tablets and narrow windows: icon-only tabs (labels stay for screen readers), so the header fits. */
+@media (min-width: 641px) and (max-width: 900px) {
+  .tab {
+    padding: 6px 9px;
+  }
+  .tab span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }

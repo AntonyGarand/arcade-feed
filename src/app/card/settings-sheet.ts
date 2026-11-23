@@ -35,30 +35,43 @@ export function openGameSettings(o: {
     puzzle: o.def.id,
     className: 'game-settings',
     body: [
-      h('p', { class: 'muted small' }, o.def.rules),
-      h('h3', null, L('Difficulty', 'Difficulté')),
-      segmented<Difficulty | 0>(
-        [...(o.lab ? [] : [{ label: 'Auto', value: 0 as const }]), ...LEVELS.map((l) => ({ label: LEVEL_NAMES[l], value: l }))],
-        auto ? 0 : o.level,
-        (v) => {
-          if (v === 0) setLevel(o.def.id, 'auto');
-          else picked = v;
-          close();
-        },
-        { class: 'seg wrap', 'data-setting': 'level' },
+      h('p', { class: 'sheet-lede' }, o.def.rules),
+      h(
+        'section',
+        { class: 'field' },
+        h('h3', null, L('Difficulty', 'Difficulté')),
+        segmented<Difficulty | 0>(
+          [...(o.lab ? [] : [{ label: 'Auto', value: 0 as const }]), ...LEVELS.map((l) => ({ label: LEVEL_NAMES[l], value: l }))],
+          auto ? 0 : o.level,
+          (v) => {
+            if (v === 0) setLevel(o.def.id, 'auto');
+            else picked = v;
+            close();
+          },
+          { class: 'seg wrap', 'data-setting': 'level', 'aria-label': L('Difficulty', 'Difficulté') },
+        ),
+        h(
+          'p',
+          { class: 'muted small' },
+          o.lab
+            ? L(
+                'Picking a level deals a new one here; the feed keeps its own level.',
+                'Choisir un niveau en lance un nouveau ici; le fil garde son propre niveau.',
+              )
+            : L(
+                'Auto raises the level after clears with two or three stars, and eases off after losses.',
+                'Auto monte le niveau après des réussites à deux ou trois étoiles, et le baisse après des échecs.',
+              ),
+        ),
       ),
-      o.lab
-        ? null
-        : h(
-            'p',
-            { class: 'muted small' },
-            L(
-              'Auto raises the level after clears with two or three stars, and eases off after losses.',
-              'Auto monte le niveau après des réussites à deux ou trois étoiles, et le baisse après des échecs.',
-            ),
-          ),
-      h('h3', null, L('In the feed', 'Dans le fil')),
-      segmented(weightChoices(), prefs(o.def.id).weight, (v) => setWeight(o.def.id, v)),
+      h(
+        'section',
+        { class: 'field' },
+        h('h3', null, L('In the feed', 'Dans le fil')),
+        segmented(weightChoices(), prefs(o.def.id).weight, (v) => setWeight(o.def.id, v), {
+          'aria-label': L('In the feed', 'Dans le fil'),
+        }),
+      ),
     ],
     footer: [
       o.done
