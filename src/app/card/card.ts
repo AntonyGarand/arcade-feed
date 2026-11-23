@@ -172,7 +172,9 @@ export class Card {
     el.dataset['left'] = String(left);
     el.hidden = false;
     el.setAttribute('aria-label', P(left, ['life left', 'lives left'], ['vie restante', 'vies restantes']));
-    el.replaceChildren(...Array.from({ length: max }, (_, i) => h('i', { class: i < left ? 'on' : '' })));
+    // Up to five hearts in a row; more than that would crowd the header, so it becomes one heart and a count.
+    if (max > 5) el.replaceChildren(h('i', { class: left ? 'on' : '' }), h('b', null, `${left}`));
+    else el.replaceChildren(...Array.from({ length: max }, (_, i) => h('i', { class: i < left ? 'on' : '' })));
     if (lost) bump(el);
   }
 

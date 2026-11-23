@@ -40,7 +40,7 @@ const flame = () =>
     }),
   );
 const tab = (key: keyof typeof ICONS, href: string, label: string) =>
-  h('a', { href, class: 'tab', 'data-tab': key }, ICONS[key](), h('span', null, label));
+  h('a', { href, class: 'tab', 'data-tab': key, title: label }, ICONS[key](), h('span', null, label));
 const tabs = {
   feed: tab('feed', '/', L('Feed', 'Fil')),
   games: tab('games', '/games', L('Games', 'Jeux')),
@@ -103,7 +103,7 @@ function route() {
   if (only && def)
     practice.replaceChildren(
       h('span', { class: 'swatchlet', 'data-puzzle': def.id }),
-      def.name,
+      h('span', { class: 'practice-name' }, def.name),
       h('span', { class: 'practice-x', 'aria-hidden': 'true' }, '✕'),
     );
 

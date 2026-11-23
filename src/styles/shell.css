@@ -358,3 +358,32 @@
 .stage {
   position: relative;
 }
+.lives b {
+  margin-left: 1px;
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.brand {
+  white-space: nowrap;
+}
+.practice-name {
+  max-width: 160px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* Tablets and narrow windows: icon-only tabs (labels stay for screen readers), so the header fits. */
+@media (min-width: 641px) and (max-width: 900px) {
+  .tab {
+    padding: 6px 9px;
+  }
+  .tab span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
