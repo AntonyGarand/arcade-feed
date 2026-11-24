@@ -67,7 +67,7 @@ export default defineConfig(({ mode }) => {
           name: 'Arcade Feed',
           short_name: 'arcade',
           description:
-            'An endless feed of one-level arcade games: swap, bounce, dodge and aim. Free, no account, no ads.\nUn fil sans fin de jeux d’arcade en un niveau : échangez, rebondissez, esquivez, visez. Gratuit, sans compte, sans pub.',
+            'An endless feed of one-level arcade games: chain, bounce, dodge and aim. Free, no account, no ads.\nUn fil sans fin de jeux d’arcade en un niveau : enchaînez, rebondissez, esquivez, visez. Gratuit, sans compte, sans pub.',
           lang: 'en',
           start_url: '/',
           scope: '/',

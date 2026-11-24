@@ -1,5 +1,5 @@
 import { CATEGORIES } from '../core/categories';
-import { setDefaultOff } from '../core/store';
+import { retireGames, setDefaultOff } from '../core/store';
 import type { GameDef } from '../core/types';
 
 /**
@@ -19,3 +19,6 @@ const catOrder = (d: GameDef) => CATEGORIES.findIndex((c) => c.id === d.category
 export const GAMES: GameDef[] = [...found.values()].sort((a, b) => catOrder(a) - catOrder(b) || a.name.localeCompare(b.name));
 
 setDefaultOff(GAMES.filter((d) => d.offByDefault).map((d) => d.id));
+
+/** Turn-based games that moved to puzzle feed (see README, "Which feed?"): their saved stats are dropped. */
+retireGames(['swap', 'clusters', 'doubles', 'crates']);

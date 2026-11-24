@@ -106,6 +106,31 @@ function applyDefaultOff() {
   if (changed) save();
 }
 
+const retired = new Set<string>();
+
+/**
+ * Games that left the app (moved to puzzle feed): drop their levels and stats from the profile, now
+ * and on every import, so old saves never point at a game that no longer exists.
+ */
+export function retireGames(ids: string[]) {
+  for (const id of ids) retired.add(id);
+  if (pruneRetired()) save();
+}
+
+function pruneRetired(): boolean {
+  let changed = false;
+  for (const id of retired) {
+    if (id in profile.types || id in profile.stats) changed = true;
+    delete profile.types[id];
+    delete profile.stats[id];
+  }
+  if (profile.offApplied?.some((id) => retired.has(id))) {
+    profile.offApplied = profile.offApplied.filter((id) => !retired.has(id));
+    changed = true;
+  }
+  return changed;
+}
+
 type Listener = (kind: 'level' | 'weight' | 'profile' | 'record', id?: string) => void;
 const listeners = new Set<Listener>();
 export const onChange = (fn: Listener) => {
@@ -248,6 +273,7 @@ export function importProfile(json: string) {
   const p = JSON.parse(json);
   if (!p || p.v !== 1 || typeof p.types !== 'object' || typeof p.stats !== 'object') throw new Error('Not an arcade feed profile');
   profile = { ...fresh(), ...p };
+  pruneRetired();
   applyDefaultOff();
   save();
   emit('profile');

@@ -16,7 +16,7 @@ export const CATEGORIES: Category[] = [
       return L('Match', 'Associer');
     },
     get blurb() {
-      return L('Swap, chain and pop colours.', 'Échangez, enchaînez et éclatez les couleurs.');
+      return L('Aim, chain and pop colours.', 'Visez, enchaînez et éclatez les couleurs.');
     },
   },
   {
@@ -61,7 +61,7 @@ export const CATEGORIES: Category[] = [
       return L('Think', 'Réflexion');
     },
     get blurb() {
-      return L('Slide, sweep, dig, pipe and remember.', 'Glissez, déminez, creusez, raccordez et retenez.');
+      return L('Sweep, dig, pipe, repeat and remember.', 'Déminez, creusez, raccordez, répétez et retenez.');
     },
   },
 ];

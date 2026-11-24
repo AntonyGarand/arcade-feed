@@ -38,8 +38,6 @@ Tie-break: if every animation were instant and the player took an hour per move,
 
 | Category     | Game (id)                         | One level                                                                        |
 | ------------ | --------------------------------- | -------------------------------------------------------------------------------- |
-| Match        | Swap (`swap`)                     | match-3: reach a target score within a move limit                                |
-| Match        | Clusters (`clusters`)             | pop same-colour groups until at most a few blocks are left                       |
 | Match        | Marble Chain (`chain`)            | pop a rolling marble chain by shooting 3 of a kind before it reaches the hole    |
 | Aim & bounce | Bricks (`bricks`)                 | break every brick with a paddle and three lives                                  |
 | Aim & bounce | Pegs (`pegs`)                     | shoot balls through a peg field to clear the orange pegs                         |
@@ -67,9 +65,7 @@ Tie-break: if every animation were instant and the player took an hour per move,
 | Stack & drop | Falling Blocks (`falling-blocks`) | clear a number of lines from a rubble start without topping out                  |
 | Stack & drop | Fruit Merge (`merge`)             | drop and merge pieces up to a target size before the jar overflows               |
 | Stack & drop | Tower (`tower`)                   | time each drop to stack a tower to a target height                               |
-| Think        | Doubles (`doubles`)               | slide and combine tiles up to a target within a move limit                       |
 | Think        | Mines (`mines`)                   | open every safe cell of a no-guess mine field against the clock                  |
-| Think        | Crates (`crates`)                 | push every crate onto a goal within a move limit                                 |
 | Think        | Echo (`echo`)                     | repeat a growing sequence of pads for a number of rounds                         |
 | Think        | Dig (`dig`)                       | dig tunnels to lead a share of the water into the pipe, avoiding rock and sludge |
 | Think        | Pipeline (`pipeline`)             | lay pipes so the flow passes enough of them before it spills                     |

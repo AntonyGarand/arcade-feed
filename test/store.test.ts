@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { prefs, record, resetProfile, setLevel, stats } from '../src/core/store';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { exportProfile, getProfile, importProfile, prefs, record, resetProfile, retireGames, setLevel, stats } from '../src/core/store';
 
 const run = (o: 'cleared' | 'lost', stars: 0 | 1 | 2 | 3, score = 100) =>
   record('demo', { d: prefs('demo').level, o, score, stars, ms: 30_000 });
@@ -34,5 +34,51 @@ describe('store', () => {
     expect(prefs('demo').level).toBe(3);
     setLevel('demo', 'auto');
     expect(run('lost', 0).levelChange).toEqual({ from: 3, to: 2 });
+  });
+});
+
+describe('retired games', () => {
+  /** A saved profile that still has a removed game (swap) next to a current one (bricks). */
+  const saved = () => {
+    const st = { played: 4, cleared: 3, lost: 1, skipped: 0, time: 1000, best: { 1: 900 }, stars: { 1: 3 }, recent: [] };
+    const pr = { level: 2, manual: false, weight: 2, since: 0 };
+    return JSON.stringify({
+      v: 1,
+      name: 'Old',
+      created: 0,
+      theme: 'system',
+      autoAdvance: true,
+      startLevel: 1,
+      types: { swap: pr, bricks: pr },
+      stats: { swap: st, bricks: st },
+      days: {},
+      offApplied: ['swap'],
+    });
+  };
+
+  it('drops their stats from a saved profile on load, keeping the rest', async () => {
+    localStorage.setItem('arcade-feed:v1', saved());
+    vi.resetModules();
+    const store = await import('../src/core/store');
+    const { GAMES } = await import('../src/games');
+    expect(GAMES.some((g) => g.id === 'swap')).toBe(false);
+    const p = store.getProfile();
+    expect(p.stats['swap']).toBeUndefined();
+    expect(p.types['swap']).toBeUndefined();
+    expect(p.offApplied).not.toContain('swap');
+    expect(p.stats['bricks'].best[1]).toBe(900);
+    expect(JSON.parse(localStorage.getItem('arcade-feed:v1')!).stats.swap).toBeUndefined();
+    // The current games still record normally.
+    expect(store.record('bricks', { d: 1, o: 'cleared', score: 950, stars: 3, ms: 1 }).best).toBe(true);
+    localStorage.clear();
+  });
+
+  it('drops them from an imported profile too', () => {
+    retireGames(['swap']);
+    importProfile(saved());
+    expect(getProfile().stats['swap']).toBeUndefined();
+    expect(getProfile().types['bricks'].level).toBe(2);
+    expect(JSON.parse(exportProfile()).stats.swap).toBeUndefined();
+    resetProfile();
   });
 });
