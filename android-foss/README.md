@@ -11,8 +11,17 @@ and players can turn them off in Settings. The service worker and source maps ar
 
 ## Updates
 
-The game files are inside the APK, so every change (games or native) reaches the app through a new
-release. The app doesn't download new builds from the site.
+- **Game (web) changes update themselves.** Every deploy to Pages also publishes the same commit built in
+  android mode as `https://arcade.garand.dev/android/bundle-<sha>.zip`, along with `version.json`
+  (`{sha, url, checksum}`). On launch, on resume, and every 30 minutes, the app (`src/app/update.ts`)
+  compares that sha with its own. If they differ, `BundleUpdaterPlugin` downloads the zip, checks its
+  sha256, unpacks it and points Capacitor's local server at it. The app switches to it the next time it
+  goes to the background, or right away from the "New version" banner.
+  If a downloaded build never confirms that it started, the next launch rolls back to the previous files.
+- **Native changes** (Capacitor, plugins, Android config, icons) need a new APK: tag a release.
+  Installing a new APK drops the downloaded bundles, so it starts from its own files.
+  If a web change ever needs a newer native plugin, release the APK first.
+- v0.1.0 has no updater: it only updates through F-Droid.
 
 ## Release
 
