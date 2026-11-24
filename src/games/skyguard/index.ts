@@ -4,6 +4,7 @@ import { btn } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { alpha } from '../../kits/arena/color';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { gestures } from '../../kits/gesture/gesture';
 import { glyphPath } from '../../kits/glyph/glyph';
 import { haptic, sfx } from '../../kits/sound/sound';
@@ -13,23 +14,61 @@ import {
   ammoLeft,
   AIM_MIN_Y,
   blastMax,
+  BIG_S,
   blastR,
   citiesFor,
   CITY_POINTS,
   CITY_W,
+  CRATE_AMMO,
+  CRATE_R,
   createLevel,
   fire,
   GROUND_Y,
   H,
   incoming,
   MISSILE_POINTS,
+  SLOW_S,
+  STREAK_TIERS,
+  SUPPLY_AMMO,
   waveSize,
+  weave,
   step,
   W,
+  type KindId,
+  type Missile,
+  type Power,
 } from './rules';
 
 /** Glyph for a missile that will split (a diamond head). */
 const DIAMOND = 1;
+
+/** What each kind of wave is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  barrage: () => [L('Barrage', 'Barrage'), L('Salvos rain down from all over the sky.', 'Des salves tombent de partout dans le ciel.')],
+  weavers: () => [
+    L('Weavers', 'Zigzags'),
+    L('Missiles swing side to side: lead them well.', 'Les missiles zigzaguent : visez bien devant.'),
+  ],
+  swarm: () => [
+    L('Swarm', 'Essaim'),
+    L('Tight packs: one blast can take them all.', 'Des grappes serrées : une explosion peut tout prendre.'),
+  ],
+  heavy: () => [
+    L('Heavy warheads', 'Ogives lourdes'),
+    L('Armoured missiles take two blasts.', 'Les missiles blindés demandent deux explosions.'),
+  ],
+  mirv: () => [
+    L('Cluster bombs', 'Fragmentation'),
+    L('More missiles split: catch them high.', 'Plus de missiles se divisent : interceptez-les haut.'),
+  ],
+};
+
+const POWER_NAMES: Record<Power, () => string> = {
+  big: () => L('Big blasts!', 'Grosses explosions!'),
+  supply: () => L(`+${SUPPLY_AMMO} interceptors each!`, `+${SUPPLY_AMMO} intercepteurs chacun!`),
+  slow: () => L('Slow motion!', 'Ralenti!'),
+  rebuild: () => L('City rebuilt!', 'Ville rebâtie!'),
+};
 
 export const skyguard: GameDef = {
   id: 'skyguard',
@@ -55,8 +94,12 @@ export const skyguard: GameDef = {
         'Chaque intercepteur vole jusqu’au point choisi et éclate en une explosion qui grandit. Tout ce qui s’y trouve saute, et peut en faire sauter d’autres.',
       ),
       L(
-        'Ammo is limited per launcher. Missiles with a diamond head split in two or three on the way down.',
-        'Les munitions sont limitées par lanceur. Les missiles à tête en losange se divisent en deux ou trois en descendant.',
+        'Ammo is limited per launcher. Diamond heads split on the way down, ringed heads are armoured and take two blasts, and some waves weave.',
+        'Les munitions sont limitées par lanceur. Les têtes en losange se divisent en descendant, les têtes cerclées sont blindées et demandent deux explosions, et certaines vagues zigzaguent.',
+      ),
+      L(
+        `Blast a parachute crate for ${CRATE_AMMO} interceptors. A clean streak (no wasted shot, nothing landing) brings big blasts at ${STREAK_TIERS[0]}, a resupply at ${STREAK_TIERS[1]}, slow motion at ${STREAK_TIERS[2]} and a rebuilt city at ${STREAK_TIERS[3]}.`,
+        `Faites sauter une caisse en parachute pour ${CRATE_AMMO} intercepteurs. Une série parfaite (aucun tir perdu, rien qui touche le sol) donne de grosses explosions à ${STREAK_TIERS[0]}, un ravitaillement à ${STREAK_TIERS[1]}, le ralenti à ${STREAK_TIERS[2]} et une ville rebâtie à ${STREAK_TIERS[3]}.`,
       ),
       L(
         'Tap or click the sky: the nearest launcher with ammo fires there.',
@@ -70,28 +113,37 @@ export const skyguard: GameDef = {
     tips: [
       L('Aim ahead of a missile: the blast takes a moment to grow.', 'Visez devant le missile : l’explosion prend un moment à grandir.'),
       L(
+        'Every shot should catch something: a blast into empty sky ends your streak.',
+        'Chaque tir devrait toucher quelque chose : une explosion dans le vide met fin à votre série.',
+      ),
+      L(
         `${MISSILE_POINTS} per missile, ${CITY_POINTS} per city standing and ${AMMO_POINTS} per interceptor left at the end.`,
         `${MISSILE_POINTS} par missile, ${CITY_POINTS} par ville debout et ${AMMO_POINTS} par intercepteur restant à la fin.`,
       ),
     ],
   }),
   stars: (d) => {
-    // Two: most missiles and over half the cities. Three: every missile and city, with ammo to spare.
+    // Two: most missiles and over half the cities. Three: every missile and city, with ammo to spare
+    // (a clean streak's resupplies and the supply crates add some).
     const kills = waveSize(d) * MISSILE_POINTS;
     const cities = citiesFor(d);
-    const spare = Math.round(3 * ammoFor(d) * byLevel(d, [0.35, 0.25, 0.2, 0.12, 0.1]));
+    const spare = Math.round(3 * ammoFor(d) * byLevel(d, [0.35, 0.3, 0.55, 0.62, 0.55]));
     return [Math.round(kills * 0.9) + Math.ceil(cities * 0.6) * CITY_POINTS, kills + cities * CITY_POINTS + spare * AMMO_POINTS];
   },
   par: (d) => byLevel(d, [36, 39, 42, 45, 48]),
   pad: () => ({ left: 'dpad', right: [btn(' ', 'fire', L('Fire', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     const held = new Set<string>();
     /** Show the crosshair once the player has pointed or used the arrows. */
     let hover = false;
     let ended = false;
+    /** Blast size without the big-blast power (bigger ones draw in another colour). */
+    const blastMax0 = blastMax(s) + 0.5;
     /** Arena time each launcher last fired (its barrel kicks back). */
     const firedAt = [-9, -9, -9];
 
@@ -100,7 +152,10 @@ export const skyguard: GameDef = {
         [
           P(incoming(s), ['missile left', 'missiles left'], ['missile restant', 'missiles restants']),
           P(ammoLeft(s), ['interceptor', 'interceptors'], ['intercepteur', 'intercepteurs']),
-        ].join(' · '),
+          s.streak > 1 ? L(`streak ${s.streak}`, `série ${s.streak}`) : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
       );
 
     function drawCity(g: CanvasRenderingContext2D, x: number, alive: boolean, k: number) {
@@ -185,9 +240,10 @@ export const skyguard: GameDef = {
         tail.addColorStop(0, alpha(c.bad, 0));
         tail.addColorStop(1, c.bad);
         g.strokeStyle = tail;
-        g.lineWidth = 2.4;
+        g.lineWidth = m.hp > 1 ? 3.4 : 2.4;
         g.beginPath();
         g.moveTo(m.x0, m.y0);
+        if (m.wob) traceWeave(g, m);
         g.lineTo(m.x, m.y);
         g.stroke();
         g.fillStyle = alpha(c.bad, 0.3 + 0.15 * Math.sin(arena.time * 14 + m.id));
@@ -201,8 +257,26 @@ export const skyguard: GameDef = {
           glyphPath(g, DIAMOND, m.x, m.y, 6);
           g.fill();
           g.stroke();
-        } else arena.ball(g, m.x, m.y, 3.6, c.bad, false);
+        } else arena.ball(g, m.x, m.y, m.hp > 1 ? 4.6 : 3.6, m.hp > 1 ? c.coal : c.bad, false);
+        if (m.hp > 1) {
+          // Armour: a thick ring that pulses.
+          g.strokeStyle = c.muted;
+          g.lineWidth = 2.2;
+          g.beginPath();
+          g.arc(m.x, m.y, 7 + Math.sin(arena.time * 8 + m.id) * 0.8, 0, Math.PI * 2);
+          g.stroke();
+        } else if (m.skip >= 0) {
+          // Armour gone: a broken ring.
+          g.strokeStyle = c.muted;
+          g.lineWidth = 1.4;
+          g.beginPath();
+          g.arc(m.x, m.y, 6.5, 0.3, 1.6);
+          g.moveTo(m.x + 6.5 * Math.cos(2.4), m.y + 6.5 * Math.sin(2.4));
+          g.arc(m.x, m.y, 6.5, 2.4, 4.2);
+          g.stroke();
+        }
       }
+      for (const cr of s.crates) if (cr.t <= s.clock) drawCrate(g, cr.x, cr.y);
       g.lineCap = 'butt';
       // Interceptors: a dashed trail and a mark where they'll burst.
       g.setLineDash([3, 3]);
@@ -230,7 +304,7 @@ export const skyguard: GameDef = {
       for (const b of s.blasts) {
         const r = blastR(b);
         if (r <= 0.5) continue;
-        const col = b.kind === 'shot' ? c.accent : b.kind === 'chain' ? c.p[3] : c.bad;
+        const col = b.kind === 'shot' ? (b.max > blastMax0 ? c.good : c.accent) : b.kind === 'chain' ? c.p[3] : c.bad;
         const glow = g.createRadialGradient(b.x, b.y, 0, b.x, b.y, r);
         glow.addColorStop(0, alpha(c.paper, 0.95));
         glow.addColorStop(0.35, alpha(col, 0.85));
@@ -262,13 +336,90 @@ export const skyguard: GameDef = {
         g.stroke();
         g.strokeStyle = c.muted;
         g.lineWidth = 1;
+        if (s.big > 0) {
+          g.strokeStyle = c.good;
+          g.lineWidth = 1.6;
+        }
         g.setLineDash([2, 4]);
         g.beginPath();
         g.arc(s.cx, s.cy, blastMax(s), 0, Math.PI * 2);
         g.stroke();
         g.setLineDash([]);
       }
+      drawStreak(g);
       arena.overlay(g);
+    }
+
+    /** A weaving missile's trail: its wavy path from where it came in. */
+    function traceWeave(g: CanvasRenderingContext2D, m: Missile) {
+      const n = 14;
+      for (let i = 1; i < n; i++) {
+        const py = m.y0 + (m.py - m.y0) * (i / n);
+        g.lineTo(m.x0 + (m.px - m.x0) * (i / n) + weave(m, (m.age * i) / n, py), py);
+      }
+    }
+
+    /** A supply crate under its parachute, swinging a little. */
+    function drawCrate(g: CanvasRenderingContext2D, x: number, y: number) {
+      const c = arena.colors;
+      g.save();
+      g.translate(x, y);
+      g.rotate(Math.sin(arena.time * 2.2 + x) * 0.15);
+      g.strokeStyle = c.fg;
+      g.lineWidth = 0.9;
+      g.beginPath();
+      g.moveTo(-CRATE_R + 1, -2);
+      g.lineTo(-13, -16);
+      g.moveTo(CRATE_R - 1, -2);
+      g.lineTo(13, -16);
+      g.stroke();
+      g.fillStyle = c.paper;
+      g.strokeStyle = c.ink;
+      g.lineWidth = arena.lw * 0.7;
+      g.beginPath();
+      g.arc(0, -16, 14, Math.PI, 0);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      arena.box(g, -CRATE_R + 2, -CRATE_R / 2 - 1, (CRATE_R - 2) * 2, CRATE_R + 1, c.good, 2);
+      g.fillStyle = arena.tone(c.good).edge;
+      g.font = `900 9px ${arena.family}`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('+', 0, 0.5);
+      g.textBaseline = 'alphabetic';
+      g.restore();
+    }
+
+    /** Streak meter along the top (fills to the next milestone), and timers for the powers running. */
+    function drawStreak(g: CanvasRenderingContext2D) {
+      if (ended) return;
+      const c = arena.colors;
+      if (s.slow > 0) {
+        // Slow motion: the sky takes a cold tint.
+        g.fillStyle = alpha(c.p[4], 0.08 + 0.04 * Math.sin(arena.time * 4));
+        g.fillRect(0, 0, W, GROUND_Y);
+        g.fillStyle = c.p[4];
+        g.fillRect(0, 7, W * (s.slow / SLOW_S), 3);
+      }
+      if (s.big > 0) {
+        g.fillStyle = c.good;
+        g.fillRect(0, 11, W * (s.big / BIG_S), 3);
+      }
+      if (s.streak < 2) return;
+      const top = s.tier >= STREAK_TIERS.length;
+      const prev = s.tier ? STREAK_TIERS[s.tier - 1] : 0;
+      const k = top ? 1 : (s.streak - prev) / (STREAK_TIERS[s.tier] - prev);
+      g.fillStyle = alpha(c.accent, 0.25);
+      g.fillRect(0, 0, W, 5);
+      g.fillStyle = c.accent;
+      g.fillRect(0, 0, W * Math.min(1, k), 5);
+      g.font = `800 11px ${arena.family}`;
+      g.textAlign = 'right';
+      g.textBaseline = 'top';
+      g.fillStyle = c.fg;
+      g.fillText(top ? `×${s.streak}` : `×${s.streak} / ${STREAK_TIERS[s.tier]}`, W - 6, 18);
+      g.textBaseline = 'alphabetic';
     }
 
     const shoot = (x: number, y: number, force = -1) => {
@@ -330,7 +481,32 @@ export const skyguard: GameDef = {
               fx.text(b.x, b.y - 14, `+${MISSILE_POINTS}`, c.fg, 11, 0.7);
             }
           if (ev.killed >= 3) fx.shake(2, 0.2);
+          if (s.streak >= 2 && !ev.tier) {
+            const b = s.blasts.findLast((x) => x.kind === 'chain');
+            if (b) comboPop(fx, b.x, b.y - 26, s.streak, c.accent);
+          }
         }
+        for (const k of ev.cracked) {
+          fx.burst(k.x, k.y, c.muted, 8, 90, 2.5, 0.4, 'square', 120);
+          fx.text(k.x, k.y - 14, L('Armour!', 'Blindé!'), c.muted, 10, 0.6);
+          sfx('hit', { pitch: 2 });
+        }
+        for (const k of ev.crates) {
+          fx.burst(k.x, k.y, c.good, 12, 120, 3, 0.6, 'square', 80);
+          fx.ring(k.x, k.y, c.good, 6, 34, 0.4, arena.lw);
+          fx.text(k.x, k.y - 16, L(`+${CRATE_AMMO} interceptors`, `+${CRATE_AMMO} intercepteurs`), c.good, 12, 0.9);
+          sfx('power', { pitch: 4 });
+        }
+        if (ev.tier && ev.power) {
+          comboTier(fx, ev.tier, ev.power === 'slow' ? c.p[4] : ev.power === 'big' ? c.good : c.accent, POWER_NAMES[ev.power]());
+          if (ev.rebuilt >= 0) {
+            const x = s.cities[ev.rebuilt].x;
+            fx.burst(x, GROUND_Y - 14, c.good, 14, 120, 3, 0.7, 'square', 120, -Math.PI / 2, Math.PI);
+            fx.ring(x, GROUND_Y - 10, c.good, 6, 36, 0.5, arena.lw * 1.4);
+          } else if (ev.power === 'supply' || ev.power === 'rebuild')
+            for (const b of s.bases) if (b.alive) fx.ring(b.x, GROUND_Y - 8, c.good, 6, 28, 0.5, arena.lw);
+        }
+        if (ev.broke >= 5) fx.text(W / 2, 34, L(`Streak over · ${ev.broke}`, `Fin de série · ${ev.broke}`), c.muted, 11, 0.9);
         for (const im of ev.impacts) {
           if (im.wrecked) {
             fx.burst(im.x, GROUND_Y - 8, c.p[4], 12, 150, 4, 0.7, 'square', 300, -Math.PI / 2, Math.PI);
@@ -348,7 +524,7 @@ export const skyguard: GameDef = {
           if (ev.impacts.some((i) => i.wrecked)) haptic(30);
         }
         if (ev.killed || ev.cleared) ctx.score(s.score);
-        if (ev.killed || ev.impacts.length || incoming(s) !== before) status();
+        if (ev.killed || ev.impacts.length || ev.crates.length || ev.tier || ev.broke || incoming(s) !== before) status();
         if (ev.cleared || ev.over) {
           ended = true;
           if (ev.cleared)

@@ -1,31 +1,41 @@
 import { describe, expect, it } from 'vitest';
+import { _setLocaleForTests } from '../src/core/i18n';
 import { Rng } from '../src/core/rng';
 import { LEVELS, type Difficulty } from '../src/core/types';
 import type { Dir } from '../src/kits/gesture/gesture';
+import { kindsAt } from '../src/core/variety';
+import { chase } from '../src/games/chase';
+import { DEN, DOOR, KINDS, type KindId, PATH, sizeFor, WALL } from '../src/games/chase/maze';
 import {
   BERRY,
   bfs,
   chasersFor,
   CHAIN,
   createLevel,
-  DEN,
-  DOOR,
+  DASH_S,
   FIRST_OUT,
   frightFor,
+  GHOST,
+  grant,
+  HAWK,
   heroCan,
   heroSpeedFor,
   LIVES,
   nb,
+  owlsFor,
   paceFor,
-  PATH,
   pos,
+  SEED,
   SEED_POINTS,
   seedsFor,
-  sizeFor,
   step,
   steer,
+  STREAK_TIERS,
+  STREAK_WINDOW,
+  type Power,
   type State,
 } from '../src/games/chase/rules';
+import { mountGame } from './support/mount';
 
 const DT = 1 / 60;
 const DIRS: Dir[] = [0, 1, 2, 3];
@@ -116,26 +126,30 @@ function pilot(s: State, memo: { at: number; dir: number }) {
   pick?.act(s);
 }
 
-function autopilot(d: Difficulty, seed: number, seconds = 400) {
-  const s = createLevel(d, new Rng(seed));
+function autopilot(d: Difficulty, seed: number, seconds = 400, kind?: KindId) {
+  const s = createLevel(d, new Rng(seed), kind);
   let lost = 0;
   let caught = 0;
+  const powers: Power[] = [];
   const memo = { at: -1, dir: -2 };
   for (let t = 0; t < seconds; t += DT) {
     pilot(s, memo);
     const ev = step(s, DT);
     if (ev.lostLife) lost++;
     caught += ev.caught.length;
-    if (ev.won) return { s, win: true, lost, caught, t };
-    if (ev.over) return { s, win: false, lost, caught, t };
+    if (ev.unlocked) powers.push(ev.unlocked);
+    if (ev.won) return { s, win: true, lost, caught, t, powers };
+    if (ev.over) return { s, win: false, lost, caught, t, powers };
   }
-  return { s, win: false, lost, caught, t: seconds };
+  return { s, win: false, lost, caught, t: seconds, powers };
 }
 
 describe('chase rules', () => {
   it('deals the same maze and run from the same seed', () => {
     const a = createLevel(4, new Rng(21));
     const b = createLevel(4, new Rng(21));
+    expect(a.kind).toBe(b.kind);
+    expect(a.chasers.map((c) => c.kind)).toEqual(b.chasers.map((c) => c.kind));
     expect(a.grid).toEqual(b.grid);
     expect(a.items).toEqual(b.items);
     const ra = autopilot(4, 21);
@@ -148,7 +162,9 @@ describe('chase rules', () => {
   it('builds a connected, mirrored maze with no dead ends', () => {
     for (const d of LEVELS)
       for (let seed = 1; seed <= 25; seed++) {
-        const s = createLevel(d, new Rng(seed));
+        // Every kind allowed at the level, in turn.
+        const ok = kindsAt(d, KINDS);
+        const s = createLevel(d, new Rng(seed), ok[seed % ok.length].id);
         const open = (i: number) => s.grid[i] === PATH;
         for (let r = 0; r < s.rows; r++)
           for (let c = 0; c < s.cols; c++) expect(s.grid[r * s.cols + c]).toBe(s.grid[r * s.cols + s.cols - 1 - c]);
@@ -163,7 +179,77 @@ describe('chase rules', () => {
         expect(s.grid[s.den]).toBe(DEN);
         expect(s.toExit[s.den]).toBe(2);
         expect(s.left).toBeGreaterThanOrEqual(seedsFor(d));
+        expect(s.tunnels.length, s.kind).toBe(s.kind === 'tunnels' ? 3 : 1);
       }
+  });
+
+  it('deals different kinds of maze across seeds, each only from its level', () => {
+    for (const d of LEVELS) {
+      const seen = new Set<string>();
+      for (let seed = 0; seed < 80; seed++) seen.add(createLevel(d, new Rng(seed)).kind);
+      expect([...seen].sort(), `level ${d}`).toEqual(
+        kindsAt(d, KINDS)
+          .map((k) => k.id)
+          .sort(),
+      );
+    }
+  });
+
+  it('gives each kind its twist: open meadows, night sight, hawks and ghost owls', () => {
+    const open = (k: KindId) => createLevel(3, new Rng(7), k).grid.filter((v) => v === PATH).length;
+    expect(open('meadow')).toBeGreaterThan(open('classic'));
+    expect(createLevel(3, new Rng(7), 'night').sight).toBeGreaterThan(0);
+    expect(createLevel(3, new Rng(7), 'classic').sight).toBe(0);
+    expect(owlsFor(4, 'hawks').filter((o) => o === HAWK)).toHaveLength(2);
+    expect(owlsFor(3, 'ghosts')).toContain(GHOST);
+    expect(owlsFor(4, 'classic')).not.toContain(HAWK);
+    // Master: a hawk joins the plain mazes.
+    expect(owlsFor(5, 'classic')).toContain(HAWK);
+    for (const d of LEVELS) for (const { id } of kindsAt(d, KINDS)) expect(owlsFor(d, id)).toHaveLength(chasersFor(d));
+  });
+
+  it('a hawk swoops faster when it sees the mouse down a corridor', () => {
+    const s = createLevel(3, new Rng(3), 'hawks');
+    s.phase = 3; // chasing for good
+    const hawk = s.chasers.find((c) => c.kind === HAWK)!;
+    // Find a straight open run of three cells for the hawk and the mouse.
+    let from = -1;
+    let dir: Dir = 1;
+    for (let i = 0; i < s.grid.length && from < 0; i++)
+      for (const d of DIRS) {
+        const j = nb(s, i, d);
+        const k = j >= 0 ? nb(s, j, d) : -1;
+        if (s.grid[i] === PATH && j >= 0 && s.grid[j] === PATH && k >= 0 && s.grid[k] === PATH && Math.abs(k - i) <= 2 * s.cols) {
+          from = i;
+          dir = d;
+          break;
+        }
+      }
+    Object.assign(hawk, { mode: 'run', at: from, dir, moving: true, f: 0 });
+    Object.assign(s.hero, { at: nb(s, nb(s, from, dir), dir), moving: false, f: 0 });
+    s.safe = 99;
+    step(s, 1 / 120);
+    expect(hawk.swoop).toBe(true);
+    // Off its row and column, the mouse is out of sight: no swoop.
+    const away = [...s.grid.keys()].find(
+      (i) => s.grid[i] === PATH && i % s.cols !== from % s.cols && Math.floor(i / s.cols) !== Math.floor(from / s.cols),
+    )!;
+    Object.assign(s.hero, { at: away });
+    Object.assign(hawk, { at: from, f: 0 });
+    step(s, 1 / 120);
+    expect(hawk.swoop).toBe(false);
+  });
+
+  it('a ghost owl drifts through the hedges', () => {
+    const s = createLevel(3, new Rng(8), 'ghosts');
+    s.safe = 999;
+    const ghost = s.chasers.find((c) => c.kind === GHOST)!;
+    let inHedge = false;
+    for (let t = 0; t < 60 && !inHedge; t += DT) {
+      step(s, DT);
+      inHedge = s.grid[ghost.at] === WALL;
+    }
+    expect(inHedge).toBe(true);
   });
 
   it('gets harder: bigger maze, more and faster owls, shorter scares', () => {
@@ -226,6 +312,104 @@ describe('chase rules', () => {
     const ev = step(s, DT);
     expect(ev.caught[0]?.points).toBe(CHAIN[0]);
     expect(o.mode).toBe('eyes');
+  });
+
+  it('every kind allowed at a level is cleared by the autopilot', () => {
+    for (const d of [2, 4, 5] as const)
+      for (const { id } of kindsAt(d, KINDS)) {
+        const runs = [1, 2, 3].map((seed) => autopilot(d, seed + d, 400, id));
+        expect(runs.filter((r) => r.win).length, `${id} level ${d}`).toBe(3);
+      }
+  }, 120_000);
+
+  it('a munch streak unlocks a dash, then a seed magnet, in a normal run', () => {
+    const runs = [1, 2, 3, 4].map((seed) => autopilot(1, seed, 400, 'classic'));
+    for (const r of runs) {
+      expect(r.win).toBe(true);
+      expect(r.powers[0]).toBe('dash');
+    }
+    expect(runs.some((r) => r.powers.includes('magnet'))).toBe(true);
+  });
+
+  it('the streak ends after a pause, and resets its milestones', () => {
+    const s = createLevel(1, new Rng(2), 'classic');
+    const way = DIRS.find((d) => heroCan(s, s.start, d))!;
+    steer(s, way);
+    let streak = 0;
+    for (let k = 0; k < 20; k++) streak = Math.max(streak, step(s, DT).streak);
+    expect(streak).toBeGreaterThan(0);
+    s.hero.moving = false;
+    step(s, STREAK_WINDOW + 0.05);
+    expect(s.streak).toBe(0);
+    expect(s.tier).toBe(0);
+  });
+
+  it('streak powers: a dash speeds the mouse up, a magnet pulls seeds in, a scare frightens the owls', () => {
+    const run = (power?: Power) => {
+      const s = createLevel(2, new Rng(12), 'classic');
+      if (power) grant(s, power);
+      steer(
+        s,
+        DIRS.find((d) => heroCan(s, s.start, d))!,
+      );
+      let seeds = 0;
+      let pulled = 0;
+      for (let k = 0; k < 30; k++) {
+        const ev = step(s, DT);
+        seeds += ev.seeds;
+        pulled += ev.pulled.length;
+      }
+      return { s, seeds, pulled };
+    };
+    const plain = run();
+    const dash = run('dash');
+    expect(dash.s.dash).toBeGreaterThan(0);
+    expect(dash.s.dash).toBeLessThan(DASH_S);
+    expect(dash.seeds).toBeGreaterThanOrEqual(plain.seeds);
+    const magnet = run('magnet');
+    expect(magnet.pulled).toBeGreaterThan(0);
+    expect(magnet.seeds).toBeGreaterThan(plain.seeds);
+    // A scare frightens every owl out hunting.
+    const s = createLevel(2, new Rng(12), 'classic');
+    for (const o of s.chasers) Object.assign(o, { mode: 'run', at: s.exit, dir: 0, moving: true, f: 0 });
+    grant(s, 'scare');
+    expect(s.fright).toBeGreaterThan(0);
+    expect(s.chasers.every((c) => c.fright)).toBe(true);
+  });
+
+  it('streak milestones fire in order at their counts', () => {
+    const s = createLevel(5, new Rng(4), 'classic');
+    // Eat seed after seed without a pause by dropping the mouse onto them one by one.
+    const seeds = [...s.items.keys()].filter((i) => s.items[i] === SEED);
+    const fired: [number, Power][] = [];
+    s.safe = 999;
+    for (const i of seeds.slice(0, STREAK_TIERS[3])) {
+      const from = DIRS.map((d) => nb(s, i, d)).find((j) => j >= 0 && s.grid[j] === PATH)!;
+      const d = DIRS.find((k) => nb(s, from, k) === i)!;
+      Object.assign(s.hero, { at: from, dir: d, moving: true, f: 0.99, want: -1 });
+      const ev = step(s, 1 / 120);
+      if (ev.unlocked) fired.push([s.streak, ev.unlocked]);
+    }
+    expect(fired.map(([, p]) => p)).toEqual(['dash', 'magnet', 'scare', 'frenzy']);
+    // The magnet may pull extra seeds, so a milestone can land a little past its count.
+    fired.forEach(([n], k) => expect(n).toBeGreaterThanOrEqual(STREAK_TIERS[k]));
+  });
+
+  it('names every kind of maze on the card, short enough for the gate', () => {
+    for (const lang of ['en', 'fr'] as const) {
+      _setLocaleForTests(lang);
+      const seen = new Set<string>();
+      for (let seed = 1; seed <= 40; seed++) {
+        const m = mountGame(chase, 4, seed);
+        const v = m.variant!;
+        seen.add(v.id);
+        expect(v.name.length, v.name).toBeLessThanOrEqual(18);
+        expect(v.blurb!.length, v.blurb).toBeLessThanOrEqual(60);
+        m.inst.destroy?.();
+      }
+      expect(seen.size).toBe(kindsAt(4, KINDS).length);
+    }
+    _setLocaleForTests('en');
   });
 
   for (const d of LEVELS)

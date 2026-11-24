@@ -26,10 +26,10 @@ const MAX_BALLS = 5;
 /** Seconds between two breaks before the streak ends. */
 export const STREAK_WINDOW = 6;
 /** Streak lengths that fire a combo event: wide paddle, multiball, fireball, then multiball again. */
-export const STREAK_TIERS = [6, 12, 20, 30, 45] as const;
+const STREAK_TIERS = [6, 12, 20, 30, 45] as const;
 /** Seconds a wide paddle or a fireball lasts. */
-export const WIDE_S = 10;
-export const FIRE_S = 6;
+const WIDE_S = 10;
+const FIRE_S = 6;
 const CAPSULE_SPEED = 95;
 
 const rowsFor = (d: Difficulty) => byLevel(d, [3, 4, 5, 5, 6]);

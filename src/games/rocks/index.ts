@@ -3,33 +3,71 @@ import { L, P } from '../../core/i18n';
 import { btn } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
-import { mix } from '../../kits/arena/color';
 import { outBack } from '../../kits/arena/ease';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { gestures } from '../../kits/gesture/gesture';
 import { haptic, sfx } from '../../kits/sound/sound';
+import { drawHud, drawMines, drawShield, drawShots, drawUfo, drawWell, ghosts, iron, ironMarks, stone } from './draw';
 import {
+  BOMB_R,
   BULLET_R,
+  COMBO_TIERS,
   createLevel,
   H,
+  type KindId,
   LIFE_BONUS,
   LIVES,
+  MINE_BLAST,
+  MINE_POINTS,
   parFor,
   POINTS,
+  type Power,
   ROCK_R,
   type Rock,
   rockPoints,
   SHIP_R,
   step,
+  targetsLeft,
   TIME_POINTS,
+  UFO_POINTS,
   W,
 } from './rules';
 
-/** Copies of a thing near an edge, so it shows on both sides while it wraps. */
-function ghosts(x: number, y: number, r: number): [number, number][] {
-  const xs = [x, ...(x < r ? [x + W] : x > W - r ? [x - W] : [])];
-  const ys = [y, ...(y < r ? [y + H] : y > H - r ? [y - H] : [])];
-  return xs.flatMap((gx) => ys.map((gy): [number, number] => [gx, gy]));
-}
+/** What each kind of field is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  belt: () => [
+    L('Rock belt', 'Ceinture'),
+    L('Big rocks all around: break them to dust.', 'De gros rochers tout autour : réduisez-les en poussière.'),
+  ],
+  swarm: () => [
+    L('Swarm', 'Essaim'),
+    L('Twice as many rocks, smaller and quicker.', 'Deux fois plus de rochers, plus petits et plus vifs.'),
+  ],
+  minefield: () => [
+    L('Minefield', 'Champ de mines'),
+    L('Shoot the mines to blast the rocks near them.', 'Tirez sur les mines pour faire sauter les rochers voisins.'),
+  ],
+  hunter: () => [
+    L('Saucer hunt', 'Soucoupe en chasse'),
+    L('A saucer hunts you: shoot it down too.', 'Une soucoupe vous traque : abattez-la aussi.'),
+  ],
+  iron: () => [
+    L('Iron rocks', 'Rochers de fer'),
+    L('Dark iron rocks take two hits a piece.', 'Les rochers de fer encaissent deux coups par morceau.'),
+  ],
+  well: () => [
+    L('Gravity well', 'Puits de gravité'),
+    L('A well bends every path: stay off its core.', 'Un puits courbe les trajectoires : évitez son cœur.'),
+  ],
+};
+
+const POWER_NAMES: Record<Power, () => string> = {
+  rapid: () => L('Rapid fire!', 'Tir rapide!'),
+  spread: () => L('Spread shot!', 'Tir triple!'),
+  shield: () => L('Shield!', 'Bouclier!'),
+  bomb: () => L('Smart bomb!', 'Bombe!'),
+  frenzy: () => L('Rapid spread!', 'Triple rapide!'),
+};
 
 export const rocks: GameDef = {
   id: 'rocks',
@@ -59,6 +97,10 @@ export const rocks: GameDef = {
         'Un rocher qui vous touche coûte un vaisseau. Le suivant apparaît au centre, protégé un instant (il clignote).',
       ),
       L(
+        'Each card deals a field: a swarm, mines that blast what is near, a saucer that fires back, two-hit iron rocks, or a gravity well.',
+        'Chaque carte a son terrain : un essaim, des mines qui font sauter leurs voisins, une soucoupe qui riposte, des rochers de fer à deux coups ou un puits gravitationnel.',
+      ),
+      L(
         'Touch and hold anywhere: the ship turns toward your finger and fires; hold far from it to fly that way.',
         'Touchez et maintenez n’importe où : le vaisseau se tourne vers votre doigt et tire; loin de lui, il avance.',
       ),
@@ -71,6 +113,14 @@ export const rocks: GameDef = {
       L(
         `Small rocks are worth ${POINTS[1]}, medium ${POINTS[2]}, big ${POINTS[3]}. Each ship left adds ${LIFE_BONUS}, each second under par ${TIME_POINTS}.`,
         `Petit rocher : ${POINTS[1]}, moyen : ${POINTS[2]}, gros : ${POINTS[3]}. Chaque vaisseau restant ajoute ${LIFE_BONUS}, chaque seconde sous la normale ${TIME_POINTS}.`,
+      ),
+      L(
+        `Hits in quick succession build a combo: ${COMBO_TIERS[0]} gives rapid fire, ${COMBO_TIERS[1]} a spread shot, ${COMBO_TIERS[2]} a shield, ${COMBO_TIERS[3]} a smart bomb, ${COMBO_TIERS[4]} rapid spread fire.`,
+        `Des coups rapprochés font un combo : ${COMBO_TIERS[0]} donnent le tir rapide, ${COMBO_TIERS[1]} le tir triple, ${COMBO_TIERS[2]} un bouclier, ${COMBO_TIERS[3]} une bombe, ${COMBO_TIERS[4]} le triple rapide.`,
+      ),
+      L(
+        `The saucer is worth ${UFO_POINTS}, each mine ${MINE_POINTS}; iron pieces pay half as much again.`,
+        `La soucoupe vaut ${UFO_POINTS}, chaque mine ${MINE_POINTS}; les morceaux de fer rapportent moitié plus.`,
       ),
       L('Keep your finger close to the ship to aim without moving.', 'Gardez le doigt près du vaisseau pour viser sans bouger.'),
     ],
@@ -91,6 +141,8 @@ export const rocks: GameDef = {
   }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     /** Seconds since the ship (re)appeared, for its warp-in. */
@@ -105,6 +157,8 @@ export const rocks: GameDef = {
         [
           P(s.rocks.length, ['rock left', 'rocks left'], ['rocher restant', 'rochers restants']),
           big ? P(big, ['big', 'big'], ['gros', 'gros']) : '',
+          targetsLeft(s) > s.rocks.length ? L('saucer', 'soucoupe') : '',
+          s.combo > 1 ? `combo ×${s.combo}` : '',
         ]
           .filter(Boolean)
           .join(' · '),
@@ -128,7 +182,7 @@ export const rocks: GameDef = {
       const c = arena.colors;
       const rad = ROCK_R[r.size];
       // Stone: a solid grey that reads on the dark sky and on paper alike, shaded on its lower right.
-      const t = arena.tone(stone());
+      const t = arena.tone(r.iron ? iron(arena) : stone(arena));
       for (const [x, y] of ghosts(r.x, r.y, rad)) {
         if (arena.sh) {
           g.fillStyle = c.drop;
@@ -161,6 +215,7 @@ export const rocks: GameDef = {
           g.globalAlpha = 1;
           g.fillStyle = t.lo;
         }
+        if (r.iron) ironMarks(g, arena, x, y, rad, r.rot, r.hp < 2);
         g.restore();
         rockPath(g, r, x, y);
         g.strokeStyle = t.edge;
@@ -176,8 +231,6 @@ export const rocks: GameDef = {
         }
       }
     }
-
-    const stone = () => mix(arena.colors.fg, arena.colors.cellAlt, arena.dark ? 0.62 : 0.55);
 
     function shipPath(g: CanvasRenderingContext2D, x: number, y: number, k = 1) {
       const pt = (f: number, back: number) => {
@@ -230,6 +283,7 @@ export const rocks: GameDef = {
         g.stroke();
         // Cockpit.
         arena.disc(g, x + Math.sin(s.a) * SHIP_R * 0.35 * pop, y - Math.cos(s.a) * SHIP_R * 0.35 * pop, 2.2 * pop, c.coal);
+        if (s.shield) drawShield(g, arena, x, y, SHIP_R * 2.4);
         if (s.safe > 0) {
           // Shield bubble while safe.
           g.strokeStyle = c.accent;
@@ -275,7 +329,11 @@ export const rocks: GameDef = {
         g.arc(s.pointer.x, s.pointer.y, 10, 0, Math.PI * 2);
         g.stroke();
       }
+      drawWell(g, arena, s);
+      drawMines(g, arena, s);
       for (const r of s.rocks) drawRock(g, r);
+      if (s.ufo) drawUfo(g, arena, s.ufo);
+      drawShots(g, arena, s);
       // Shots: a glowing streak along their flight.
       const tone = arena.tone(c.accent);
       g.lineCap = 'round';
@@ -291,7 +349,8 @@ export const rocks: GameDef = {
         g.stroke();
       }
       g.lineCap = 'butt';
-      if (!ended || s.rocks.length === 0) drawShip(g);
+      if (!ended || targetsLeft(s) === 0) drawShip(g);
+      if (!ended) drawHud(g, arena, s);
       arena.overlay(g);
     }
 
@@ -341,7 +400,7 @@ export const rocks: GameDef = {
         // New fragments flash white for a moment as they split off.
         for (const r of s.rocks) if (!before.has(r)) struck.set(r, arena.time);
         for (const b of ev.blasts) {
-          if (b.ship) {
+          if (b.what === 'ship') {
             sfx('boom');
             haptic(30);
             fx.burst(b.x, b.y, c.accent, 18, 160, 3.5, 0.8, 'square', 0);
@@ -349,26 +408,70 @@ export const rocks: GameDef = {
             fx.ring(b.x, b.y, c.bad, 6, 50, 0.5, arena.lw * 1.5);
             fx.shake(6, 0.4);
             fx.flash(c.bad, 0.3, 0.35);
-            continue;
+          } else if (b.what === 'mine') {
+            sfx('boom', { pitch: 2 });
+            haptic(25);
+            fx.ring(b.x, b.y, c.bad, 4, MINE_BLAST, 0.45, arena.lw * 1.6);
+            fx.burst(b.x, b.y, c.bad, 16, 170, 3.5, 0.6, 'spark', 0);
+            fx.burst(b.x, b.y, c.accent, 10, 120, 3, 0.5, 'dot', 0);
+            fx.text(b.x, b.y - 10, `+${b.pts}`, c.bad, 12, 0.7);
+            fx.shake(4, 0.25);
+          } else if (b.what === 'ufo') {
+            sfx('boom', { pitch: -4 });
+            haptic(40);
+            fx.burst(b.x, b.y, c.p[6], 22, 190, 4, 0.8, 'square', 0);
+            fx.burst(b.x, b.y, c.accent, 14, 150, 3, 0.6, 'spark', 0);
+            fx.ring(b.x, b.y, c.accent, 4, 60, 0.5, arena.lw * 1.5);
+            fx.text(b.x, b.y - 14, `+${b.pts}`, c.accent, 16, 0.9);
+            fx.shake(5, 0.3);
+          } else {
+            const size = b.r >= ROCK_R[3] ? 3 : b.r >= ROCK_R[2] ? 2 : 1;
+            sfx('pop', { pitch: size === 3 ? -8 : size === 2 ? -3 : 3 });
+            const t = arena.tone(b.iron ? iron(arena) : stone(arena));
+            fx.burst(b.x, b.y, t.base, 6 + size * 4, 70 + size * 20, 2 + size, 0.6, 'square', 0);
+            fx.burst(b.x, b.y, t.hi, 4 + size * 2, 100, 2, 0.4, 'dot', 0);
+            fx.ring(b.x, b.y, c.accent, b.r * 0.4, b.r * 1.5, 0.3, arena.lw);
+            fx.text(b.x, b.y - b.r * 0.6, `+${b.pts}`, size === 1 ? c.accent : c.fg, size === 1 ? 13 : 11, 0.7);
+            if (size === 3) fx.shake(2, 0.15);
           }
-          const size = b.r >= ROCK_R[3] ? 3 : b.r >= ROCK_R[2] ? 2 : 1;
-          sfx('pop', { pitch: size === 3 ? -8 : size === 2 ? -3 : 3 });
-          const t = arena.tone(stone());
-          fx.burst(b.x, b.y, t.base, 6 + size * 4, 70 + size * 20, 2 + size, 0.6, 'square', 0);
-          fx.burst(b.x, b.y, t.hi, 4 + size * 2, 100, 2, 0.4, 'dot', 0);
-          fx.ring(b.x, b.y, c.accent, b.r * 0.4, b.r * 1.5, 0.3, arena.lw);
-          fx.text(b.x, b.y - b.r * 0.6, `+${POINTS[size]}`, size === 1 ? c.accent : c.fg, size === 1 ? 13 : 11, 0.7);
-          if (size === 3) fx.shake(2, 0.15);
         }
+        // Each hit in a combo pops its count; a milestone shows what it unlocked.
+        const last = ev.blasts.findLast((b) => b.what !== 'ship') ?? ev.dents.at(-1);
+        if (last && s.combo >= 2) comboPop(fx, last.x, last.y - 22, s.combo, c.accent);
+        for (const d of ev.dents) {
+          sfx('hit', { pitch: 6, vol: 0.6 });
+          fx.burst(d.x, d.y, c.muted, 6, 90, 2, 0.3, 'spark', 0);
+        }
+        if (ev.ufoIn) {
+          sfx('power', { pitch: -5 });
+          fx.banner(L('Saucer!', 'Soucoupe!'), c.bad, '', 1.1);
+        }
+        if (ev.ufoFired && s.ufo) {
+          sfx('shoot', { pitch: -7, vol: 0.5 });
+          fx.ring(s.ufo.x, s.ufo.y, c.bad, 2, 14, 0.25, arena.lw * 0.6);
+        }
+        if (ev.shielded) {
+          sfx('hit', { pitch: -2 });
+          fx.ring(s.x, s.y, c.good, SHIP_R * 2, SHIP_R * 5, 0.4, arena.lw * 1.4);
+          fx.burst(s.x, s.y, c.good, 14, 140, 3, 0.5, 'spark', 0);
+          fx.shake(3, 0.2);
+        }
+        if (ev.tier && ev.power) {
+          comboTier(fx, ev.tier, c.accent, POWER_NAMES[ev.power]());
+          if (ev.power === 'bomb') {
+            fx.ring(s.x, s.y, c.accent, SHIP_R, BOMB_R, 0.55, arena.lw * 2);
+            fx.ring(s.x, s.y, c.paper, SHIP_R, BOMB_R * 0.7, 0.4, arena.lw);
+          } else fx.ring(s.x, s.y, c.accent, SHIP_R, SHIP_R * 4, 0.4, arena.lw);
+        }
+        if (ev.comboEnd >= COMBO_TIERS[0])
+          fx.text(W / 2, 26, L(`Combo ×${ev.comboEnd} over`, `Combo ×${ev.comboEnd} terminé`), c.muted, 11, 0.9);
         if (ev.died) ctx.lives(s.lives, LIVES);
         if (ev.respawned) {
           spawn = 0;
           fx.ring(s.x, s.y, c.accent, 2, 30, 0.4, arena.lw);
         }
-        if (ev.hit || ev.cleared) {
-          ctx.score(s.score);
-          status();
-        }
+        if (ev.hit || ev.cleared) ctx.score(s.score);
+        if (ev.hit || ev.cleared || ev.ufoIn || ev.comboEnd || ev.died) status();
         if (ev.cleared) {
           ended = true;
           for (let i = 0; i < 5; i++) fx.burst(s.x, s.y, c.p[i], 10, 200, 4, 0.9, 'square', 120);

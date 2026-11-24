@@ -1,17 +1,9 @@
 import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
+import { dealKind } from '../../core/variety';
 import { DX, DY, type Dir } from '../../kits/gesture/gesture';
+import { carve, DEN, KINDS, type KindId, PATH, WALL } from './maze';
 
-/**
- * A hedge maze on a cell grid: nodes sit on odd rows and columns, the cells between two nodes are open
- * or hedge. The maze is mirrored left-right, every corridor cell has at least two exits, and one row
- * has a side passage that wraps around. The owls' nest sits in the middle with a door on top: only
- * owls go through it (leaving, or coming back as eyes).
- */
-export const WALL = 0;
-export const PATH = 1;
-export const DOOR = 2;
-export const DEN = 3;
 /** What lies on a cell. */
 export const SEED = 1;
 export const BERRY = 2;
@@ -32,21 +24,52 @@ const BONUS_AT = [0.3, 0.7];
 export const FIRST_OUT = 3.2;
 const CHASE_S = 20;
 
-/** Owl personalities, in release order (0 chases directly). */
+/**
+ * Owl personalities: in release order 0 chases directly, 1 wanders, 2 ambushes ahead of the mouse, 3
+ * patrols its corner. Hawks chase directly and swoop twice as fast down a straight corridor when they
+ * see the mouse; ghost owls are slow but drift straight through the hedges.
+ */
 const RANDOM = 1;
 const AMBUSH = 2;
 const PATROL = 3;
-type Kind = 0 | 1 | 2 | 3;
+export const GHOST = 4;
+export const HAWK = 5;
+type Owl = 0 | 1 | 2 | 3 | 4 | 5;
+/** How much faster a hawk flies down a corridor towards the mouse, and how far it sees. */
+const SWOOP = 1.5;
+const SWOOP_RANGE = 9;
+/** A ghost owl's speed as a share of the others'. */
+const GHOST_PACE = 0.62;
 
-/** Maze nodes across and down (the grid is twice as big, plus one). */
-export const sizeFor = (d: Difficulty) =>
-  byLevel(d, [
-    [5, 7],
-    [5, 8],
-    [7, 8],
-    [7, 9],
-    [7, 10],
-  ] as const);
+/** The owls a kind of maze releases, in order: hawks or a ghost owl stand in for some of the usual four. */
+export function owlsFor(d: Difficulty, kind: KindId): Owl[] {
+  const owls: Owl[] = ([0, RANDOM, AMBUSH, PATROL] as const).slice(0, chasersFor(d));
+  if (kind === 'hawks') return owls.map((o) => (o === RANDOM || o === PATROL ? HAWK : o));
+  if (kind === 'ghosts') owls[owls.length - 1] = GHOST;
+  // Master: a hawk joins every plain maze.
+  else if (d >= 5 && kind !== 'night') owls[owls.length - 1] = HAWK;
+  return owls;
+}
+
+/** How many cells around the mouse are lit in a night maze (0: everything). */
+const sightFor = (d: Difficulty, kind: KindId) => (kind === 'night' ? byLevel(d, [4.6, 4.6, 4.2, 3.8, 3.5]) : 0);
+
+/**
+ * The munch streak: seeds eaten in a row, each within `STREAK_WINDOW` seconds of the last. Its
+ * milestones unlock a dash, a seed magnet, a scare, then all three at once.
+ */
+export const STREAK_WINDOW = 0.5;
+export const STREAK_TIERS = [10, 25, 45, 70] as const;
+export type Power = 'dash' | 'magnet' | 'scare' | 'frenzy';
+const TIER_POWERS: readonly Power[] = ['dash', 'magnet', 'scare', 'frenzy'];
+/** Seconds a dash, a magnet and a streak scare last, and the dash speed-up. */
+export const DASH_S = 5;
+export const MAGNET_S = 8;
+const SCARE_S = 4;
+const DASH = 1.3;
+/** Cells a magnet reaches along each open way. */
+const MAGNET_REACH = 2;
+
 export const chasersFor = (d: Difficulty) => byLevel(d, [2, 3, 3, 4, 4]);
 /** Hero speed in cells per second, and the owls' speed as a share of it. */
 export const heroSpeedFor = (d: Difficulty) => byLevel(d, [5, 5.3, 5.6, 5.9, 6.2]);
@@ -57,8 +80,6 @@ export const frightFor = (d: Difficulty) => byLevel(d, [7, 6, 5, 4, 3.2]);
 const gapFor = (d: Difficulty) => byLevel(d, [7, 6, 5, 4.5, 4]);
 /** Seconds of each scatter phase (owls head for their corners), between the chase phases. */
 const scatterFor = (d: Difficulty) => byLevel(d, [7, 7, 6, 5, 5]);
-/** Chance to open each extra corridor (more loops, more escape routes). */
-const loopsFor = (d: Difficulty) => byLevel(d, [0.34, 0.3, 0.28, 0.25, 0.22]);
 const bonusFor = (d: Difficulty) => byLevel(d, [100, 200, 300, 500, 700]);
 /** About the fewest seeds (and berries) a level deals, for the star goals. */
 export const seedsFor = (d: Difficulty) => byLevel(d, [74, 86, 122, 139, 153]);
@@ -83,9 +104,11 @@ interface Hero extends Mover {
 type Mode = 'den' | 'leave' | 'run' | 'eyes';
 
 export interface Chaser extends Mover {
-  kind: Kind;
+  kind: Owl;
   mode: Mode;
   fright: boolean;
+  /** A hawk swooping down a corridor at the mouse. */
+  swoop: boolean;
   /** When it leaves the nest (mode 'den'). */
   out: number;
   /** Its spot in the nest and the corner it heads for when scattering (column, row). */
@@ -95,6 +118,7 @@ export interface Chaser extends Mover {
 
 export interface State {
   d: Difficulty;
+  kind: KindId;
   cols: number;
   rows: number;
   grid: Uint8Array;
@@ -102,7 +126,10 @@ export interface State {
   /** Seeds and berries left, and how many there were. */
   left: number;
   total: number;
-  tunnelRow: number;
+  /** Rows with a side passage. */
+  tunnels: number[];
+  /** Lit radius around the mouse in a night maze, in cells (0: no darkness). */
+  sight: number;
   start: number;
   door: number;
   exit: number;
@@ -128,6 +155,13 @@ export interface State {
   bonus: number;
   drops: number;
   heroSpeed: number;
+  /** Seeds in the munch streak, seconds before it runs out, and milestones it reached. */
+  streak: number;
+  streakLeft: number;
+  tier: number;
+  /** Seconds of dash and magnet left. */
+  dash: number;
+  magnet: number;
   done: boolean;
   rng: Rng;
 }
@@ -153,6 +187,7 @@ function chaserCan(s: State, ch: Chaser, i: number, dir: Dir): boolean {
   if (j < 0) return false;
   const a = s.grid[i];
   const b = s.grid[j];
+  if (ch.mode === 'run' && ch.kind === GHOST) return b === PATH || b === WALL;
   if (b === WALL) return false;
   if (ch.mode === 'run') return b === PATH;
   return !((a === DEN && b === PATH) || (a === PATH && b === DEN));
@@ -183,87 +218,23 @@ const owlWay = (s: State) => (i: number, j: number) => {
   return b !== WALL && !((a === DEN && b === PATH) || (a === PATH && b === DEN));
 };
 
-/** Carve a mirrored, loopy maze with no dead ends; returns the grid. */
-function carve(d: Difficulty, rng: Rng) {
-  const [nx, ny] = sizeFor(d);
-  const cols = 2 * nx + 1;
-  const rows = 2 * ny + 1;
-  const grid = new Uint8Array(cols * rows);
-  const ic = (nx - 1) / 2;
-  const jm = Math.floor(ny / 2);
-  const cell = (i: number, j: number) => (2 * j + 1) * cols + 2 * i + 1;
-  const isDen = (i: number, j: number) => i === ic && j === jm;
-  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) if (!isDen(i, j)) grid[cell(i, j)] = PATH;
-
-  interface Edge {
-    i: number;
-    j: number;
-    h: boolean;
-  }
-  const at = (e: Edge) => (e.h ? (2 * e.j + 1) * cols + 2 * e.i + 2 : (2 * e.j + 2) * cols + 2 * e.i + 1);
-  const mirror = (e: Edge): Edge => ({ i: e.h ? nx - 2 - e.i : nx - 1 - e.i, j: e.j, h: e.h });
-  const ends = (e: Edge) => [e.j * nx + e.i, e.h ? e.j * nx + e.i + 1 : (e.j + 1) * nx + e.i];
-  const open = (e: Edge) => {
-    grid[at(e)] = PATH;
-    grid[at(mirror(e))] = PATH;
-  };
-  const edges: Edge[] = [];
-  for (let j = 0; j < ny; j++)
-    for (let i = 0; i < nx; i++) {
-      if (isDen(i, j)) continue;
-      if (i + 1 < nx && !isDen(i + 1, j)) edges.push({ i, j, h: true });
-      if (j + 1 < ny && !isDen(i, j + 1)) edges.push({ i, j, h: false });
-    }
-  rng.shuffle(edges);
-
-  // A spanning tree, opened in mirrored pairs (Kruskal).
-  const parent = [...Array(nx * ny).keys()];
-  const find = (a: number): number => (parent[a] === a ? a : (parent[a] = find(parent[a])));
-  for (const e of edges) {
-    const [a, b] = ends(e);
-    const [ma, mb] = ends(mirror(e));
-    if (find(a) !== find(b) || find(ma) !== find(mb)) {
-      open(e);
-      parent[find(a)] = find(b);
-      parent[find(ma)] = find(mb);
-    }
-  }
-  // No dead ends: give every node with one exit a second one.
-  const degree = (i: number, j: number) => [0, 1, 2, 3].filter((k) => grid[cell(i, j) + DX[k] + DY[k] * cols] === PATH).length;
-  for (let j = 0; j < ny; j++)
-    for (let i = 0; i < nx; i++) {
-      if (isDen(i, j) || degree(i, j) >= 2) continue;
-      const shut = edges.filter((e) => grid[at(e)] === WALL && ends(e).includes(j * nx + i));
-      open(rng.pick(shut));
-    }
-  // Extra loops.
-  const p = loopsFor(d);
-  for (const e of edges) if (grid[at(e)] === WALL && rng.chance(p)) open(e);
-
-  // The nest (three cells) and its door on top; a side passage on one row.
-  const den = cell(ic, jm);
-  grid[den - 1] = grid[den] = grid[den + 1] = DEN;
-  grid[den - cols] = DOOR;
-  const rowsOk = [...Array(ny).keys()].filter((j) => j > 0 && j < ny - 1 && j !== jm);
-  const tunnelRow = 2 * rng.pick(rowsOk) + 1;
-  grid[tunnelRow * cols] = grid[tunnelRow * cols + cols - 1] = PATH;
-  return { cols, rows, grid, den, nx, ny, ic, jm, cell, tunnelRow };
-}
-
 /** Deal a level: the maze, its seeds and berries, the hero at the bottom and the owls in the nest. */
-export function createLevel(d: Difficulty, rng: Rng): State {
-  const { cols, rows, grid, den, nx, ny, ic, jm, cell, tunnelRow } = carve(d, rng);
+export function createLevel(d: Difficulty, rng: Rng, kindId?: KindId): State {
+  const kind = kindId ?? dealKind(rng, d, KINDS).id;
+  const { cols, rows, grid, den, nx, ny, ic, jm, cell, tunnels } = carve(d, rng, kind);
   const start = cell(ic, ny - 1);
   const items = new Uint8Array(grid.length);
   const s: State = {
     d,
+    kind,
     cols,
     rows,
     grid,
     items,
     left: 0,
     total: 0,
-    tunnelRow,
+    tunnels,
+    sight: sightFor(d, kind),
     start,
     door: den - cols,
     exit: cell(ic, jm - 1),
@@ -284,6 +255,11 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     bonus: 0,
     drops: 0,
     heroSpeed: heroSpeedFor(d),
+    streak: 0,
+    streakLeft: 0,
+    tier: 0,
+    dash: 0,
+    magnet: 0,
     done: false,
     rng,
   };
@@ -305,26 +281,37 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     [cols - 1, rows + 1],
   ];
   const homes = chasersFor(d) === 2 ? [den - 1, den + 1] : [den, den - 1, den + 1, den];
-  for (let k = 0; k < chasersFor(d); k++)
+  owlsFor(d, kind).forEach((owl, k) =>
     s.chasers.push({
       at: homes[k],
       dir: 0,
       moving: false,
       f: 0,
-      kind: k as Kind,
+      kind: owl,
       mode: 'den',
       fright: false,
+      swoop: false,
       out: 0,
       home: homes[k],
       corner: corners[k],
-    });
+    }),
+  );
   releaseAll(s, FIRST_OUT, gapFor(d));
   return s;
 }
 
 function releaseAll(s: State, first: number, gap: number) {
   s.chasers.forEach((ch, k) => {
-    Object.assign(ch, { at: ch.home, dir: 0, moving: false, f: 0, mode: 'den', fright: false, out: s.time + first + k * gap });
+    Object.assign(ch, {
+      at: ch.home,
+      dir: 0,
+      moving: false,
+      f: 0,
+      mode: 'den',
+      fright: false,
+      swoop: false,
+      out: s.time + first + k * gap,
+    });
   });
 }
 
@@ -427,23 +414,42 @@ function choose(s: State, ch: Chaser) {
 
 function chaserSpeed(s: State, ch: Chaser): number {
   if (ch.mode === 'eyes') return s.heroSpeed * 1.7;
-  const base = s.heroSpeed * paceFor(s.d);
+  const base = s.heroSpeed * paceFor(s.d) * (ch.kind === GHOST ? GHOST_PACE : 1);
   if (ch.mode === 'leave') return base * 0.6;
   let v = ch.fright ? base * 0.6 : base;
   if (isTunnel(s, ch.at) || (ch.moving && isTunnel(s, nb(s, ch.at, ch.dir)))) v *= 0.5;
-  return v;
+  return ch.swoop ? v * SWOOP : v;
+}
+
+/** Can a hawk at cell `i` see the mouse straight down an open row or column, close enough to swoop? */
+function sees(s: State, i: number): boolean {
+  const h = s.hero.at;
+  const sameRow = Math.floor(i / s.cols) === Math.floor(h / s.cols);
+  const sameCol = i % s.cols === h % s.cols;
+  if (!sameRow && !sameCol) return false;
+  const stride = sameRow ? 1 : s.cols;
+  const n = Math.abs(h - i) / stride;
+  if (n > SWOOP_RANGE) return false;
+  for (let k = 1, j = i; k < n; k++) if (s.grid[(j += h > i ? stride : -stride)] === WALL) return false;
+  return true;
 }
 
 interface Caught {
-  kind: Kind;
+  kind: Owl;
   x: number;
   y: number;
   points: number;
 }
 
 export interface StepEvents {
-  /** Seeds eaten this step. */
+  /** Seeds eaten this step (the magnet's included), and the munch streak after them. */
   seeds: number;
+  streak: number;
+  /** Cells the magnet pulled seeds from this step. */
+  pulled: number[];
+  /** A streak milestone reached this step (1-based) and the power it unlocked; 0 / null for none. */
+  tier: number;
+  unlocked: Power | null;
   berry: boolean;
   caught: Caught[];
   /** Points from an acorn picked up, and whether one appeared. */
@@ -462,6 +468,10 @@ export interface StepEvents {
 
 const noEvents = (): StepEvents => ({
   seeds: 0,
+  streak: 0,
+  pulled: [],
+  tier: 0,
+  unlocked: null,
   berry: false,
   caught: [],
   bonus: 0,
@@ -474,33 +484,70 @@ const noEvents = (): StepEvents => ({
   over: false,
 });
 
+/** Scare every owl out hunting for `secs` (a new scare restarts the catch chain). */
+function scare(s: State, secs: number) {
+  if (s.fright <= 0) s.chain = 0;
+  s.fright = Math.max(s.fright, secs);
+  for (const ch of s.chasers)
+    if (ch.mode === 'run') {
+      if (!ch.fright) reverse(s, ch);
+      ch.fright = true;
+      ch.swoop = false;
+    }
+}
+
+/** Turn a streak power on. */
+export function grant(s: State, p: Power) {
+  if (p === 'dash' || p === 'frenzy') s.dash = DASH_S;
+  if (p === 'magnet' || p === 'frenzy') s.magnet = MAGNET_S;
+  if (p === 'scare' || p === 'frenzy') scare(s, SCARE_S);
+}
+
+/** Eat what lies on cell `i`: a seed feeds the munch streak, a berry scares the owls. */
+function eat(s: State, i: number, ev: StepEvents) {
+  const it = s.items[i];
+  if (!it) return;
+  s.items[i] = 0;
+  s.left--;
+  if (it === SEED) {
+    s.score += SEED_POINTS;
+    ev.seeds++;
+    ev.streak = ++s.streak;
+    s.streakLeft = STREAK_WINDOW;
+    if (s.tier < STREAK_TIERS.length && s.streak >= STREAK_TIERS[s.tier]) {
+      const p = TIER_POWERS[s.tier++];
+      grant(s, p);
+      ev.tier = s.tier;
+      ev.unlocked = p;
+    }
+  } else {
+    s.score += BERRY_POINTS;
+    ev.berry = true;
+    s.chain = 0;
+    s.fright = 0;
+    scare(s, frightFor(s.d));
+  }
+  const eaten = s.total - s.left;
+  if (s.drops < BONUS_AT.length && eaten >= s.total * BONUS_AT[s.drops]) {
+    s.drops++;
+    s.bonus = BONUS_S;
+    ev.bonusUp = true;
+  }
+}
+
 function heroArrive(s: State, ev: StepEvents) {
   const h = s.hero;
-  const it = s.items[h.at];
-  if (it) {
-    s.items[h.at] = 0;
-    s.left--;
-    if (it === SEED) {
-      s.score += SEED_POINTS;
-      ev.seeds++;
-    } else {
-      s.score += BERRY_POINTS;
-      ev.berry = true;
-      s.fright = frightFor(s.d);
-      s.chain = 0;
-      for (const ch of s.chasers)
-        if (ch.mode === 'run') {
-          if (!ch.fright) reverse(s, ch);
-          ch.fright = true;
-        }
-    }
-    const eaten = s.total - s.left;
-    if (s.drops < BONUS_AT.length && eaten >= s.total * BONUS_AT[s.drops]) {
-      s.drops++;
-      s.bonus = BONUS_S;
-      ev.bonusUp = true;
-    }
-  }
+  eat(s, h.at, ev);
+  // The magnet pulls in the seeds a couple of cells down every open way.
+  if (s.magnet > 0)
+    for (let d = 0; d < 4; d++)
+      for (let k = 0, j = h.at; k < MAGNET_REACH; k++) {
+        j = nb(s, j, d as Dir);
+        if (j < 0 || s.grid[j] !== PATH) break;
+        if (s.items[j] !== SEED) continue;
+        eat(s, j, ev);
+        ev.pulled.push(j);
+      }
   if (h.want >= 0 && heroCan(s, h.at, h.want as Dir)) {
     h.dir = h.face = h.want as Dir;
     h.want = -1;
@@ -532,6 +579,9 @@ function tick(s: State, dt: number, ev: StepEvents) {
   s.time += dt;
   s.safe = Math.max(0, s.safe - dt);
   s.bonus = Math.max(0, s.bonus - dt);
+  s.dash = Math.max(0, s.dash - dt);
+  s.magnet = Math.max(0, s.magnet - dt);
+  if (s.streak && (s.streakLeft -= dt) <= 0) s.streak = s.tier = 0;
   if (s.fright > 0) {
     s.fright -= dt;
     if (s.fright <= 0) {
@@ -546,7 +596,7 @@ function tick(s: State, dt: number, ev: StepEvents) {
 
   const h = s.hero;
   if (h.moving) {
-    h.f += s.heroSpeed * dt;
+    h.f += s.heroSpeed * (s.dash > 0 ? DASH : 1) * dt;
     while (h.f >= 1 && h.moving) {
       h.f -= 1;
       h.at = nb(s, h.at, h.dir);
@@ -555,6 +605,7 @@ function tick(s: State, dt: number, ev: StepEvents) {
   }
 
   for (const ch of s.chasers) {
+    ch.swoop = ch.kind === HAWK && ch.mode === 'run' && !ch.fright && !scattering(s) && sees(s, ch.at);
     if (ch.mode === 'den') {
       if (s.time < ch.out) continue;
       ch.mode = 'leave';
@@ -583,10 +634,14 @@ function tick(s: State, dt: number, ev: StepEvents) {
       s.score += points;
       ch.fright = false;
       ch.mode = 'eyes';
+      // A ghost owl caught inside a hedge flies home from the mouse's cell.
+      if (s.grid[ch.at] === WALL) Object.assign(ch, { at: h.at, f: 0, moving: false });
       choose(s, ch);
       ev.caught.push({ kind: ch.kind, x: p.x, y: p.y, points });
     } else if (s.safe <= 0) {
       s.lives--;
+      s.streak = s.tier = 0;
+      s.dash = s.magnet = 0;
       ev.lostLife = true;
       if (s.lives <= 0) {
         s.done = true;

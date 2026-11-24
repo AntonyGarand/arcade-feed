@@ -2,33 +2,49 @@ import { describe, expect, it } from 'vitest';
 import { Rng } from '../src/core/rng';
 import { LEVELS, starsFor, type Difficulty } from '../src/core/types';
 import { mines } from '../src/games/mines';
+import { _setLocaleForTests } from '../src/core/i18n';
+import { kindsAt } from '../src/core/variety';
 import {
   CLEAN_BONUS,
+  CLOCK_S,
   createLevel,
   deduce,
+  FREEZE_S,
+  GEM_POINTS,
+  grant,
+  KINDS,
   livesFor,
   minesFor,
   minesLeft,
   reveal,
+  SCOUT_CELLS,
   sizeFor,
   solvable,
+  SPRINT_S,
+  startCell,
+  STREAK_S,
+  STREAK_TIERS,
   tick,
   TIME_POINTS,
+  TIME_S,
   timeFor,
   toggleFlag,
+  type KindId,
   type State,
 } from '../src/games/mines/rules';
 import { mountGame } from './support/mount';
 
-const mid = (s: State) => Math.floor(s.rows / 2) * s.cols + Math.floor(s.cols / 2);
+/** Where to start: the cell nearest the middle that isn't a hole. */
+const mid = (s: State) => startCell(s);
 
 /**
  * Play by logic only (never reading hidden cells): open the middle, then every cell the deductions
  * prove safe, taking `pace` seconds per tap. Returns the end state and the taps made.
  */
-function autopilot(d: Difficulty, seed: number, pace: number) {
-  const s = createLevel(d, new Rng(seed));
+function autopilot(d: Difficulty, seed: number, pace: number, kind?: KindId) {
+  const s = createLevel(d, new Rng(seed), kind);
   let ev = reveal(s, mid(s));
+  const powers: string[] = ev.power ? [ev.power] : [];
   let taps = 1;
   while (!ev.won && !ev.over) {
     const safe = deduce(s, s.open, s.boom);
@@ -38,19 +54,23 @@ function autopilot(d: Difficulty, seed: number, pace: number) {
       ev = tick(s, pace);
       if (ev.over) break;
       ev = reveal(s, j);
+      if (ev.power) powers.push(ev.power);
       taps++;
     }
   }
-  return { s, won: ev.won, taps };
+  return { s, won: ev.won, taps, powers };
 }
 
 describe('mines rules', () => {
-  it('deals the same mines from the same seed and first tap', () => {
+  it('deals the same kind, shape and mines from the same seed and first tap', () => {
     const a = createLevel(3, new Rng(5));
     const b = createLevel(3, new Rng(5));
     const c = createLevel(3, new Rng(6));
     for (const s of [a, b, c]) reveal(s, mid(s));
+    expect(a.kind).toBe(b.kind);
+    expect(a.hole).toEqual(b.hole);
     expect(a.mine).toEqual(b.mine);
+    expect(a.bonus).toEqual(b.bonus);
     expect(a.mine).not.toEqual(c.mine);
     expect(a.mine.filter(Boolean).length).toBe(a.count);
   });
@@ -71,13 +91,15 @@ describe('mines rules', () => {
     for (const d of LEVELS)
       for (let seed = 1; seed <= 12; seed++) {
         const s = createLevel(d, new Rng(seed));
-        const first = (seed * 7) % (s.cols * s.rows); // corners and edges too
+        let first = (seed * 7) % (s.cols * s.rows); // corners and edges too
+        while (s.hole[first]) first = (first + 1) % (s.cols * s.rows);
+        const planned = s.count;
         const ev = reveal(s, first);
         expect(ev.boom, `${d}/${seed}`).toBe(false);
         expect(s.num[first]).toBe(0);
         expect(ev.opened).toBeGreaterThan(1);
         expect(solvable(s, first)).toBe(true);
-        expect(s.count).toBeGreaterThanOrEqual(minesFor(d) - 1);
+        expect(s.count).toBeGreaterThanOrEqual(planned - 1);
       }
   });
 
@@ -98,8 +120,8 @@ describe('mines rules', () => {
   });
 
   it('flags only hidden cells, counts wrong flags, and opens around a fully flagged number', () => {
-    const s = createLevel(1, new Rng(9));
-    expect(toggleFlag(s, 0)).toBe(false); // nothing to flag before the first tap
+    const s = createLevel(1, new Rng(9), 'classic');
+    expect(toggleFlag(s, mid(s))).toBe(false); // nothing to flag before the first tap
     reveal(s, mid(s));
     expect(toggleFlag(s, mid(s))).toBe(false);
     const safe = s.mine.findIndex((m, i) => !m && !s.open[i]);
@@ -128,7 +150,7 @@ describe('mines rules', () => {
     expect(s.lives).toBe(livesFor(2) - 1);
     expect(reveal(s, bombs[1]).over).toBe(true);
 
-    const t = createLevel(1, new Rng(4));
+    const t = createLevel(1, new Rng(4), 'classic');
     expect(tick(t, 1).over).toBe(false); // the clock runs before the first tap too
     reveal(t, mid(t));
     expect(tick(t, timeFor(1) - 2).over).toBe(false);
@@ -139,7 +161,7 @@ describe('mines rules', () => {
     const clean = autopilot(1, 3, 0);
     const s = createLevel(1, new Rng(3));
     reveal(s, mid(s));
-    const safe = s.mine.findIndex((m, i) => !m && !s.open[i]);
+    const safe = s.mine.findIndex((m, i) => !m && !s.open[i] && !s.hole[i]);
     toggleFlag(s, safe);
     toggleFlag(s, safe);
     let ev = reveal(s, mid(s));
@@ -150,7 +172,123 @@ describe('mines rules', () => {
   });
 });
 
+describe('mines kinds', () => {
+  it('deals several kinds across seeds, each from its level up', () => {
+    const seen = new Set<string>();
+    for (let seed = 0; seed < 60; seed++) seen.add(createLevel(4, new Rng(seed)).kind);
+    expect(seen.size).toBeGreaterThanOrEqual(5);
+    for (let seed = 0; seed < 30; seed++) expect(createLevel(1, new Rng(seed)).kind).not.toMatch(/scatter|sprint/);
+  });
+
+  it('shapes the board: a hole in the middle, cut corners, scattered holes; same share of mines', () => {
+    const [cols, rows] = sizeFor(4);
+    const donut = createLevel(4, new Rng(1), 'donut');
+    expect(donut.hole[Math.floor(rows / 2) * cols + Math.floor(cols / 2)]).toBe(true);
+    const cross = createLevel(4, new Rng(1), 'cross');
+    expect(cross.hole[0]).toBe(true);
+    expect(cross.hole[cols * rows - 1]).toBe(true);
+    expect(cross.hole[Math.floor(rows / 2) * cols]).toBe(false);
+    for (let seed = 0; seed < 5; seed++) {
+      const sc = createLevel(4, new Rng(seed), 'scatter');
+      expect(sc.hole.filter(Boolean).length).toBeGreaterThan(3);
+      // Holes take no part in the numbers or the neighbour lists.
+      for (const list of sc.nb) for (const j of list) expect(sc.hole[j]).toBe(false);
+    }
+    const full = createLevel(4, new Rng(1), 'classic');
+    expect(full.hole.some(Boolean)).toBe(false);
+    for (const s of [donut, cross]) {
+      const real = s.hole.filter((h) => !h).length;
+      expect(Math.abs(s.count / real - minesFor(4) / (cols * rows))).toBeLessThan(0.02);
+    }
+    expect(reveal(donut, donut.hole.indexOf(true)).opened).toBe(0); // a hole isn't a cell
+    expect(donut.placed).toBe(false);
+  });
+
+  it('every kind allowed at a level is cleared by logic alone, quickly enough for three stars', () => {
+    for (const d of [2, 3, 5] as const)
+      for (const { id } of kindsAt(d, KINDS))
+        for (const seed of [3, 4, 5, 6]) {
+          const r = autopilot(d, seed * 17 + d, 0.9, id);
+          expect(r.won, `${id} ${d}/${seed}`).toBe(true);
+          expect(r.s.kind).toBe(id);
+          expect(r.s.opened).toBe(r.s.safe);
+          expect(starsFor(mines, d, true, r.s.score), `${id} ${d}/${seed} ${r.s.score}`).toBeGreaterThanOrEqual(seed === 3 ? 2 : 3);
+        }
+  });
+
+  it('lays bonus cells on safe cells: an hourglass adds time, a gem adds points', () => {
+    const s = createLevel(3, new Rng(8), 'treasure');
+    expect(s.limit).toBeLessThan(timeFor(3));
+    reveal(s, mid(s));
+    const clocks = s.bonus.flatMap((b, i) => (b === 'clock' ? [i] : []));
+    const gems = s.bonus.flatMap((b, i) => (b === 'gem' ? [i] : []));
+    expect(clocks.length).toBe(3);
+    expect(gems.length).toBe(3);
+    for (const i of [...clocks, ...gems]) expect(s.mine[i]).toBe(false);
+    const limit = s.limit;
+    const ev = reveal(s, clocks[0]);
+    expect(ev.bonus.map((b) => b.kind)).toContain('clock');
+    expect(s.limit).toBeGreaterThanOrEqual(limit + CLOCK_S);
+    expect(s.bonus[clocks[0]]).toBe('');
+    const score = s.score;
+    const gem = gems.find((i) => !s.open[i])!;
+    const ev2 = reveal(s, gem);
+    expect(s.score).toBeGreaterThanOrEqual(score + GEM_POINTS + ev2.opened * 5);
+  });
+
+  it('a sprint board starts with about half the clock and earns seconds per cell', () => {
+    const s = createLevel(3, new Rng(2), 'sprint');
+    const limit = s.limit;
+    expect(limit).toBeLessThan(timeFor(3) * 0.6);
+    const ev = reveal(s, mid(s));
+    expect(s.limit).toBeCloseTo(limit + ev.opened * SPRINT_S);
+  });
+
+  it('quick reveals in a row freeze the clock, then scout safe cells, then add time; a pause ends the streak', () => {
+    const r = autopilot(4, 7, 0.5, 'classic');
+    expect(r.powers).toEqual(['freeze', 'scout', 'time']);
+    const slow = autopilot(4, 7, STREAK_S + 0.1, 'classic');
+    expect(slow.powers).toEqual([]);
+
+    const s = createLevel(2, new Rng(3), 'classic');
+    reveal(s, mid(s));
+    grant(s, 'freeze');
+    expect(s.freeze).toBe(FREEZE_S);
+    tick(s, FREEZE_S - 0.5);
+    expect(s.time).toBe(0);
+    tick(s, 1);
+    expect(s.time).toBeGreaterThan(0);
+    const opened = s.opened;
+    const ev = reveal(s, -1); // nothing happens: an empty set of events to fill
+    expect(ev.opened).toBe(0);
+    grant(s, 'scout', ev);
+    expect(ev.scouted.length).toBeGreaterThan(0);
+    expect(ev.scouted.length).toBeLessThanOrEqual(SCOUT_CELLS);
+    expect(s.opened).toBeGreaterThan(opened);
+    for (const j of ev.scouted) expect(s.mine[j]).toBe(false);
+    const limit = s.limit;
+    grant(s, 'time');
+    expect(s.limit).toBe(limit + TIME_S);
+    expect(STREAK_TIERS[0]).toBeLessThan(STREAK_TIERS[2]);
+  });
+});
+
 describe('mines card', () => {
+  it('names its kind on the start gate, in both languages', () => {
+    for (const locale of ['en', 'fr'] as const) {
+      _setLocaleForTests(locale);
+      for (let seed = 0; seed < 30; seed++) {
+        const m = mountGame(mines, 4, seed);
+        expect(m.variant?.id).toBe(createLevel(4, new Rng(seed)).kind);
+        expect(m.variant!.name.length).toBeLessThanOrEqual(18);
+        expect(m.variant!.blurb!.length, m.variant!.blurb).toBeLessThanOrEqual(60);
+        m.inst.destroy?.();
+        m.root.remove();
+      }
+    }
+    _setLocaleForTests('en');
+  });
+
   const key = (k: string) => new KeyboardEvent('keydown', { key: k });
 
   for (const d of [1, 5] as const)
@@ -192,10 +330,12 @@ describe('mines card', () => {
 
   it('loses when the clock runs out', () => {
     const m = mountGame(mines, 3, 2);
+    const s = createLevel(3, new Rng(2));
     m.inst.onKey!(key('Enter'));
     m.inst.onKey!(key('Enter'));
+    reveal(s, mid(s));
     m.inst.onKey!(key('f'));
-    m.run(timeFor(3) - 1);
+    m.run(s.limit - 1);
     expect(m.outcome).toBe('');
     m.run(2);
     expect(m.outcome).toBe('lose');

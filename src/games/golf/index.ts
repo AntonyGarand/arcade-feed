@@ -6,11 +6,57 @@ import { Arena } from '../../kits/arena/arena';
 import { alpha, mix } from '../../kits/arena/color';
 import { outBack } from '../../kits/arena/ease';
 import { gestures, type Point } from '../../kits/gesture/gesture';
+import { comboPop, comboTier } from '../../kits/combo/combo';
+import { drawExtras, drawPads } from './draw';
 import { sfx } from '../../kits/sound/sound';
-import { BALL_R, createLevel, CUP_R, H, limitFor, putt, setAim, type State, step, STROKE_POINTS, W, WALL } from './rules';
+import {
+  BALL_R,
+  type Boon,
+  COIN_POINTS,
+  createLevel,
+  CUP_R,
+  H,
+  type KindId,
+  limitFor,
+  putt,
+  setAim,
+  type State,
+  step,
+  STROKE_POINTS,
+  TRICK_TIERS,
+  W,
+  WALL,
+} from './rules';
 
 /** Drag length (world units) for a full-power putt. */
 const PULL_MAX = 110;
+
+/** What each kind of hole is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [
+    L('Classic hole', 'Trou classique'),
+    L('Walls, bumpers and hazards: the usual.', 'Murs, butoirs et obstacles : la base.'),
+  ],
+  pinball: () => [
+    L('Bumper alley', 'Allée des butoirs'),
+    L('Bumpers everywhere: bank off them for tricks.', 'Des butoirs partout : rebondissez pour des figures.'),
+  ],
+  gates: () => [
+    L('Moving gates', 'Barrières mobiles'),
+    L('Gates slide across every gap: time your putt.', 'Des barrières glissent dans chaque passage.'),
+  ],
+  speedway: () => [
+    L('Speedway', 'Piste rapide'),
+    L('Arrow pads kick the ball along: ride them.', 'Les flèches relancent la balle : profitez-en.'),
+  ],
+  lakes: () => [L('Lakeside', 'Bord du lac'), L('Ponds all over: keep the ball dry.', 'Des étangs partout : gardez la balle au sec.')],
+};
+
+const BOON_NAMES: Record<Boon, () => string> = {
+  guide: () => L('Full aim guide!', 'Visée complète!'),
+  magnet: () => L('Magnet cup!', 'Trou aimanté!'),
+  free: () => L('Free putt!', 'Coup gratuit!'),
+};
 
 export const golf: GameDef = {
   id: 'golf',
@@ -33,8 +79,12 @@ export const golf: GameDef = {
         'Elle ne tombe que si elle roule assez lentement sur le trou. Le sable la freine net.',
       ),
       L(
-        'Water costs a penalty stroke and puts the ball back where it was.',
-        'L’eau coûte un coup de pénalité et ramène la balle où elle était.',
+        'Water costs a penalty stroke and puts the ball back where it was. Arrow pads kick the ball their way; gates slide across gaps.',
+        'L’eau coûte un coup de pénalité et ramène la balle où elle était. Les flèches relancent la balle; des barrières glissent dans les passages.',
+      ),
+      L(
+        `Tricks in one putt (bank shots, bumpers, coins, arrows): ${TRICK_TIERS[0]} unlock the full aim guide, ${TRICK_TIERS[1]} a magnet cup, ${TRICK_TIERS[2]} a free putt.`,
+        `Figures en un coup (bandes, butoirs, pièces, flèches) : ${TRICK_TIERS[0]} donnent la visée complète, ${TRICK_TIERS[1]} un trou aimanté, ${TRICK_TIERS[2]} un coup gratuit.`,
       ),
       L(
         'Drag back from anywhere (the ball goes the other way, harder the further you pull), release to putt.',
@@ -50,6 +100,10 @@ export const golf: GameDef = {
         `Every stroke left under the limit is worth ${STROKE_POINTS} points.`,
         `Chaque coup restant sous la limite vaut ${STROKE_POINTS} points.`,
       ),
+      L(
+        `Coins are worth ${COIN_POINTS} points each and count as tricks.`,
+        `Chaque pièce vaut ${COIN_POINTS} points et compte comme une figure.`,
+      ),
       L('Bank shots off the walls often beat going the long way around.', 'Un rebond sur un mur vaut souvent mieux qu’un long détour.'),
     ],
   }),
@@ -62,6 +116,8 @@ export const golf: GameDef = {
   pad: () => ({ left: leftRight(), right: [...power('ArrowDown', 'ArrowUp'), btn(' ', 'fire', L('Putt', 'Frapper'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     let drag: { from: Point; to: Point } | null = null;
@@ -83,7 +139,18 @@ export const golf: GameDef = {
     const preview: Point[] = [];
     let previewKey = '';
 
-    const status = () => ctx.status(`${L('Strokes', 'Coups')} ${s.strokes}/${s.limit} · ${L('par', 'normale')} ${s.par}`);
+    const status = () =>
+      ctx.status(
+        [
+          `${L('Strokes', 'Coups')} ${s.strokes}/${s.limit}`,
+          `${L('par', 'normale')} ${s.par}`,
+          `${L('coins', 'pièces')} ${s.coins.filter((c) => c.taken).length}/${s.coins.length}`,
+          s.free ? L(`${s.free} free`, `${s.free} gratuit`) : '',
+          s.rolling && s.tricks > 1 ? L(`${s.tricks} tricks`, `${s.tricks} figures`) : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      );
 
     /** Colours of the course, derived from the theme. */
     const course = () => {
@@ -102,19 +169,21 @@ export const golf: GameDef = {
 
     /** Roll a copy of the ball with the current aim and power: its path up to a little past the first bounce. */
     function plan() {
-      const key = `${s.aim.toFixed(4)}|${s.power.toFixed(3)}|${s.bx}|${s.by}`;
+      // Moving gates change the path as time goes by, so it's replanned every frame on those holes.
+      const key = `${s.aim.toFixed(4)}|${s.power.toFixed(3)}|${s.bx}|${s.by}|${s.guide}|${s.gates.length ? s.t.toFixed(3) : ''}`;
       if (key === previewKey) return;
       previewKey = key;
       preview.length = 0;
-      const sim: State = { ...s, turn: 0, pump: 0 };
+      const sim: State = structuredClone({ ...s, turn: 0, pump: 0 });
       if (!putt(sim)) return;
-      const reach = 40 + s.power * 150;
+      // The full guide (a trick reward) follows the whole roll.
+      const reach = s.guide ? Infinity : 40 + s.power * 150;
       let run = 0;
       let after = -1;
       let lx = sim.bx;
       let ly = sim.by;
       preview.push({ x: lx, y: ly });
-      for (let i = 0; i < 240 && run < reach && (after < 0 || run < after); i++) {
+      for (let i = 0; i < (s.guide ? 1800 : 240) && run < reach && (s.guide || after < 0 || run < after); i++) {
         const ev = step(sim, 1 / 120);
         if (ev.splash || ev.cleared) break;
         run += Math.hypot(sim.bx - lx, sim.by - ly);
@@ -228,6 +297,7 @@ export const golf: GameDef = {
         }
         g.globalAlpha = 1;
       }
+      drawPads(arena, g, s);
       // Frame: a wooden border with the stroke pips (filled: strokes left) set into the top rail.
       g.fillStyle = k.frame;
       g.fillRect(0, 0, W, WALL);
@@ -252,6 +322,11 @@ export const golf: GameDef = {
         g.lineWidth = 0.8;
         g.stroke();
       }
+      // Free putts (a trick reward): gold pips after the others.
+      for (let i = 0; i < s.free; i++) {
+        const x = W / 2 + ((s.limit - 1) / 2 + 1.2 + i) * 13;
+        arena.disc(g, x, WALL / 2, 3.6, c.p[3]);
+      }
       const waiting = !s.rolling && !s.done && !ended;
       // Power gauge along the bottom rail.
       if (waiting) {
@@ -269,6 +344,7 @@ export const golf: GameDef = {
       g.fill();
       g.stroke();
       for (let i = 0; i < s.walls.length; i++) drawWall(g, i, k.rail);
+      drawExtras(arena, g, s, sunkAt < 0);
       // Cup: a dark hole with a lit lip, and the flag (it lifts out once the ball drops).
       g.fillStyle = alpha(c.paper, 0.35);
       g.beginPath();
@@ -302,7 +378,8 @@ export const golf: GameDef = {
         let dir = 0;
         const total = preview.reduce((n, p, i) => (i ? n + Math.hypot(p.x - preview[i - 1].x, p.y - preview[i - 1].y) : 0), 0);
         // Light dots on the dark fairway, dark ones on the light fairway.
-        g.fillStyle = arena.dark ? c.paper : mix(k.grass, c.coal, 0.6);
+        // The full guide (a trick reward) gets its own colour.
+        g.fillStyle = s.guide ? c.p[4] : arena.dark ? c.paper : mix(k.grass, c.coal, 0.6);
         for (let i = 1; i < preview.length; i++) {
           const a = preview[i - 1];
           const b = preview[i];
@@ -444,6 +521,26 @@ export const golf: GameDef = {
             sfx('hit', { pitch: -3, vol: Math.min(1, ev.bump / 200) });
           }
           if (ev.bump > 260) fx.shake(1.5, 0.12);
+        }
+        for (const p of ev.coins) {
+          sfx('coin', { pitch: Math.min(8, s.tricks) });
+          fx.burst(p.x, p.y, c.p[3], 10, 90, 2.5, 0.4, 'spark', 0);
+          fx.text(p.x, p.y - 12, `+${COIN_POINTS}`, c.p[3], 12);
+        }
+        for (const p of ev.boosts) {
+          sfx('jump', { pitch: 4 });
+          fx.ring(p.x, p.y, c.p[4], 6, 26, 0.3, arena.lw);
+          fx.burst(s.bx, s.by, arena.tone(c.p[4]).hi, 8, 120, 2.5, 0.3, 'spark', 0, Math.atan2(-s.vy, -s.vx), 0.8);
+        }
+        if (ev.tricks) {
+          comboPop(fx, Math.max(20, Math.min(W - 20, s.bx)), s.by - 10, s.tricks, c.accent);
+          if (s.tricks >= 2) status();
+        }
+        if (ev.tier && ev.unlocked) {
+          comboTier(fx, ev.tier, c.accent, BOON_NAMES[ev.unlocked]());
+          if (ev.unlocked === 'magnet') fx.ring(s.cup.x, s.cup.y, c.p[4], CUP_R, CUP_R + 40, 0.6, arena.lw * 1.4);
+          else if (ev.unlocked === 'free') fx.ring(W / 2, WALL / 2, c.p[3], 4, 40, 0.5, arena.lw);
+          status();
         }
         const sand = s.rolling && s.sand.some((z) => inZone(z, s.bx, s.by));
         if (sand && !inSand) {

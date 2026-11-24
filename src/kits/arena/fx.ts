@@ -292,6 +292,9 @@ export class Fx {
   }
 
   private drawBanner(g: CanvasRenderingContext2D, host: FxHost, w: number, h: number) {
+    // In screen space: a game that scrolls or crops its world (a camera, a sky) still gets it centred.
+    g.save();
+    g.setTransform(g.canvas.width / w, 0, 0, g.canvas.height / h, 0, 0);
     const b = this.ban;
     const f = b.t / b.max;
     const inn = Math.min(1, b.t / 0.18);
@@ -322,6 +325,6 @@ export class Fx {
       g.fillStyle = host.colors.fg;
       g.fillText(b.sub, x, cy + size * 0.55);
     }
-    g.globalAlpha = 1;
+    g.restore();
   }
 }

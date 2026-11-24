@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { _setLocaleForTests } from '../src/core/i18n';
 import { Rng } from '../src/core/rng';
 import { LEVELS, starsFor, type Difficulty } from '../src/core/types';
+import { kindsAt } from '../src/core/variety';
 import { sling } from '../src/games/sling';
+import { createLevel, KINDS, type KindId } from '../src/games/sling/level';
 import {
-  createLevel,
+  CHAIN_TIERS,
   fire,
+  grant,
   GROUND,
   setAim,
   shotsFor,
@@ -28,7 +32,7 @@ function play(s: State, angle: number, power: number) {
   return all;
 }
 
-const blocks = (s: State) => s.bodies.filter((b) => b.mat === 'wood' || b.mat === 'stone');
+const blocks = (s: State) => s.bodies.filter((b) => b.mat === 'wood' || b.mat === 'stone' || b.mat === 'ice' || b.mat === 'tnt');
 const hp = (s: State) => blocks(s).reduce((a, b) => a + b.hp, 0);
 
 /**
@@ -54,13 +58,14 @@ describe('sling rules', () => {
   it('deals the same forts from the same seed', () => {
     const a = createLevel(4, new Rng(42));
     const b = createLevel(4, new Rng(42));
+    expect(a.kind).toBe(b.kind);
     expect(a.bodies).toEqual(b.bodies);
     expect(createLevel(4, new Rng(43)).bodies).not.toEqual(a.bodies);
   });
 
   it('gets harder: more blobs and blocks, a boulder, then stone', () => {
     for (const d of LEVELS) {
-      const s = createLevel(d, new Rng(5));
+      const s = createLevel(d, new Rng(5), 'village');
       expect(s.targets).toBe(targetsFor(d));
       expect(s.shots).toBe(shotsFor(d));
       expect(s.shots).toBeLessThanOrEqual(s.targets + 1);
@@ -71,26 +76,55 @@ describe('sling rules', () => {
       ).toBe(d >= 2);
       expect(s.bodies.some((b) => b.mat === 'stone') && d < 3, `stone ${d}`).toBe(false);
     }
-    const avg = (d: Difficulty) => [1, 2, 3, 4].reduce((a, seed) => a + blocks(createLevel(d, new Rng(seed))).length, 0);
+    const avg = (d: Difficulty) => [1, 2, 3, 4].reduce((a, seed) => a + blocks(createLevel(d, new Rng(seed), 'village')).length, 0);
     for (const d of LEVELS.slice(1)) expect(avg(d)).toBeGreaterThan(avg((d - 1) as Difficulty));
-    expect([1, 2, 3, 4].some((seed) => createLevel(5, new Rng(seed)).bodies.some((b) => b.mat === 'stone'))).toBe(true);
+    expect([1, 2, 3, 4].some((seed) => createLevel(5, new Rng(seed), 'village').bodies.some((b) => b.mat === 'stone'))).toBe(true);
   });
 
-  it('keeps every fort standing still, even when everything is woken', () => {
+  it('keeps every kind of fort standing still, even when everything is woken', () => {
+    // Hovering blobs drift on purpose: only what stands on the ground has to keep still.
+    const where = (s: State) => s.bodies.filter((b) => !b.hover).map((b) => [b.x, b.y]);
     for (const d of LEVELS)
-      for (const seed of [1, 2, 3]) {
-        const s = createLevel(d, new Rng(seed));
-        const at = s.bodies.map((b) => [b.x, b.y]);
-        for (let t = 0; t < 3; t += DT) step(s, DT);
-        expect(s.bodies.map((b) => [b.x, b.y])).toEqual(at);
-        for (const b of s.bodies) b.awake = b.inv > 0;
-        s.phase = 'flight';
-        for (let t = 0; t < 3; t += DT) step(s, DT);
-        expect(s.targets, `${d}/${seed}`).toBe(targetsFor(d));
-        expect(s.score).toBe(0);
-        const moved = Math.max(...s.bodies.map((b, i) => Math.hypot(b.x - at[i][0], b.y - at[i][1])));
-        expect(moved, `${d}/${seed}`).toBeLessThan(1.5);
-      }
+      for (const { id } of kindsAt(d, KINDS))
+        for (const seed of [1, 2, 3]) {
+          const s = createLevel(d, new Rng(seed), id);
+          const at = where(s);
+          for (let t = 0; t < 3; t += DT) step(s, DT);
+          expect(where(s)).toEqual(at);
+          for (const b of s.bodies) b.awake = b.inv > 0;
+          s.phase = 'flight';
+          for (let t = 0; t < 3; t += DT) step(s, DT);
+          expect(s.targets, `${id} ${d}/${seed}`).toBe(targetsFor(d));
+          expect(s.score).toBe(0);
+          const now = where(s);
+          const moved = Math.max(...now.map((p, i) => Math.hypot(p[0] - at[i][0], p[1] - at[i][1])));
+          expect(moved, `${id} ${d}/${seed}`).toBeLessThan(1.5);
+        }
+  });
+
+  it('deals different kinds of fort across seeds, only easy ones at level 1', () => {
+    const seen = new Set<string>();
+    for (let seed = 0; seed < 60; seed++) seen.add(createLevel(4, new Rng(seed)).kind);
+    expect(seen.size).toBe(KINDS.length);
+    for (let seed = 0; seed < 30; seed++) expect(['village', 'frozen', 'sky']).toContain(createLevel(1, new Rng(seed)).kind);
+  });
+
+  it('builds each kind its own way', () => {
+    const mats = (k: KindId) => new Set(createLevel(4, new Rng(2), k).bodies.map((b) => b.mat));
+    expect(mats('frozen').has('ice')).toBe(true);
+    expect(mats('frozen').has('wood')).toBe(false);
+    expect(mats('powder').has('tnt')).toBe(true);
+    expect(mats('village').has('tnt')).toBe(false);
+    const sky = createLevel(4, new Rng(2), 'sky');
+    expect(sky.bodies.filter((b) => b.hover).length).toBe(2);
+    // A tower: one hut far taller than a village's.
+    const top = (k: KindId) =>
+      Math.min(
+        ...createLevel(4, new Rng(2), k)
+          .bodies.filter((b) => b.inv > 0 && !b.hover)
+          .map((b) => b.y - b.hh),
+      );
+    expect(top('tower')).toBeLessThan(GROUND - 140);
   });
 
   it('aims with the keys and fires one stone at a time', () => {
@@ -117,7 +151,7 @@ describe('sling rules', () => {
   });
 
   it('pops a blob that is dropped, breaks wood and cracks stone first', () => {
-    const s = createLevel(1, new Rng(1));
+    const s = createLevel(1, new Rng(1), 'village');
     const blob = s.bodies.find((b) => b.mat === 'blob')!;
     // Dropped from high up, in the open.
     blob.x = 110;
@@ -129,7 +163,7 @@ describe('sling rules', () => {
     expect(evs.flatMap((e) => e.popped).length).toBeGreaterThanOrEqual(1);
     expect(s.targets).toBeLessThan(targetsFor(1));
 
-    const w = createLevel(5, new Rng(2));
+    const w = createLevel(5, new Rng(2), 'village');
     const wood = w.bodies.find((b) => b.mat === 'wood')!;
     const stone = w.bodies.find((b) => b.mat === 'stone')!;
     for (const b of [wood, stone]) {
@@ -161,8 +195,94 @@ describe('sling rules', () => {
     }
   }, 120_000);
 
+  it('can clear every kind of fort by aiming well', () => {
+    for (const d of [3, 5] as const)
+      for (const { id } of kindsAt(d, KINDS)) {
+        const s = createLevel(d, new Rng(3), id);
+        while (s.phase !== 'done') {
+          const [a, p] = bestShot(s);
+          play(s, a, p);
+        }
+        expect(s.targets, `${id} level ${d}`).toBe(0);
+      }
+  }, 120_000);
+
+  it('sets off dynamite with a hard knock: it pops the blobs and blows up the dynamite near it', () => {
+    const s = createLevel(3, new Rng(4), 'powder');
+    const tnt = s.bodies.filter((b) => b.mat === 'tnt');
+    expect(tnt.length).toBeGreaterThan(0);
+    const near = s.bodies.filter((b) => b.mat === 'blob' && Math.hypot(b.x - tnt[0].x, b.y - tnt[0].y) < 25);
+    tnt[0].awake = true;
+    tnt[0].vy = 420;
+    s.phase = 'flight';
+    const evs: StepEvents[] = [];
+    for (let i = 0; i < 4; i++) evs.push(step(s, 1 / 120));
+    expect(evs.flatMap((e) => e.blasts).length).toBeGreaterThanOrEqual(1);
+    for (const b of near) expect(s.bodies).not.toContain(b);
+    expect(s.score).toBeGreaterThan(0);
+  });
+
+  it('keeps sky grumps hovering, and pops one at a touch', () => {
+    const s = createLevel(3, new Rng(5), 'sky');
+    const fly = s.bodies.find((b) => b.hover)!;
+    const at = [fly.x, fly.y];
+    step(s, 0.5);
+    expect(Math.hypot(fly.x - at[0], fly.y - at[1])).toBeGreaterThan(0.5);
+    setAim(s, 0, 0);
+    fire(s);
+    const stone = stoneOf(s)!;
+    Object.assign(stone, { x: fly.x - 22, y: fly.y, vx: 320, vy: 0 });
+    const popped = [];
+    for (let i = 0; i < 20; i++) popped.push(...step(s, 1 / 120).popped);
+    expect(popped.length).toBe(1);
+    expect(s.targets).toBe(targetsFor(3) - 1);
+  });
+
+  it('a big smash with one stone unlocks an explosive stone, then a stone more', () => {
+    const s = createLevel(4, new Rng(3), 'frozen');
+    const shots = s.shots;
+    setAim(s, -0.5, 0);
+    fire(s);
+    // Slam every ice block into what is below it: they all shatter on this one shot.
+    for (const b of s.bodies)
+      if (b.mat === 'ice') {
+        b.awake = true;
+        b.vy = 420;
+      }
+    const rewards: string[] = [];
+    for (let t = 0; t < 20 && s.phase === 'flight'; t += DT) rewards.push(...step(s, DT).rewards.map((r) => r.reward));
+    expect(s.chain).toBeGreaterThanOrEqual(CHAIN_TIERS[1]);
+    expect(rewards.slice(0, 2)).toEqual(['boom', 'stone']);
+    expect(s.shots).toBe(shots + 1);
+    expect(s.boomNext).toBe(true);
+  });
+
+  it('an explosive stone goes off at its first touch, and each stone starts a new chain', () => {
+    const s = createLevel(2, new Rng(3), 'village');
+    grant(s, 'boom');
+    s.chain = 3;
+    setAim(s, -0.5, 0);
+    fire(s);
+    expect(s.chain).toBe(0);
+    expect(s.boomNext).toBe(false);
+    expect(stoneOf(s)?.boom).toBe(true);
+    const evs = flyOut(s);
+    expect(evs.some((e) => e.blasts.length)).toBe(true);
+  });
+
+  it('a triple stone splits in three at the top of its arc', () => {
+    const s = createLevel(2, new Rng(3), 'village');
+    grant(s, 'split');
+    setAim(s, 0.8, 0.6);
+    fire(s);
+    let split = false;
+    for (let t = 0; t < 2 && !split; t += DT) split = !!step(s, DT).split;
+    expect(split).toBe(true);
+    expect(s.bodies.filter((b) => b.mat === 'shot').length).toBe(3);
+  });
+
   it('loses when the stones run out with blobs left', () => {
-    const s = createLevel(1, new Rng(4));
+    const s = createLevel(1, new Rng(4), 'village');
     let over = false;
     for (let i = 0; i < s.shots; i++) over = play(s, -0.5, 0).some((e) => e.over);
     expect(over).toBe(true);
@@ -172,7 +292,29 @@ describe('sling rules', () => {
   });
 });
 
+/** Play out the stone already in flight. */
+function flyOut(s: State) {
+  const all: StepEvents[] = [];
+  for (let t = 0; t < 20 && s.phase === 'flight'; t += DT) all.push(step(s, DT));
+  return all;
+}
+
 describe('sling game', () => {
+  it('names the kind of fort it dealt on the start gate, in both languages', () => {
+    for (const lang of ['en', 'fr'] as const) {
+      _setLocaleForTests(lang);
+      for (let seed = 0; seed < 30; seed++) {
+        const m = mountGame(sling, 4, seed);
+        expect(m.variant?.id).toBeTruthy();
+        expect(m.variant!.name.length).toBeLessThanOrEqual(18);
+        expect(m.variant!.blurb!.length).toBeLessThanOrEqual(60);
+        m.inst.destroy?.();
+        m.root.remove();
+      }
+    }
+    _setLocaleForTests('en');
+  });
+
   it('waits at every level until a stone is flung, then fires on Space', () => {
     for (const d of LEVELS) {
       const m = mountGame(sling, d, 9);

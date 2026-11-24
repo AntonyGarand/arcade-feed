@@ -5,9 +5,27 @@ import { Arena } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
 import { outBack } from '../../kits/arena/ease';
 import { DX, DY, gestures, keyDir } from '../../kits/gesture/gesture';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
-import { bop, createLevel, durationFor, GOLD_POINTS, HIT_POINTS, isUp, LIFE_BONUS, LIVES, type Pop, step, TIME_POINTS } from './rules';
+import {
+  bop,
+  createLevel,
+  durationFor,
+  GOLD_POINTS,
+  HIT_POINTS,
+  isUp,
+  type KindId,
+  LIFE_BONUS,
+  LIVES,
+  type Pop,
+  type Power,
+  POWER_S,
+  step,
+  STREAK_TIERS,
+  TIME_POINTS,
+  TOUGH_POINTS,
+} from './rules';
 
 const SIZE = 300;
 const PAD = 10;
@@ -30,6 +48,38 @@ const KEYS: Record<number, string[]> = {
 };
 /** Letter keys for 3×3 too, for keyboards without a keypad. */
 const KEYS3 = ['q', 'w', 'e', 'a', 's', 'd', 'z', 'x', 'c'];
+
+/** What each kind of round is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [L('Classic', 'Classique'), L('A bit of everything, at a steady pace.', 'Un peu de tout, à un rythme régulier.')],
+  goldrush: () => [
+    L('Gold rush', 'Ruée vers l’or'),
+    L('Golden critters everywhere: grab them!', 'Des bestioles dorées partout : attrapez-les!'),
+  ],
+  spiky: () => [
+    L('Spiky swarm', 'Nuée piquante'),
+    L('Twice the spiky decoys. Look before you hit!', 'Deux fois plus de piquantes. Regardez avant de taper!'),
+  ],
+  helmets: () => [
+    L('Hard hats', 'Bestioles casquées'),
+    L('Helmeted critters take two hits.', 'Les bestioles casquées demandent deux coups.'),
+  ],
+  hoppers: () => [
+    L('Hoppers', 'Sauteuses'),
+    L('Purple critters hop to another hole.', 'Les bestioles mauves sautent d’un trou à l’autre.'),
+  ],
+  waves: () => [
+    L('Waves', 'Vagues'),
+    L('Critters burst out in bunches, then a lull.', 'Les bestioles surgissent en groupes, puis un répit.'),
+  ],
+};
+
+/** What each streak milestone unlocks (the banner's second line). */
+const POWER_NAMES: Record<Power, () => string> = {
+  slow: () => L('Slow motion!', 'Ralenti!'),
+  frenzy: () => L('Frenzy: no spikes!', 'Frénésie : sans piquants!'),
+  golden: () => L('Golden mallet!', 'Maillet doré!'),
+};
 
 export const whack: GameDef = {
   id: 'whack',
@@ -55,6 +105,10 @@ export const whack: GameDef = {
         'Never hit the spiky dark ones: each costs a heart. Hitting an empty hole jams your mallet a moment.',
         'Ne tapez jamais les foncées piquantes : chacune coûte un cœur. Taper un trou vide bloque votre maillet un instant.',
       ),
+      L(
+        'Helmeted critters take two hits. Purple hoppers jump to another hole if you’re too slow.',
+        'Les bestioles casquées demandent deux coups. Les sauteuses mauves changent de trou si vous tardez.',
+      ),
       L('Tap a critter to hit it.', 'Touchez une bestiole pour la taper.'),
       L(
         'Keyboard: keypad 7 8 9 / 4 5 6 / 1 2 3 (or Q W E / A S D / Z X C; 1-4, Q-R, A-F, Z-V on 4×4), or arrows and Space; P to pause.',
@@ -67,6 +121,11 @@ export const whack: GameDef = {
         `Un coup vaut ${HIT_POINTS} (dorée : ${GOLD_POINTS}), plus s’il est rapide et si vous enchaînez sans rater.`,
       ),
       L(
+        `Hits in a row unlock powers: ${STREAK_TIERS[0]} for slow motion, ${STREAK_TIERS[1]} for a frenzy of harmless critters, ${STREAK_TIERS[2]} for a golden mallet (every hit counts as golden).`,
+        `Les coups d’affilée débloquent des pouvoirs : ${STREAK_TIERS[0]} pour le ralenti, ${STREAK_TIERS[1]} pour une frénésie de bestioles inoffensives, ${STREAK_TIERS[2]} pour un maillet doré (chaque coup compte comme doré).`,
+      ),
+      L(`Helmets and hoppers are worth ${TOUGH_POINTS}.`, `Les casquées et les sauteuses valent ${TOUGH_POINTS}.`),
+      L(
         `Finishing early pays ${TIME_POINTS} per second left, and each heart left ${LIFE_BONUS}.`,
         `Finir tôt rapporte ${TIME_POINTS} par seconde restante, et chaque cœur restant ${LIFE_BONUS}.`,
       ),
@@ -74,15 +133,17 @@ export const whack: GameDef = {
   }),
   stars: (d) =>
     byLevel(d, [
-      [540, 640],
-      [600, 730],
-      [700, 830],
-      [800, 1050],
-      [850, 1200],
+      [560, 870],
+      [680, 1020],
+      [880, 1280],
+      [1100, 1650],
+      [1200, 2000],
     ] as const),
   par: (d) => Math.round(durationFor(d) * 0.65),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const n = s.n;
     const cell = (SIZE - 2 * PAD) / n;
     const arena = new Arena(ctx.root, SIZE, SIZE + BAR, () => draw());
@@ -100,6 +161,9 @@ export const whack: GameDef = {
         `${L('Hits', 'Coups')} ${s.hits}/${s.target}`,
         `${Math.max(0, Math.ceil(s.duration - s.time))} s`,
         s.streak >= 3 ? L(`streak ×${s.streak}`, `série ×${s.streak}`) : '',
+        s.slow > 0 ? L('slow-mo', 'ralenti') : '',
+        s.frenzy > 0 ? L('frenzy', 'frénésie') : '',
+        s.golden > 0 ? L('golden mallet', 'maillet doré') : '',
       ]
         .filter(Boolean)
         .join(' · ');
@@ -155,8 +219,35 @@ export const whack: GameDef = {
           g.stroke();
         }
       } else {
-        const body = p.kind === 'gold' ? c.p[3] : c.accent;
-        for (const k of [-1, 1]) arena.ball(g, k * r * 0.64, -r * 0.76, r * 0.3, body, false);
+        // Gold critters (and every critter under the golden mallet) in yellow, hoppers in purple.
+        const body = p.kind === 'gold' || s.golden > 0 ? c.p[3] : p.kind === 'hopper' ? c.p[4] : c.accent;
+        if (p.kind === 'hopper') {
+          // Long springy ears that bob, and speed lines: it won't stay put.
+          const bob = Math.sin(s.time * 16 + p.hole) * r * 0.08;
+          for (const k of [-1, 1]) {
+            g.save();
+            g.translate(k * r * 0.42, -r * 0.9 + bob);
+            g.rotate(k * 0.28);
+            arena.ball(g, 0, 0, r * 0.2, body, false);
+            g.fillStyle = body;
+            g.strokeStyle = c.ink;
+            g.lineWidth = arena.lw * 0.7;
+            g.beginPath();
+            g.ellipse(0, -r * 0.2, r * 0.18, r * 0.5, 0, 0, Math.PI * 2);
+            g.fill();
+            g.stroke();
+            g.restore();
+          }
+          g.strokeStyle = c.p[4];
+          g.lineWidth = arena.lw * 0.9;
+          for (const k of [-1, 1])
+            for (const dy of [-0.2, 0.15]) {
+              g.beginPath();
+              g.moveTo(k * r * 1.15, r * dy);
+              g.lineTo(k * r * 1.45, r * (dy + 0.05));
+              g.stroke();
+            }
+        } else for (const k of [-1, 1]) arena.ball(g, k * r * 0.64, -r * 0.76, r * 0.3, body, false);
         arena.ball(g, 0, 0, r, body);
         // Muzzle, eyes (squeezed shut once hit) and nose.
         g.fillStyle = arena.tone(body).hi;
@@ -184,6 +275,27 @@ export const whack: GameDef = {
         g.beginPath();
         g.ellipse(0, r * 0.2, r * 0.12, r * 0.08, 0, 0, Math.PI * 2);
         g.fill();
+        if (p.armor > 0) {
+          // A grey hard hat with a brim and a rivet: the first hit knocks it off.
+          const hat = c.muted;
+          g.fillStyle = hat;
+          g.strokeStyle = c.ink;
+          g.lineWidth = arena.lw * 0.8;
+          g.beginPath();
+          g.arc(0, -r * 0.3, r * 0.98, Math.PI, 0);
+          g.closePath();
+          g.fill();
+          g.stroke();
+          g.beginPath();
+          g.roundRect(-r * 1.15, -r * 0.38, r * 2.3, r * 0.2, r * 0.1);
+          g.fill();
+          g.stroke();
+          g.fillStyle = arena.tone(hat).hi;
+          g.beginPath();
+          g.ellipse(-r * 0.35, -r * 0.85, r * 0.22, r * 0.1, -0.5, 0, Math.PI * 2);
+          g.fill();
+          arena.disc(g, 0, -r * 0.62, r * 0.09, arena.tone(hat).edge);
+        }
         if (p.kind === 'gold') {
           g.fillStyle = c.p[3];
           g.strokeStyle = c.ink;
@@ -280,6 +392,26 @@ export const whack: GameDef = {
         g.stroke();
         g.setLineDash([]);
       }
+      // Powers: a tint over the field and a draining meter each along the top.
+      const powers: [Power, number][] = [
+        ['slow', s.slow],
+        ['frenzy', s.frenzy],
+        ['golden', s.golden],
+      ];
+      let row = 0;
+      for (const [p, t] of powers) {
+        if (t <= 0 || ended) continue;
+        const col = POWER_COLOR[p]();
+        g.fillStyle = col;
+        g.globalAlpha = p === 'slow' ? 0.08 : 0.05;
+        g.fillRect(0, 0, SIZE, SIZE);
+        g.globalAlpha = 0.9;
+        g.beginPath();
+        g.roundRect(PAD, 2 + row * 5, (SIZE - 2 * PAD) * Math.min(1, t / POWER_S[p]), 3, 1.5);
+        g.fill();
+        g.globalAlpha = 1;
+        row++;
+      }
       // Time left along the bottom, red and pulsing for the last seconds.
       const left = Math.max(0, 1 - s.time / s.duration);
       const late = s.duration - s.time < 6 && !ended;
@@ -312,6 +444,27 @@ export const whack: GameDef = {
       arena.linger();
     }
 
+    const POWER_COLOR: Record<Power, () => string> = {
+      slow: () => arena.colors.p[5],
+      frenzy: () => arena.colors.good,
+      golden: () => arena.colors.p[3],
+    };
+
+    /** A streak milestone: the banner says what it unlocked, and the field shows it. */
+    function powerUp(tier: number, p: Power) {
+      const c = arena.colors;
+      const col = POWER_COLOR[p]();
+      comboTier(fx, tier, col, POWER_NAMES[p]());
+      for (let h = 0; h < n * n; h++) {
+        const { x, y } = centre(h);
+        if (p === 'frenzy') {
+          // Every spiky decoy loses its spikes.
+          const tamed = s.pops.some((q) => q.hole === h && q.bonus && isUp(q, s.time));
+          if (tamed) fx.burst(x, mouthY(h) - cell * 0.3, c.good, 8, 90, 2.5, 0.4, 'spark', 0);
+        } else fx.ring(x, y, col, cell * 0.1, cell * 0.45, 0.4, arena.lw);
+      }
+    }
+
     function hit(h: number) {
       const r = bop(s, h);
       if (!r.out) return;
@@ -330,18 +483,25 @@ export const whack: GameDef = {
         fx.shake(5, 0.35);
         fx.flash(c.bad, 0.25, 0.35);
         if (r.out === 'decoy') sfx('error');
+      } else if (r.out === 'clank') {
+        // The hard hat flies off: grey shards, a knock, and the critter stays up for the real hit.
+        sfx('hit', { pitch: 6 });
+        fx.burst(x, my - cell * 0.1, c.muted, 10, 150, 3, 0.45, 'square', 260, -Math.PI / 2, Math.PI * 0.9);
+        fx.burst(x, my - cell * 0.1, c.paper, 4, 100, 2, 0.25, 'spark', 0);
+        fx.text(x, my - cell * 0.3, L('Clank!', 'Bing!'), c.muted, 13, 0.6);
       } else {
-        const gold = r.pop?.kind === 'gold';
-        const col = gold ? c.p[3] : c.accent;
+        const gold = r.pop?.kind === 'gold' || r.out === 'gold';
+        const col = gold ? c.p[3] : r.pop?.kind === 'hopper' ? c.p[4] : c.accent;
         fx.burst(x, my, col, gold ? 16 : 10, 140, 3.5, 0.5, 'square', 200);
         fx.burst(x, my, c.paper, 5, 110, 2.5, 0.3, 'spark', 0);
         fx.ring(x, my, col, cell * 0.15, cell * (gold ? 0.7 : 0.5), 0.3, arena.lw * 1.2);
         fx.text(x, my - cell * 0.15, `+${r.points}`, gold ? c.p[3] : c.fg, gold ? 18 : 14);
-        if (s.streak >= 3 && r.out !== 'win') fx.text(x, my - cell * 0.4, `×${s.streak}`, c.accent, 12, 0.7);
+        if (r.out !== 'win') comboPop(fx, x, my - cell * 0.4, s.streak, c.accent);
         if (gold) {
           fx.shake(2.5, 0.2);
           sfx('power');
         } else sfx('pop', { pitch: Math.min(10, s.streak) });
+        if (r.tier && r.power && r.out !== 'win') powerUp(r.tier, r.power);
       }
       ctx.score(s.score);
       status();
@@ -370,15 +530,19 @@ export const whack: GameDef = {
         const before = s.time;
         const ev = step(s, dt);
         arena.update(dt);
-        if (ev.missed) {
-          // A critter got away: a puff of dust as it ducks back down.
-          const c = arena.colors;
+        const c = arena.colors;
+        if (ev.missed || ev.hopped) {
+          // A critter got away (a puff of dust as it ducks back down), or a hopper jumped holes.
           for (const p of s.pops) {
             const gone = p.t + p.dur;
-            if (p.hit >= 0 || p.kind === 'decoy' || gone <= before || gone > s.time) continue;
-            fx.burst(centre(p.hole).x, mouthY(p.hole) - 4, c.muted, 6, 60, 3, 0.4, 'dot', -30, -Math.PI / 2, Math.PI * 0.8);
+            if (p.hit >= 0 || p.gone || p.kind === 'decoy' || gone <= before || gone > s.time) continue;
+            const col = p.last ? c.muted : c.p[4];
+            fx.burst(centre(p.hole).x, mouthY(p.hole) - 4, col, 6, 60, 3, 0.4, 'dot', -30, -Math.PI / 2, Math.PI * 0.8);
           }
+          if (ev.hopped) sfx('jump', { vol: 0.5 });
         }
+        // Frenzy critters spring up with a little green ring.
+        for (const p of ev.spawned) fx.ring(centre(p.hole).x, mouthY(p.hole), c.good, holeW * 0.5, holeW * 1.3, 0.3, arena.lw);
         status();
         if (ev.over) end(false);
         draw();

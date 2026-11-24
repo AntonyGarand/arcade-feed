@@ -3,20 +3,28 @@ import { L, P } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena, type Trace } from '../../kits/arena/arena';
 import { gestures, type Point } from '../../kits/gesture/gesture';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { glyphPath } from '../../kits/glyph/glyph';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
   BUBBLE_R,
+  catchR,
+  CHAIN_S,
+  CHAIN_TIERS,
   createLevel,
   CRIT_Y,
   DELIVER_PTS,
   H,
+  type KindId,
   LINKS,
+  MAGNET_R,
   pop,
   popAt,
   type Rope,
   SPEED_PTS,
   SPIKE_R,
+  SPRINKLE_PTS,
+  SPRINKLE_R,
   STAR_PTS,
   STAR_R,
   step,
@@ -26,6 +34,31 @@ import {
   W,
 } from './rules';
 
+/** What each kind of level is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [
+    L('Hanging sweet', 'Bonbon suspendu'),
+    L('Ropes, stars and a hungry critter.', 'Des cordes, des étoiles et une bestiole affamée.'),
+  ],
+  bubble: () => [
+    L('Bubble ride', 'Tour de bulle'),
+    L('A bubble floats the sweet up: pop it in time.', 'Une bulle fait monter le bonbon : crevez-la à temps.'),
+  ],
+  breeze: () => [L('Breezy', 'Venteux'), L('The wind pushes the sweet sideways.', 'Le vent pousse le bonbon de côté.')],
+  pacer: () => [
+    L('Restless critter', 'Bestiole agitée'),
+    L('The critter paces the floor: drop on time.', 'La bestiole fait les cent pas : lâchez au bon moment.'),
+  ],
+  saws: () => [L('Saw mill', 'Scierie'), L('Saw blades slide back and forth.', 'Des lames de scie glissent de long en large.')],
+};
+
+/** What each chain milestone unlocks (the banner's second line). */
+const TIER_NAMES = [
+  () => L('Magnet: pickups fly in', 'Aimant : les bonus accourent'),
+  () => L('Golden sweet: delivery ×2', 'Bonbon doré : livraison ×2'),
+  () => L('Feast: a wider mouth', 'Festin : une bouche plus grande'),
+];
+
 /** The sweet is drawn a little larger than its hit radius, to read on a phone. */
 const SWEET_DRAW = 1.25;
 const star: Trace = (g, r) => glyphPath(g, 4, 0, 0, r);
@@ -34,6 +67,16 @@ const spiky: Trace = (g, r) => {
   for (let i = 0; i < 16; i++) {
     const a = (i * Math.PI) / 8;
     const rr = i % 2 ? r * 0.58 : r;
+    if (i) g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+    else g.moveTo(rr, 0);
+  }
+  g.closePath();
+};
+const saw: Trace = (g, r) => {
+  g.beginPath();
+  for (let i = 0; i < 24; i++) {
+    const a = (i * Math.PI) / 12;
+    const rr = i % 2 ? r * 0.78 : r;
     if (i) g.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
     else g.moveTo(rr, 0);
   }
@@ -68,10 +111,13 @@ export const snip: GameDef = {
         'Coupez dans le bon ordre, au bon moment : les étoiles tracent le chemin.',
       ),
       L(
-        'A bubble carries the sweet up until you pop it. Spikes destroy it.',
-        'Une bulle fait monter le bonbon jusqu’à ce que vous la creviez. Les pics le détruisent.',
+        'A bubble carries the sweet up until you pop it; wind pushes it; spikes and sliding saws destroy it; some critters pace.',
+        'Une bulle fait monter le bonbon jusqu’à ce que vous la creviez; le vent le pousse; les pics et les scies le détruisent; certaines bestioles bougent.',
       ),
-      L('If the sweet leaves the field, the level is lost.', 'Si le bonbon sort du terrain, la partie est perdue.'),
+      L(
+        'Grab stars and sprinkles in a quick chain: 3 for a magnet, 5 for a golden sweet, 8 for a feast.',
+        'Attrapez étoiles et paillettes en chaîne rapide : 3 pour un aimant, 5 pour un bonbon doré, 8 pour un festin.',
+      ),
       L(
         'Swipe across ropes to cut them; tap a bubble to pop it.',
         'Glissez à travers les cordes pour les couper; touchez une bulle pour la crever.',
@@ -87,6 +133,10 @@ export const snip: GameDef = {
         `Chaque étoile vaut ${STAR_PTS} points, la livraison ${DELIVER_PTS}, et une réussite rapide jusqu’à ${SPEED_PTS} de plus.`,
       ),
       L(
+        `Sprinkles are worth ${SPRINKLE_PTS} points times the chain multiplier; a golden sweet doubles the delivery; if the sweet leaves the field, the level is lost.`,
+        `Les paillettes valent ${SPRINKLE_PTS} points fois le multiplicateur de chaîne; un bonbon doré double la livraison; si le bonbon sort du terrain, la partie est perdue.`,
+      ),
+      L(
         'Nothing moves before your first cut: take a moment to read the level.',
         'Rien ne bouge avant votre première coupe : prenez le temps de lire le niveau.',
       ),
@@ -96,10 +146,13 @@ export const snip: GameDef = {
       ),
     ],
   }),
-  stars: () => [2 * STAR_PTS + DELIVER_PTS, 3 * STAR_PTS + DELIVER_PTS + 20],
+  // Sprinkles and chain rewards add up to ~200 on a clean run, so ★★★ asks for every star plus some of them.
+  stars: () => [2 * STAR_PTS + DELIVER_PTS, 3 * STAR_PTS + DELIVER_PTS + 70],
   par: (d) => byLevel(d, [8, 10, 12, 12, 15]),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     /** Swipe trail: recent pointer points with their age. */
@@ -116,6 +169,7 @@ export const snip: GameDef = {
         [
           `${L('Stars', 'Étoiles')} ${s.got}/${s.stars.length}`,
           P(left(), ['rope left', 'ropes left'], ['corde restante', 'cordes restantes']),
+          s.chain.count > 1 ? L(`chain ${s.chain.count}`, `chaîne ${s.chain.count}`) : '',
           s.bubble?.held && !s.bubble.popped ? L('tap the bubble', 'touchez la bulle') : '',
         ]
           .filter(Boolean)
@@ -159,7 +213,8 @@ export const snip: GameDef = {
 
     function drawSweet(g: CanvasRenderingContext2D, x: number, y: number) {
       const c = arena.colors;
-      const t = arena.tone(c.accent);
+      const col = s.power >= 2 ? c.p[3] : c.accent;
+      const t = arena.tone(col);
       g.save();
       g.translate(x, y);
       g.rotate(spin);
@@ -178,7 +233,7 @@ export const snip: GameDef = {
         g.fill();
         g.stroke();
       }
-      arena.ball(g, 0, 0, SWEET_R, c.accent);
+      arena.ball(g, 0, 0, SWEET_R, col);
       g.strokeStyle = t.hi;
       g.lineWidth = 1.6;
       g.beginPath();
@@ -215,7 +270,26 @@ export const snip: GameDef = {
       const bob = Math.sin(arena.time * 3) * 1.2 - chomp * 4;
       const cx = m.x;
       const cy = CRIT_Y + 20 + bob;
+      if (s.pace) {
+        // The pacing critter's beat: a dashed track along the floor.
+        g.strokeStyle = c.muted;
+        g.lineWidth = 2;
+        g.setLineDash([4, 5]);
+        g.beginPath();
+        g.moveTo(s.pace.cx - s.pace.amp - 32, CRIT_Y + 45);
+        g.lineTo(s.pace.cx + s.pace.amp + 32, CRIT_Y + 45);
+        g.stroke();
+        g.setLineDash([]);
+      }
       arena.box(g, cx - 32, CRIT_Y + 40, 64, 10, c.cellAlt, 3);
+      if (s.power >= 3 && s.phase === 'play') {
+        // Feast: the catch zone glows around the mouth.
+        g.strokeStyle = arena.tone(c.p[3]).glow;
+        g.lineWidth = 3;
+        g.beginPath();
+        g.arc(cx, CRIT_Y, catchR(s), 0, Math.PI * 2);
+        g.stroke();
+      }
       // Antennae, then the body.
       g.strokeStyle = c.ink;
       g.lineWidth = 2;
@@ -227,7 +301,8 @@ export const snip: GameDef = {
         g.stroke();
         arena.disc(g, tx, cy - 32, 3, c.p[2]);
       }
-      arena.gem(g, cx, cy, 24, c.p[2], blob, true, 1 + chomp * 0.08);
+      const big = s.power >= 3 ? 1.15 : 1;
+      arena.gem(g, cx, cy, 24, c.p[2], blob, true, big + chomp * 0.08);
       // Eyes that follow the sweet.
       const dx = s.x - cx;
       const dy = s.y - (cy - 8);
@@ -261,7 +336,7 @@ export const snip: GameDef = {
         g.arc(cx, cy + 2, 7, 0.2, Math.PI - 0.2);
         g.stroke();
       } else {
-        g.ellipse(cx, cy + 4, 6 + open * 6, 2 + open * 8, 0, 0, Math.PI * 2);
+        g.ellipse(cx, cy + 4, (6 + open * 6) * big, (2 + open * 8) * big, 0, 0, Math.PI * 2);
         g.fill();
       }
     }
@@ -271,6 +346,21 @@ export const snip: GameDef = {
       if (!g) return;
       const c = arena.colors;
       arena.field(g, 0, 0, W, H, 20, 0, false);
+      if (s.wind) drawWind(g);
+      for (const w of s.saws) {
+        // The saw's track: a slot between its two ends.
+        g.strokeStyle = c.cellAlt;
+        g.lineWidth = 6;
+        g.lineCap = 'round';
+        g.beginPath();
+        g.moveTo(w.bx - w.dx, w.by - w.dy);
+        g.lineTo(w.bx + w.dx, w.by + w.dy);
+        g.stroke();
+        g.strokeStyle = c.muted;
+        g.lineWidth = 1.5;
+        g.stroke();
+        g.lineCap = 'butt';
+      }
       drawRopes(g);
       // Anchors (a pin in a ring), each with a numbered badge for the keyboard.
       g.font = `800 10px ${arena.family}`;
@@ -295,10 +385,36 @@ export const snip: GameDef = {
         const k = 1 + Math.sin(arena.time * 4 + st.x) * 0.08;
         arena.gem(g, st.x, st.y, STAR_R + 3, c.p[3], star, true, k, Math.sin(arena.time * 2 + st.y) * 0.2);
       }
+      for (const [i, sp] of s.sprinkles.entries()) {
+        if (sp.got) continue;
+        // A little candy sprinkle, tumbling.
+        const a = arena.time * 2 + i * 1.7;
+        g.save();
+        g.translate(sp.x, sp.y + Math.sin(arena.time * 3 + i) * 1.5);
+        g.rotate(a);
+        arena.block(g, -SPRINKLE_R, -SPRINKLE_R * 0.45, SPRINKLE_R * 2, SPRINKLE_R * 0.9, c.p[[0, 4, 5, 6][i % 4]], SPRINKLE_R * 0.45);
+        g.restore();
+      }
       for (const sp of s.spikes) arena.gem(g, sp.x, sp.y, SPIKE_R + 2, c.bad, spiky, true, 1, arena.time * 0.8);
+      for (const w of s.saws) {
+        arena.gem(g, w.x, w.y, SPIKE_R + 3, c.bad, saw, true, 1, arena.time * 6);
+        arena.disc(g, w.x, w.y, 3, c.ink);
+      }
       const b = s.bubble;
       if (b && !b.popped && !b.held) drawBubble(g, b.x, b.y + Math.sin(arena.time * 2) * 2);
       drawCritter(g);
+      if (s.power >= 1 && s.phase === 'play') {
+        // Magnet: a pulsing ring around the sweet.
+        g.strokeStyle = arena.tone(c.p[4]).glow;
+        g.lineWidth = 2;
+        g.setLineDash([3, 4]);
+        g.lineDashOffset = -arena.time * 20;
+        g.beginPath();
+        g.arc(s.x, s.y, MAGNET_R * (0.92 + Math.sin(arena.time * 6) * 0.08), 0, Math.PI * 2);
+        g.stroke();
+        g.setLineDash([]);
+        g.lineDashOffset = 0;
+      }
       if (s.phase !== 'won' && s.why !== 'spike') drawSweet(g, s.x, s.y);
       if (b && !b.popped && b.held) drawBubble(g, s.x, s.y);
       // Swipe trail: a bright blade with an outline.
@@ -317,7 +433,43 @@ export const snip: GameDef = {
         g.globalAlpha = 1;
         g.lineCap = 'butt';
       }
+      // Chain meter along the top, with its multiplier: drains until the chain breaks.
+      if (s.chain.count > 1 && s.phase === 'play') {
+        g.globalAlpha = 0.85;
+        g.fillStyle = c.p[3];
+        g.fillRect(0, 0, W * Math.max(0, s.chain.left / CHAIN_S), 4);
+        g.globalAlpha = 1;
+        const next = CHAIN_TIERS[s.chain.tier];
+        g.font = `800 11px ${arena.family}`;
+        g.textAlign = 'left';
+        g.textBaseline = 'top';
+        g.fillStyle = c.fg;
+        g.fillText(`×${s.chain.mult}` + (next ? `  ${s.chain.count}/${next}` : ''), 6, 8);
+        g.textBaseline = 'alphabetic';
+      }
       arena.overlay(g);
+    }
+
+    /** Wind streaks drifting across the field. */
+    function drawWind(g: CanvasRenderingContext2D) {
+      const c = arena.colors;
+      const dir = Math.sign(s.wind);
+      g.strokeStyle = c.muted;
+      g.lineCap = 'round';
+      g.lineWidth = 1.5;
+      g.globalAlpha = 0.5;
+      for (let i = 0; i < 9; i++) {
+        const y = 40 + i * 37 + Math.sin(i * 2.3) * 12;
+        const len = 18 + (i % 3) * 8;
+        const x = ((((i * 71 + arena.time * Math.abs(s.wind) * 0.5) % (W + 60)) + W + 60) % (W + 60)) - 30;
+        const px = dir > 0 ? x : W - x;
+        g.beginPath();
+        g.moveTo(px, y);
+        g.quadraticCurveTo(px - dir * len * 0.5, y - 3, px - dir * len, y);
+        g.stroke();
+      }
+      g.globalAlpha = 1;
+      g.lineCap = 'butt';
     }
 
     function snipped(i: number, x: number, y: number) {
@@ -371,6 +523,8 @@ export const snip: GameDef = {
     return {
       draw,
       frame(dt) {
+        const chainBefore = s.chain.count;
+        const scoreBefore = s.score;
         const ev = step(s, dt);
         arena.update(dt);
         const c = arena.colors;
@@ -386,10 +540,24 @@ export const snip: GameDef = {
           fx.text(st.x, st.y - 12, `+${STAR_PTS}`, c.p[3], 13);
           fx.shake(1.5, 0.12);
         }
-        if (ev.stars.length) {
+        for (const i of ev.sprinkles) {
+          const sp = s.sprinkles[i];
+          sfx('coin', { step: s.chain.count, vol: 0.6 });
+          fx.burst(sp.x, sp.y, c.p[[0, 4, 5, 6][i % 4]], 8, 100, 2.5, 0.4, 'dot', 0);
+          fx.text(sp.x, sp.y - 10, `+${SPRINKLE_PTS * s.chain.mult}`, c.fg, 11);
+        }
+        if (ev.stars.length || ev.sprinkles.length) {
+          comboPop(fx, s.x, s.y - 16, s.chain.count, c.p[3]);
           ctx.score(s.score);
           status();
         }
+        if (ev.tier) {
+          comboTier(fx, ev.tier, c.p[3], TIER_NAMES[Math.min(TIER_NAMES.length, ev.tier) - 1]());
+          if (ev.tier === 1) fx.ring(s.x, s.y, c.p[4], SWEET_R, MAGNET_R, 0.4, arena.lw);
+          if (ev.tier === 2) fx.burst(s.x, s.y, c.p[3], 16, 140, 3, 0.6, 'spark', 0);
+          if (ev.tier === 3 && s.critter) fx.ring(s.critter.x, CRIT_Y, c.p[3], 10, catchR(s) * 1.4, 0.5, arena.lw * 1.5);
+        }
+        if (chainBefore > 1 && !s.chain.count) status();
         if (ev.captured) {
           sfx('pop', { pitch: 4 });
           fx.ring(s.x, s.y, c.p[5], SWEET_R, BUBBLE_R * 1.4, 0.35, arena.lw);
@@ -402,7 +570,7 @@ export const snip: GameDef = {
           const m = s.critter;
           for (let i = 0; i < 5; i++) fx.burst(m.x, m.y, c.p[i], 8, 170, 3.5, 0.9, 'square', 260, -Math.PI / 2, Math.PI);
           fx.ring(m.x, m.y + 10, c.accent, 8, 70, 0.5, arena.lw * 1.5);
-          fx.text(m.x, m.y - 26, `+${s.score - s.got * STAR_PTS}`, c.accent, 15, 1.1);
+          fx.text(m.x, m.y - 26, `+${s.score - scoreBefore}`, s.power >= 2 ? c.p[3] : c.accent, 15, 1.1);
           fx.flash(c.good, 0.22, 0.45);
           ctx.score(s.score);
           arena.linger(1.5);

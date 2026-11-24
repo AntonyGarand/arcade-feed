@@ -1,5 +1,7 @@
 import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
+import { dealKind, type Kind } from '../../core/variety';
+import { Combo } from '../../kits/combo/combo';
 
 /** Playfield in world units: anchors near the top, the critter waiting on the floor. */
 export const W = 300;
@@ -8,9 +10,14 @@ export const SWEET_R = 10;
 export const STAR_R = 9;
 export const SPIKE_R = 11;
 export const BUBBLE_R = 21;
+export const SPRINKLE_R = 6;
+/** How far a magnet sweet pulls pickups in from. */
+export const MAGNET_R = 48;
 /** Height of the critter's mouth, and how close the sweet must come to it. */
 export const CRIT_Y = 350;
 const CATCH = 22;
+/** The critter's mouth grows this much once a feast is unlocked. */
+const FEAST = 1.6;
 /** Links per rope in the drawn (Verlet) chain. */
 export const LINKS = 8;
 /** Frame rate the generator plays its plan at (the test replays it the same way). */
@@ -22,13 +29,38 @@ const AIR = 0.9995;
 const FLOAT_DAMP = 0.96;
 export const STAR_PTS = 100;
 export const DELIVER_PTS = 50;
+/** A sprinkle's base worth (times the chain multiplier). */
+export const SPRINKLE_PTS = 10;
+/** Sprinkles dealt along the solution path. */
+const SPRINKLES = 5;
+/** Seconds between two pickups before the chain breaks. */
+export const CHAIN_S = 1.6;
+/**
+ * Pickups in a chain that unlock an event: a magnet (pickups fly to the sweet), a golden sweet
+ * (the delivery counts double), then a feast (the critter's mouth grows).
+ */
+export const CHAIN_TIERS = [3, 5, 8] as const;
 /** Quick-clear bonus: full within the plan's time plus a grace, then 5 points less per second. */
 export const SPEED_PTS = 50;
 const GRACE_S = 3;
 
 export const ropesFor = (d: Difficulty) => byLevel(d, [2, 3, 3, 3, 4]);
-const bubbleFor = (d: Difficulty) => byLevel(d, [false, false, true, false, true]);
 export const spikesFor = (d: Difficulty) => byLevel(d, [0, 0, 0, 2, 3]);
+/** Wind strength (world units/s²) in a breeze level. */
+const windFor = (d: Difficulty) => byLevel(d, [110, 140, 170, 190, 210]);
+
+/** The kinds of level Snip deals. */
+export const KINDS = [
+  { id: 'classic', weight: 2 },
+  { id: 'bubble', min: 2 },
+  { id: 'breeze' },
+  { id: 'pacer' },
+  { id: 'saws', min: 3 },
+] as const satisfies readonly Kind[];
+export type KindId = (typeof KINDS)[number]['id'];
+/** Static spikes and moving saws a kind deals at a level. */
+const hazardsFor = (d: Difficulty, kind: KindId): [spikes: number, saws: number] =>
+  kind === 'saws' ? [Math.max(0, spikesFor(d) - 1), d >= 5 ? 3 : 2] : [spikesFor(d), 0];
 /** Timing slack (frames, either way) every action of the plan must tolerate. */
 export const tolFor = (d: Difficulty) => byLevel(d, [9, 7, 6, 5, 4]);
 
@@ -47,9 +79,38 @@ interface Anchor extends Pt {
   len: number;
 }
 
+/** A pacing critter: x = cx + amp·sin(w·clock + ph). */
+interface Pace {
+  cx: number;
+  amp: number;
+  w: number;
+  ph: number;
+}
+
+/** A saw blade sliding along a track: (bx, by) + (dx, dy)·sin(w·clock + ph). */
+interface Saw extends Pt {
+  bx: number;
+  by: number;
+  dx: number;
+  dy: number;
+  w: number;
+  ph: number;
+}
+
+const sawAt = (w: Saw, t: number): Pt => {
+  const k = Math.sin(w.w * t + w.ph);
+  return { x: w.bx + w.dx * k, y: w.by + w.dy * k };
+};
+
 /** Everything a level is dealt from. */
 interface Layout {
+  kind: KindId;
   anchors: Anchor[];
+  /** Sideways push on the sweet (world units/s², + is right). */
+  wind: number;
+  pace: Pace | null;
+  saws: Saw[];
+  sprinkles: Pt[];
   /** The sweet at rest under its ropes. */
   start: Pt;
   bubble: Pt | null;
@@ -81,7 +142,19 @@ interface Bubble extends Pt {
 
 export interface State {
   d: Difficulty;
+  kind: KindId;
   ropes: Rope[];
+  wind: number;
+  pace: Pace | null;
+  saws: Saw[];
+  sprinkles: (Pt & { got: boolean })[];
+  /** Seconds since the first cut (pacing critters and saws run on it). */
+  clock: number;
+  live: boolean;
+  /** Pickups (stars and sprinkles) in a row, each within `CHAIN_S` of the last. */
+  chain: Combo;
+  /** Highest chain milestone reached this run: 1 magnet, 2 golden sweet, 3 feast. */
+  power: number;
   /** Sweet position and previous position (Verlet). */
   x: number;
   y: number;
@@ -107,6 +180,10 @@ export interface State {
 export interface StepEvents {
   /** Stars picked up this step (indices). */
   stars: number[];
+  /** Sprinkles picked up this step (indices). */
+  sprinkles: number[];
+  /** Chain milestone reached this step (1-based), 0 for none. */
+  tier: number;
   captured: boolean;
   won: boolean;
   lost: boolean;
@@ -126,7 +203,16 @@ function build(l: Layout, chains: boolean): State {
   });
   const s: State = {
     d: 1,
+    kind: l.kind,
     ropes,
+    wind: l.wind,
+    pace: l.pace && { ...l.pace },
+    saws: l.saws.map((w) => ({ ...w, ...sawAt(w, 0) })),
+    sprinkles: l.sprinkles.map((p) => ({ ...p, got: false })),
+    clock: 0,
+    live: false,
+    chain: new Combo({ window: CHAIN_S, tiers: CHAIN_TIERS }),
+    power: 0,
     x: l.start.x,
     y: l.start.y,
     ox: l.start.x,
@@ -134,7 +220,7 @@ function build(l: Layout, chains: boolean): State {
     bubble: l.bubble ? { ...l.bubble, held: false, popped: false } : null,
     stars: l.stars.map((p) => ({ ...p, got: false })),
     spikes: l.spikes,
-    critter: Number.isNaN(l.critter) ? null : { x: l.critter, y: CRIT_Y },
+    critter: Number.isNaN(l.critter) ? null : { x: l.pace ? paceX(l.pace, 0) : l.critter, y: CRIT_Y },
     got: 0,
     score: 0,
     time: 0,
@@ -205,7 +291,36 @@ function chainStep(s: State) {
   }
 }
 
+const paceX = (p: Pace, t: number) => p.cx + p.amp * Math.sin(p.w * t + p.ph);
+
+/** One pickup touched (or pulled in by the magnet)? Moves it towards a magnet sweet. */
+function reach(s: State, p: Pt, r: number): boolean {
+  const d = Math.hypot(s.x - p.x, s.y - p.y);
+  if (d < r + SWEET_R) return true;
+  if (s.power >= 1 && d < MAGNET_R + r) {
+    const k = Math.min(1, (360 * SUB) / d);
+    p.x += (s.x - p.x) * k;
+    p.y += (s.y - p.y) * k;
+  }
+  return false;
+}
+
+/** Count a pickup in the chain; a milestone grants its power. */
+function chained(s: State, ev: StepEvents) {
+  const t = s.chain.hit();
+  if (t) {
+    s.power = Math.max(s.power, t);
+    ev.tier = t;
+  }
+}
+
 function sub(s: State, ev: StepEvents) {
+  if (s.live) {
+    s.clock += SUB;
+    s.chain.update(SUB);
+    if (s.pace && s.critter) s.critter.x = paceX(s.pace, s.clock);
+  }
+  for (const w of s.saws) Object.assign(w, sawAt(w, s.clock));
   const b = s.bubble && !s.bubble.popped ? s.bubble : null;
   const floating = !!b?.held;
   const k = floating ? FLOAT_DAMP : AIR;
@@ -214,6 +329,7 @@ function sub(s: State, ev: StepEvents) {
   s.ox = s.x;
   s.oy = s.y;
   s.x += vx;
+  s.x += s.wind * SUB * SUB;
   s.y += vy + (floating ? -LIFT : G) * SUB * SUB;
   constrain(s);
   if (s.chains) chainStep(s);
@@ -228,22 +344,30 @@ function sub(s: State, ev: StepEvents) {
     }
   }
   for (const [i, st] of s.stars.entries())
-    if (!st.got && Math.hypot(s.x - st.x, s.y - st.y) < STAR_R + SWEET_R) {
+    if (!st.got && reach(s, st, STAR_R)) {
       st.got = true;
       s.got++;
       s.score += STAR_PTS;
       ev.stars.push(i);
+      chained(s, ev);
     }
-  for (const sp of s.spikes)
+  for (const [i, sp] of s.sprinkles.entries())
+    if (!sp.got && reach(s, sp, SPRINKLE_R)) {
+      sp.got = true;
+      chained(s, ev);
+      s.score += SPRINKLE_PTS * s.chain.mult;
+      ev.sprinkles.push(i);
+    }
+  for (const sp of [...s.spikes, ...s.saws])
     if (Math.hypot(s.x - sp.x, s.y - sp.y) < SPIKE_R + SWEET_R - 2) {
       s.phase = 'lost';
       s.why = 'spike';
       ev.lost = true;
       return;
     }
-  if (s.critter && Math.hypot(s.x - s.critter.x, s.y - s.critter.y) < CATCH) {
+  if (s.critter && Math.hypot(s.x - s.critter.x, s.y - s.critter.y) < catchR(s)) {
     s.phase = 'won';
-    s.score += DELIVER_PTS + speedBonus(s);
+    s.score += deliverPts(s) + speedBonus(s);
     ev.won = true;
     return;
   }
@@ -254,11 +378,16 @@ function sub(s: State, ev: StepEvents) {
   }
 }
 
+/** How close the sweet must come to the critter's mouth (wider after a feast). */
+export const catchR = (s: State) => CATCH * (s.power >= 3 ? FEAST : 1);
+/** The delivery's worth (double with a golden sweet). */
+const deliverPts = (s: State) => DELIVER_PTS * (s.power >= 2 ? 2 : 1);
+
 const speedBonus = (s: State) => clamp(Math.round(SPEED_PTS - 5 * Math.max(0, s.time - s.par)), 0, SPEED_PTS);
 
 /** Advance by `dt` seconds in fixed sub-steps (the same path at any frame rate). */
 export function step(s: State, dt: number): StepEvents {
-  const ev: StepEvents = { stars: [], captured: false, won: false, lost: false };
+  const ev: StepEvents = { stars: [], sprinkles: [], tier: 0, captured: false, won: false, lost: false };
   if (s.phase !== 'play') return ev;
   s.time += dt;
   s.acc += dt;
@@ -274,6 +403,7 @@ export function cut(s: State, i: number, seg = LINKS / 2): boolean {
   const r = s.ropes[i];
   if (!r || r.cut || s.phase !== 'play') return false;
   r.cut = true;
+  s.live = true;
   r.seg = clamp(Math.floor(seg), 0, LINKS - 1);
   return true;
 }
@@ -353,15 +483,30 @@ function simulate(l: Layout, plan: Action[], max = 900): Run {
   return run;
 }
 
-/** Let the sweet come to rest under its ropes. */
-function settle(anchors: Anchor[], p: Pt): Pt {
-  const s = build({ anchors, start: p, bubble: null, critter: NaN, stars: [], spikes: [], plan: [] }, false);
+const blank = (kind: KindId, anchors: Anchor[], start: Pt, wind: number): Layout => ({
+  kind,
+  anchors,
+  start,
+  wind,
+  pace: null,
+  saws: [],
+  sprinkles: [],
+  bubble: null,
+  critter: NaN,
+  stars: [],
+  spikes: [],
+  plan: [],
+});
+
+/** Let the sweet come to rest under its ropes (and the wind). */
+function settle(anchors: Anchor[], p: Pt, wind: number): Pt {
+  const s = build(blank('classic', anchors, p, wind), false);
   for (let i = 0; i < 480; i++) {
     const vx = (s.x - s.ox) * 0.9;
     const vy = (s.y - s.oy) * 0.9;
     s.ox = s.x;
     s.oy = s.y;
-    s.x += vx;
+    s.x += vx + wind * SUB * SUB;
     s.y += vy + G * SUB * SUB;
     constrain(s);
   }
@@ -369,9 +514,10 @@ function settle(anchors: Anchor[], p: Pt): Pt {
 }
 
 /** Anchors fanned out above a resting point, ropes nearly taut. */
-function randomLayout(d: Difficulty, rng: Rng): Layout | null {
+function randomLayout(d: Difficulty, rng: Rng, kind: KindId): Layout | null {
   const n = ropesFor(d);
   const p = { x: rng.int(100, 200), y: rng.int(115, 175) };
+  const wind = kind === 'breeze' ? windFor(d) * (rng.chance(0.5) ? 1 : -1) : 0;
   const anchors: Anchor[] = [];
   const span = 1.35;
   for (let i = 0; i < n; i++) {
@@ -385,17 +531,18 @@ function randomLayout(d: Difficulty, rng: Rng): Layout | null {
     anchors.push({ x, y, len });
   }
   anchors.sort((a, b) => a.x - b.x);
-  return { anchors, start: settle(anchors, p), bubble: null, critter: NaN, stars: [], spikes: [], plan: [] };
+  return blank(kind, anchors, settle(anchors, p, wind), wind);
 }
 
-/** Where the sweet first falls through the critter's height after frame `from`. */
-function landing(run: Run, from: number): number | null {
+/** Where (x) and when (fractional frame) the sweet first falls through the critter's height after frame `from`. */
+function landing(run: Run, from: number): { x: number; f: number } | null {
   for (let f = Math.max(1, from); f < run.path.length / 2; f++) {
     const y0 = run.path[f * 2 - 1];
     const y1 = run.path[f * 2 + 1];
     if (y0 < CRIT_Y && y1 >= CRIT_Y) {
       const x0 = run.path[f * 2 - 2];
-      return x0 + ((run.path[f * 2] - x0) * (CRIT_Y - y0)) / (y1 - y0);
+      const k = (CRIT_Y - y0) / (y1 - y0);
+      return { x: x0 + (run.path[f * 2] - x0) * k, f: f - 1 + k };
     }
   }
   return null;
@@ -416,37 +563,80 @@ function alongPath(run: Run, from: number, to: number, n: number, avoid: Pt[]): 
   return pts.sort((a, b) => a.y - b.y);
 }
 
-/** Spikes off every tested path (so the solution clears them) but close enough to punish a wrong cut. */
-function placeSpikes(rng: Rng, n: number, runs: Run[], avoid: Pt[]): Pt[] {
-  const out: Pt[] = [];
+/** Sprinkles spread evenly in time along the path, so a run that follows it chains them with the stars. */
+function placeSprinkles(run: Run, from: number, to: number, avoid: Pt[]): Pt[] {
+  // Every spot along the way that keeps clear of the others, then an even pick among them.
+  const spots: Pt[] = [];
+  for (let i = from; i <= to; i++) {
+    const p = { x: run.path[i * 2], y: run.path[i * 2 + 1] };
+    if (p.x < 12 || p.x > W - 12 || p.y < 12) continue;
+    if ([...spots, ...avoid].some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 20)) continue;
+    spots.push(p);
+  }
+  if (spots.length <= SPRINKLES) return spots;
+  return Array.from({ length: SPRINKLES }, (_, k) => spots[Math.floor(((k + 0.5) * spots.length) / SPRINKLES)]);
+}
+
+/** Seconds since the first cut after frame `f` of a run whose first action was on frame `first`. */
+const clockAt = (f: number, first: number) => Math.max(0, f - first + 1) / FPS;
+
+/**
+ * Hazards off every tested path (so the solution clears them) but close enough to punish a wrong cut.
+ * Saws slide along a track, so they're checked against the path frame by frame.
+ */
+function placeHazards(rng: Rng, n: number, runs: Run[], avoid: Pt[], moving: boolean): Saw[] {
+  const out: Saw[] = [];
   const clear = SPIKE_R + SWEET_R + 10;
-  for (let t = 0; t < 120 && out.length < n; t++) {
+  const first = runs[0].acts[0];
+  for (let t = 0; t < 160 && out.length < n; t++) {
     const p = { x: rng.int(24, W - 24), y: rng.int(70, CRIT_Y - 40) };
+    const w: Saw = { ...p, bx: p.x, by: p.y, dx: 0, dy: 0, w: 0, ph: 0 };
+    if (moving) {
+      const a = rng.next() * Math.PI;
+      const amp = rng.int(26, 48);
+      Object.assign(w, {
+        dx: Math.cos(a) * amp,
+        dy: Math.sin(a) * amp,
+        w: (2 * Math.PI) / (2 + rng.next() * 1.5),
+        ph: rng.next() * 2 * Math.PI,
+      });
+      if ([1, -1].some((k) => p.x + k * w.dx < 14 || p.x + k * w.dx > W - 14 || p.y + k * w.dy < 50 || p.y + k * w.dy > CRIT_Y - 30))
+        continue;
+    }
     let near = Infinity;
     let ok = true;
     for (const [k, r] of runs.entries())
       for (let i = 0; i < r.path.length && ok; i += 2) {
-        const d = Math.hypot(r.path[i] - p.x, r.path[i + 1] - p.y);
+        const q = moving ? sawAt(w, clockAt(i / 2, first)) : p;
+        const d = Math.hypot(r.path[i] - q.x, r.path[i + 1] - q.y);
         if (d < clear) ok = false;
-        if (k === 0) near = Math.min(near, d);
+        if (k === 0) near = Math.min(near, Math.hypot(r.path[i] - p.x, r.path[i + 1] - p.y));
       }
-    if (!ok || near > 70) continue;
-    if ([...out, ...avoid].some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 40)) continue;
-    out.push(p);
+    if (!ok || near > (moving ? 90 : 70)) continue;
+    if ([...out, ...avoid].some((q) => Math.hypot(q.x - p.x, q.y - p.y) < (moving ? 60 : 40))) continue;
+    out.push({ ...w, ...sawAt(w, 0) });
   }
   return out;
 }
 
-function generate(d: Difficulty, rng: Rng): Layout {
+/** The `k`-th timing variant the generator tries (action ⌈k/2⌉ early, then late, by `tol` frames). */
+function variant(plan: Action[], k: number, tol: number): Action[] {
+  const j = Math.ceil(k / 2);
+  const sign = k % 2 ? -1 : 1;
+  return plan.map((a, i) => (i === j ? { ...a, wait: Math.max(0, a.wait + sign * tol) } : a));
+}
+
+function generate(d: Difficulty, rng: Rng, kind: KindId): Layout {
+  const [spikes, saws] = hazardsFor(d, kind);
   for (let attempt = 0; ; attempt++) {
-    const strict = attempt < 80;
-    const tol = attempt < 40 ? tolFor(d) : attempt < 70 ? Math.ceil(tolFor(d) / 2) : 0;
-    const l = randomLayout(d, rng);
+    const strict = attempt < 200;
+    const tol = attempt < 120 ? tolFor(d) : attempt < 180 ? Math.ceil(tolFor(d) / 2) : 0;
+    const l = randomLayout(d, rng, kind);
     if (!l) continue;
     const plan: Action[] = rng.shuffle(l.anchors.map((_, i) => i)).map((rope, i) => ({ rope, wait: i ? rng.int(12, 80) : 30 }));
     let run = simulate(l, plan);
     const last = run.acts.at(-1) ?? 0;
-    if (bubbleFor(d)) {
+    if (kind === 'bubble') {
       const spots: number[] = [];
       for (let f = last + 8; f < last + 40 && f < run.path.length / 2; f++) {
         const x = run.path[f * 2];
@@ -463,20 +653,28 @@ function generate(d: Difficulty, rng: Rng): Layout {
       const popped = run.acts.at(-1) ?? 0;
       if (run.acts.length < plan.length || run.path[popped * 2 + 1] < 60) continue;
     }
-    const x = landing(run, run.acts.at(-1) ?? 0);
-    if (x == null || x < 40 || x > W - 40) continue;
+    const land = landing(run, run.acts.at(-1) ?? 0);
+    if (!land || land.x < 40 || land.x > W - 40) continue;
+    const x = land.x;
     l.critter = x;
+    if (kind === 'pacer') {
+      // The critter paces the floor once the first rope is cut, and reaches the landing spot just in time.
+      const amp = rng.int(24, 44);
+      const w = (2 * Math.PI) / (3 + rng.next());
+      const ph = rng.next() * 2 * Math.PI;
+      const cx = x - amp * Math.sin(w * clockAt(land.f, run.acts[0]) + ph);
+      if (cx - amp < 40 || cx + amp > W - 40) continue;
+      l.pace = { cx, amp, w, ph };
+    }
     const runs = [simulate(l, plan)];
     if (!runs[0].won) continue;
     let ok = true;
     if (tol)
-      for (let j = 1; j < plan.length && ok; j++)
-        for (const sign of [-1, 1]) {
-          const p = plan.map((a, k) => (k === j ? { ...a, wait: Math.max(0, a.wait + sign * tol) } : a));
-          const r = simulate(l, p);
-          runs.push(r);
-          if (!r.won) ok = false;
-        }
+      for (let k = 1; k < plan.length * 2 - 1 && ok; k++) {
+        const r = simulate(l, variant(plan, k, tol));
+        runs.push(r);
+        if (!r.won) ok = false;
+      }
     if (!ok) continue;
     // Cutting everything at once must not work: the order and the timing matter.
     if (
@@ -491,16 +689,24 @@ function generate(d: Difficulty, rng: Rng): Layout {
     const end = runs[0].path.length / 2 - 1;
     l.stars = alongPath(runs[0], runs[0].acts[0], end, 3, [mouth, l.start]);
     if (l.stars.length < 3 && strict) continue;
-    l.spikes = placeSpikes(rng, spikesFor(d), runs, [mouth, ...l.stars, ...l.anchors, ...(l.bubble ? [l.bubble] : [])]);
-    if (l.spikes.length < spikesFor(d) && strict) continue;
+    l.sprinkles = placeSprinkles(runs[0], runs[0].acts[0] + 4, end - 6, [mouth, l.start, ...l.stars]);
+    if (l.sprinkles.length < 3 && strict) continue;
+    const avoid = [mouth, ...l.stars, ...l.sprinkles, ...l.anchors, ...(l.bubble ? [l.bubble] : [])];
+    l.spikes = placeHazards(rng, spikes, runs, avoid, false).map((h) => ({ x: h.x, y: h.y }));
+    if (l.spikes.length < spikes && strict) continue;
+    l.saws = placeHazards(rng, saws, runs, [...avoid, ...l.spikes], true);
+    if (l.saws.length < saws && strict) continue;
+    // Saws move: make sure the solution and its slack still get through them.
+    if (l.saws.length && runs.some((_, k) => !simulate(l, k ? variant(plan, k, tol) : plan).won)) continue;
     l.plan = plan;
     return l;
   }
 }
 
-/** Deal a level: anchors and ropes, then a solution played out to place the critter, stars, bubble and spikes. */
-export function createLevel(d: Difficulty, rng: Rng): State {
-  const s = build(generate(d, rng), true);
+/** Deal a level: anchors and ropes, then a solution played out to place the critter, stars, bubble and hazards. */
+export function createLevel(d: Difficulty, rng: Rng, kindId?: KindId): State {
+  const kind = kindId ?? dealKind(rng, d, KINDS).id;
+  const s = build(generate(d, rng, kind), true);
   s.d = d;
   return s;
 }

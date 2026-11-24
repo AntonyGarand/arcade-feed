@@ -1,5 +1,6 @@
 import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
+import { dealKind, type Kind } from '../../core/variety';
 
 /** Playfield in world units, seen from above: the tee at the bottom, the cup near the top. */
 export const W = 300;
@@ -43,6 +44,31 @@ const angledFor = (d: Difficulty) => byLevel(d, [0, 0.3, 0.45, 0.55, 0.65]);
 const bumpersFor = (d: Difficulty) => byLevel(d, [0, 1, 2, 2, 3]);
 const sandFor = (d: Difficulty) => byLevel(d, [0, 1, 1, 2, 2]);
 const waterFor = (d: Difficulty) => byLevel(d, [0, 0, 1, 1, 2]);
+/** Coins on every hole (the same count whatever the kind, so scores stay comparable). */
+export const coinsFor = (d: Difficulty) => byLevel(d, [2, 2, 3, 3, 3]);
+export const COIN_POINTS = 20;
+const COIN_R = 6;
+/** Speed a boost pad adds to a ball rolling along its arrow. */
+const BOOST_KICK = 170;
+const PAD = 28;
+/** Impacts harder than this count as a trick (bumpers kick from a gentler touch). */
+const TRICK_WALL = 60;
+const TRICK_BUMPER = 20;
+/** Tricks in one putt (bank shots, bumpers, coins, boosts) that unlock a boon for the rest of the hole. */
+export const TRICK_TIERS = [3, 5, 8] as const;
+/** What each trick milestone unlocks: the full aim guide, a magnet cup, then a free putt. */
+const BOONS = ['guide', 'magnet', 'free'] as const;
+export type Boon = (typeof BOONS)[number];
+
+/** The kinds of hole a level can deal. */
+export const KINDS = [
+  { id: 'classic', weight: 2 },
+  { id: 'pinball' },
+  { id: 'gates', min: 2 },
+  { id: 'speedway' },
+  { id: 'lakes', min: 3 },
+] as const satisfies readonly Kind[];
+export type KindId = (typeof KINDS)[number]['id'];
 
 /** Something the ball bounces off: a block, a round bumper or an angled rail (a thick segment). */
 type Wall =
@@ -62,11 +88,48 @@ interface Point {
   y: number;
 }
 
+/** A gate sliding to and fro across a band's gap (it never fills more than half of it). */
+interface Gate {
+  y: number;
+  /** The gap it slides in. */
+  lo: number;
+  hi: number;
+  w: number;
+  speed: number;
+  phase: number;
+}
+const GATE_H = 10;
+
+/** A boost pad: a ball rolling along its arrow gets a kick. */
+interface Pad extends Zone {
+  /** Arrow direction (radians). */
+  dir: number;
+}
+
+interface Coin extends Point {
+  taken: boolean;
+}
+
 export interface State {
   d: Difficulty;
+  kind: KindId;
   walls: Wall[];
   sand: Zone[];
   water: Zone[];
+  gates: Gate[];
+  pads: Pad[];
+  coins: Coin[];
+  /** Seconds since the hole started (moving gates). */
+  t: number;
+  /** The pad the ball is on (-1: none), so a pad kicks once per pass. */
+  onPad: number;
+  /** Tricks in the current putt, and trick milestones reached this hole. */
+  tricks: number;
+  tier: number;
+  /** Boons unlocked: the aim guide shows the whole roll, the cup pulls harder, free putts left. */
+  guide: boolean;
+  magnet: boolean;
+  free: number;
   tee: Point;
   cup: Point;
   bx: number;
@@ -171,8 +234,18 @@ export function fieldAt(f: Float64Array, x: number, y: number): number {
   return best;
 }
 
+/** Where a gate sits at time `t`, as a block. */
+export function gateRect(g: Gate, t: number): Wall & { kind: 'rect' } {
+  const k = 0.5 + 0.5 * Math.sin(t * g.speed + g.phase);
+  return { kind: 'rect', x: g.lo + (g.hi - g.lo - g.w) * k, y: g.y - GATE_H / 2, w: g.w, h: GATE_H };
+}
+
+/** Is (x, y) within `m` of the strip a gate sweeps? */
+const nearGate = (s: Pick<State, 'gates'>, x: number, y: number, m: number) =>
+  s.gates.some((g) => x > g.lo - m && x < g.hi + m && Math.abs(y - g.y) < GATE_H / 2 + m);
+
 /** Lay out a hole: walls across the course with gaps, then bumpers, sand and water from the seed. */
-function layout(d: Difficulty, rng: Rng, hazards: boolean): State {
+function layout(d: Difficulty, rng: Rng, kind: KindId, hazards: boolean): State {
   const tee = { x: rng.int(60, W - 60), y: H - 40 };
   const cup = { x: rng.int(50, W - 50), y: rng.int(48, 72) };
   const walls: Wall[] = [
@@ -182,8 +255,11 @@ function layout(d: Difficulty, rng: Rng, hazards: boolean): State {
     { kind: 'rect', x: W - WALL, y: 0, w: WALL, h: H },
   ];
   // Bands across the course, each with one gap; from level 3 the gaps zigzag.
-  const k = bandsFor(d);
-  const gap = gapFor(d);
+  const k = kind === 'lakes' || (kind === 'pinball' && d >= 5) ? Math.max(1, bandsFor(d) - 1) : bandsFor(d);
+  const gap = kind === 'gates' ? gapFor(d) + 12 : gapFor(d);
+  const gates: Gate[] = [];
+  // Moving gates: one sliding in every gap.
+  const gated = kind === 'gates';
   let prev = -1;
   for (let i = 0; i < k; i++) {
     const y = Math.round(110 + (205 * (i + 0.5)) / k + rng.int(-10, 10));
@@ -192,12 +268,21 @@ function layout(d: Difficulty, rng: Rng, hazards: boolean): State {
     let gx = lo + rng.next() * (hi - lo);
     if (d >= 3 && prev >= 0) gx = prev < W / 2 ? W / 2 + 15 + rng.next() * (hi - W / 2 - 15) : lo + rng.next() * (W / 2 - 15 - lo);
     prev = gx;
+    if (gated)
+      gates.push({
+        y,
+        lo: gx - gap / 2,
+        hi: gx + gap / 2,
+        w: Math.round(gap * 0.35),
+        speed: 0.8 + rng.next() * 0.6,
+        phase: rng.next() * 6.28,
+      });
     for (const [a, b] of [
       [WALL, gx - gap / 2],
       [gx + gap / 2, W - WALL],
     ]) {
       if (b - a < 8) continue;
-      if (rng.chance(angledFor(d))) {
+      if (!gated && rng.chance(angledFor(d))) {
         const tilt = rng.int(10, 22) * (rng.chance(0.5) ? 1 : -1);
         walls.push({ kind: 'seg', x1: a, y1: y + tilt, x2: b, y2: y - tilt, r: 4 });
       } else walls.push({ kind: 'rect', x: a, y: y - 4, w: b - a, h: 8 });
@@ -208,9 +293,20 @@ function layout(d: Difficulty, rng: Rng, hazards: boolean): State {
 
   const s: State = {
     d,
+    kind,
     walls,
     sand: [],
     water: [],
+    gates,
+    pads: [],
+    coins: [],
+    t: 0,
+    onPad: -1,
+    tricks: 0,
+    tier: 0,
+    guide: false,
+    magnet: false,
+    free: 0,
     tee,
     cup,
     bx: tee.x,
@@ -231,11 +327,40 @@ function layout(d: Difficulty, rng: Rng, hazards: boolean): State {
     score: 0,
     done: false,
   };
+  // Boost pads (floor markings, so they never block the way): a speedway is full of them.
+  const pads = kind === 'speedway' ? byLevel(d, [2, 3, 3, 4, 4]) : kind === 'classic' && d >= 3 ? 1 : 0;
+  for (let n = pads, tries = 0; n > 0 && tries < 60; tries++) {
+    const x = rng.int(WALL + 4, W - WALL - 4 - PAD);
+    const y = rng.int(90, H - 80 - PAD);
+    const cx = x + PAD / 2;
+    const cy = y + PAD / 2;
+    // Mostly up the course (towards the cup), sometimes across.
+    const dir = rng.chance(0.65) ? -Math.PI / 2 + (rng.next() - 0.5) * 1.2 : rng.chance(0.5) ? 0 : Math.PI;
+    if (
+      Math.hypot(cx - tee.x, cy - tee.y) < 40 ||
+      Math.hypot(cx - cup.x, cy - cup.y) < 50 ||
+      nearGate(s, cx, cy, PAD) ||
+      walls.some((w) => clearance(w, cx, cy) < PAD * 0.75) ||
+      // Room to run along the arrow, so a pad never pins the ball against a wall.
+      walls.some((w) => clearance(w, cx + Math.cos(dir) * 40, cy + Math.sin(dir) * 40) < BALL_R + 2) ||
+      s.pads.some((p) => Math.hypot(p.x - x, p.y - y) < PAD * 1.6)
+    )
+      continue;
+    s.pads.push({ x, y, w: PAD, h: PAD, dir });
+    n--;
+  }
   if (!hazards) return s;
   const near = (x: number, y: number, r: number) => Math.hypot(x - tee.x, y - tee.y) < r + 34 || Math.hypot(x - cup.x, y - cup.y) < r + 30;
-  for (let n = bumpersFor(d), tries = 0; n > 0 && tries < 40; tries++) {
+  const bumpers = kind === 'pinball' ? bumpersFor(d) + (d >= 3 ? 2 : 3) : kind === 'gates' ? Math.max(0, bumpersFor(d) - 1) : bumpersFor(d);
+  for (let n = bumpers, tries = 0; n > 0 && tries < 80; tries++) {
     const b: Wall = { kind: 'disc', x: rng.int(30, W - 30), y: rng.int(90, H - 80), r: rng.int(9, 13) };
-    if (near(b.x, b.y, b.r) || walls.some((w) => clearance(w, b.x, b.y) < b.r + 14)) continue;
+    if (
+      near(b.x, b.y, b.r) ||
+      nearGate(s, b.x, b.y, b.r + 10) ||
+      s.pads.some((p) => zoneDist(p, b.x, b.y) < b.r + 6) ||
+      walls.some((w) => clearance(w, b.x, b.y) < b.r + 14)
+    )
+      continue;
     walls.push(b);
     n--;
   }
@@ -244,17 +369,21 @@ function layout(d: Difficulty, rng: Rng, hazards: boolean): State {
     const h = rng.int(hMin, hMax);
     return { x: rng.int(WALL, W - WALL - w), y: rng.int(80, H - 70 - h), w, h };
   };
-  for (let n = sandFor(d), tries = 0; n > 0 && tries < 40; tries++) {
+  const onPad = (z: Zone) => s.pads.some((p) => zoneDist(z, p.x + p.w / 2, p.y + p.h / 2) < PAD);
+  for (let n = kind === 'pinball' ? Math.max(0, sandFor(d) - 1) : sandFor(d), tries = 0; n > 0 && tries < 40; tries++) {
     const z = zone(50, 90, 24, 38);
-    if (zoneDist(z, tee.x, tee.y) < 24 || zoneDist(z, cup.x, cup.y) < 18) continue;
+    if (zoneDist(z, tee.x, tee.y) < 24 || zoneDist(z, cup.x, cup.y) < 18 || onPad(z)) continue;
     s.sand.push(z);
     n--;
   }
-  for (let n = waterFor(d), tries = 0; n > 0 && tries < 40; tries++) {
+  const ponds = kind === 'lakes' ? 3 : kind === 'gates' ? Math.max(0, waterFor(d) - 1) : waterFor(d);
+  for (let n = ponds, tries = 0; n > 0 && tries < 60; tries++) {
     const z = zone(40, 80, 20, 30);
     if (
       zoneDist(z, tee.x, tee.y) < 34 ||
       zoneDist(z, cup.x, cup.y) < 30 ||
+      onPad(z) ||
+      s.gates.some((g) => zoneDist(z, (g.lo + g.hi) / 2, g.y) < (g.hi - g.lo) / 2 + 12) ||
       s.sand.some((o) => zoneDist(o, z.x + z.w / 2, z.y + z.h / 2) < 30)
     )
       continue;
@@ -265,14 +394,37 @@ function layout(d: Difficulty, rng: Rng, hazards: boolean): State {
 }
 
 /** Deal a hole that can be played out: the cup must be reachable from the tee around walls and water. */
-export function createLevel(d: Difficulty, rng: Rng): State {
+export function createLevel(d: Difficulty, rng: Rng, kindId?: KindId): State {
+  const kind = kindId ?? dealKind(rng, d, KINDS).id;
   for (let attempt = 0; ; attempt++) {
-    // After many tries, fall back to the walls alone (their gaps are always wide enough).
-    const s = layout(d, rng, attempt < 25);
-    if (fieldAt(distanceField(s), s.tee.x, s.tee.y) < Infinity) {
+    // After many tries, fall back to the walls alone (their gaps are always wide enough; gates fill half at most).
+    const s = layout(d, rng, kind, attempt < 25);
+    const field = distanceField(s);
+    if (fieldAt(field, s.tee.x, s.tee.y) < Infinity) {
+      placeCoins(s, rng, field);
       aimAtCup(s);
       return s;
     }
+  }
+}
+
+/** Scatter the coins on open, reachable grass, away from the tee, the cup and each other. */
+function placeCoins(s: State, rng: Rng, field: Float64Array) {
+  const n = coinsFor(s.d);
+  for (let tries = 0; s.coins.length < n && tries < 400; tries++) {
+    const x = rng.int(WALL + 14, W - WALL - 14);
+    const y = rng.int(80, H - 70);
+    const loose = tries > 300;
+    if (
+      !open(s, x, y, 3) ||
+      nearGate(s, x, y, BALL_R + 4) ||
+      Math.hypot(x - s.tee.x, y - s.tee.y) < 36 ||
+      Math.hypot(x - s.cup.x, y - s.cup.y) < 28 ||
+      !(fieldAt(field, x, y) < Infinity) ||
+      (!loose && s.coins.some((c) => Math.hypot(c.x - x, c.y - y) < 50))
+    )
+      continue;
+    s.coins.push({ x, y, taken: false });
   }
 }
 
@@ -292,7 +444,9 @@ export function setAim(s: State, aim: number, power: number) {
 export function putt(s: State): boolean {
   if (s.rolling || s.done) return false;
   const v = MIN_SPEED + s.power * (MAX_SPEED - MIN_SPEED);
-  s.strokes++;
+  if (s.free > 0) s.free--;
+  else s.strokes++;
+  s.tricks = 0;
   s.rest = { x: s.bx, y: s.by };
   s.vx = Math.cos(s.aim) * v;
   s.vy = Math.sin(s.aim) * v;
@@ -308,6 +462,14 @@ export interface StepEvents {
   splash: boolean;
   /** The ball came to rest (not in the cup). */
   stopped: boolean;
+  /** Tricks scored this step (bank shots, bumpers, coins, boosts). */
+  tricks: number;
+  /** Coins picked up and boost pads ridden this step. */
+  coins: Point[];
+  boosts: Point[];
+  /** A trick milestone reached this step (1-based) and the boon it unlocked; 0 / null for none. */
+  tier: number;
+  unlocked: Boon | null;
   cleared: boolean;
   over: boolean;
 }
@@ -369,44 +531,92 @@ function collide(s: State, w: Wall): number {
 
 /** Advance by `dt` seconds: keyboard aim while waiting, the rolling ball otherwise. */
 export function step(s: State, dt: number): StepEvents {
-  const ev: StepEvents = { bump: 0, splash: false, stopped: false, cleared: false, over: false };
+  const ev: StepEvents = {
+    bump: 0,
+    splash: false,
+    stopped: false,
+    tricks: 0,
+    coins: [],
+    boosts: [],
+    tier: 0,
+    unlocked: null,
+    cleared: false,
+    over: false,
+  };
   if (s.done) return ev;
   if (!s.rolling) {
+    s.t += dt;
     s.turnT = s.turn ? s.turnT + dt : 0;
     s.aim += s.turn * (s.turnT < TURN_RAMP ? TURN_FINE : TURN_SPEED) * dt;
     s.power = clamp(s.power + s.pump * POWER_SPEED * dt, 0, 1);
+    // A gate sliding into a resting ball nudges it off the band.
+    for (const g of s.gates) {
+      if (clearance(gateRect(g, s.t), s.bx, s.by) >= BALL_R) continue;
+      s.by = s.by < g.y ? g.y - GATE_H / 2 - BALL_R - 0.5 : g.y + GATE_H / 2 + BALL_R + 0.5;
+    }
     return ev;
   }
   const h = TICK;
+  const pull = s.magnet ? 2.2 : 1;
   for (s.acc += dt; s.acc >= h; s.acc -= h) {
+    s.t += h;
     const sp = Math.hypot(s.vx, s.vy);
     const sand = s.sand.some((z) => inZone(z, s.bx, s.by));
     const slow = (sand ? SAND_ROLL + SAND_DRAG * sp : ROLL + DRAG * sp) * h;
     const k = sp > 0 ? Math.max(0, sp - slow) / sp : 0;
     s.vx *= k;
     s.vy *= k;
-    // The cup's lip draws a slow ball in.
+    // The cup's lip draws a slow ball in (from further away with the magnet).
     const cx = s.cup.x - s.bx;
     const cy = s.cup.y - s.by;
     const cd = Math.hypot(cx, cy);
-    if (cd < CUP_R + BALL_R && cd > 0.01) {
-      s.vx += (cx / cd) * 500 * h;
-      s.vy += (cy / cd) * 500 * h;
+    if (cd < (CUP_R + BALL_R) * pull && cd > 0.01) {
+      s.vx += (cx / cd) * 500 * pull * h;
+      s.vy += (cy / cd) * 500 * pull * h;
     }
     s.bx += s.vx * h;
     s.by += s.vy * h;
-    for (const w of s.walls) ev.bump = Math.max(ev.bump, collide(s, w));
+    for (const w of s.walls) {
+      const hit = collide(s, w);
+      ev.bump = Math.max(ev.bump, hit);
+      if (hit > (w.kind === 'disc' ? TRICK_BUMPER : TRICK_WALL)) trick(s, ev);
+    }
+    for (const g of s.gates) {
+      const hit = collide(s, gateRect(g, s.t));
+      ev.bump = Math.max(ev.bump, hit);
+      if (hit > TRICK_WALL) trick(s, ev);
+    }
+    // Boost pads kick a ball rolling along their arrow, once per pass.
+    const pad = s.pads.findIndex((p) => inZone(p, s.bx, s.by));
+    if (pad >= 0 && pad !== s.onPad) {
+      const p = s.pads[pad];
+      const ux = Math.cos(p.dir);
+      const uy = Math.sin(p.dir);
+      if (s.vx * ux + s.vy * uy >= 0) {
+        s.vx += ux * BOOST_KICK;
+        s.vy += uy * BOOST_KICK;
+        ev.boosts.push({ x: p.x + p.w / 2, y: p.y + p.h / 2 });
+        trick(s, ev);
+      }
+    }
+    s.onPad = pad;
+    for (const c of s.coins) {
+      if (c.taken || Math.hypot(c.x - s.bx, c.y - s.by) > COIN_R + BALL_R) continue;
+      c.taken = true;
+      ev.coins.push({ x: c.x, y: c.y });
+      trick(s, ev);
+    }
     const v = Math.hypot(s.vx, s.vy);
     if (v > MAX_SPEED) {
       s.vx *= MAX_SPEED / v;
       s.vy *= MAX_SPEED / v;
     }
-    if (Math.hypot(s.cup.x - s.bx, s.cup.y - s.by) < CUP_R - 1 && v < SINK_SPEED) {
+    if (Math.hypot(s.cup.x - s.bx, s.cup.y - s.by) < CUP_R - 1 + (s.magnet ? 3 : 0) && v < SINK_SPEED * (s.magnet ? 1.4 : 1)) {
       s.bx = s.cup.x;
       s.by = s.cup.y;
       s.rolling = false;
       s.done = true;
-      s.score = STROKE_POINTS * (s.limit - s.strokes + 1);
+      s.score = scoreOf(s);
       ev.cleared = true;
       return ev;
     }
@@ -422,6 +632,7 @@ export function step(s: State, dt: number): StepEvents {
   if (ev.splash || Math.hypot(s.vx, s.vy) < STOP_SPEED) {
     s.vx = s.vy = 0;
     s.rolling = false;
+    s.onPad = -1;
     ev.stopped = true;
     if (s.strokes >= s.limit) {
       s.done = true;
@@ -429,4 +640,25 @@ export function step(s: State, dt: number): StepEvents {
     } else aimAtCup(s);
   }
   return ev;
+}
+
+/** Final score: strokes left under the limit (one share for holing out), plus the coins. */
+export const scoreOf = (s: State) => STROKE_POINTS * (s.limit - s.strokes + 1) + COIN_POINTS * s.coins.filter((c) => c.taken).length;
+
+/** One more trick in this putt; a new milestone unlocks the next boon for the rest of the hole. */
+function trick(s: State, ev: StepEvents) {
+  s.tricks++;
+  ev.tricks++;
+  if (s.tier >= TRICK_TIERS.length || s.tricks < TRICK_TIERS[s.tier]) return;
+  const boon = BOONS[s.tier++];
+  grantBoon(s, boon);
+  ev.tier = s.tier;
+  ev.unlocked = boon;
+}
+
+/** Turn a boon on: the whole roll in the aim guide, a magnet cup, or one free putt. */
+export function grantBoon(s: State, b: Boon) {
+  if (b === 'guide') s.guide = true;
+  else if (b === 'magnet') s.magnet = true;
+  else s.free++;
 }

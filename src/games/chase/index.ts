@@ -2,18 +2,23 @@ import './style.css';
 import { L, P } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
-import { mix } from '../../kits/arena/color';
+import { alpha, mix } from '../../kits/arena/color';
 import { outBack } from '../../kits/arena/ease';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { DX, DY, type Dir, gestures, keyDir } from '../../kits/gesture/gesture';
-import { sfx } from '../../kits/sound/sound';
+import { haptic, sfx } from '../../kits/sound/sound';
+import { WALL } from './maze';
+import { KIND_NAMES, POWER_NAMES } from './names';
+import { CELL, drawGlowEyes, drawOwl, owlColor } from './owls';
 import {
   BERRY,
   BERRY_POINTS,
   CHAIN,
-  type Chaser,
   createLevel,
+  DASH_S,
   LIFE_BONUS,
   LIVES,
+  MAGNET_S,
   pos,
   RESPAWN_S,
   SEED,
@@ -21,12 +26,9 @@ import {
   seedsFor,
   steer,
   step,
-  WALL,
+  STREAK_TIERS,
+  STREAK_WINDOW,
 } from './rules';
-
-const CELL = 16;
-/** Owl colours (palette slots), by personality. */
-const OWL = [4, 1, 0, 5];
 
 export const chase: GameDef = {
   id: 'chase',
@@ -56,12 +58,20 @@ export const chase: GameDef = {
         'Une grosse baie les effraie quelques secondes : attrapez-les alors pour des points.',
       ),
       L(
+        'Some mazes hide hawks that swoop down straight corridors, or ghost owls that drift through hedges.',
+        'Certains labyrinthes cachent des faucons qui foncent dans les couloirs droits, ou des hiboux fantômes qui traversent les haies.',
+      ),
+      L(
         'Swipe (or tap a side of the mouse) to pick the next turn; it’s taken at the next opening.',
         'Balayez (ou touchez à côté de la souris) pour choisir le prochain virage; il est pris à la prochaine ouverture.',
       ),
       L('Keyboard: arrows or WASD to steer, P to pause.', 'Clavier : flèches ou WASD pour diriger, P pour la pause.'),
     ],
     tips: [
+      L(
+        `Eat seeds without a pause: a streak of ${STREAK_TIERS[0]} gives a dash, ${STREAK_TIERS[1]} a seed magnet, ${STREAK_TIERS[2]} scares the owls, ${STREAK_TIERS[3]} all three.`,
+        `Mangez des graines sans pause : une série de ${STREAK_TIERS[0]} donne un sprint, ${STREAK_TIERS[1]} un aimant à graines, ${STREAK_TIERS[2]} effraie les hiboux, ${STREAK_TIERS[3]} les trois.`,
+      ),
       L(
         `Scared owls caught on one berry are worth ${CHAIN.slice(0, 3).join(', ')}, then ${CHAIN[3]}.`,
         `Les hiboux effrayés attrapés avec une même baie valent ${CHAIN.slice(0, 3).join(', ')}, puis ${CHAIN[3]}.`,
@@ -75,12 +85,15 @@ export const chase: GameDef = {
   }),
   stars: (d) => {
     const base = seedsFor(d) * SEED_POINTS + 4 * (BERRY_POINTS - SEED_POINTS);
-    return [base + 2 * LIFE_BONUS, base + LIVES * LIFE_BONUS + 600];
+    // Streak scares make catching owls a little easier, so ★★★ asks for a little more.
+    return [base + 2 * LIFE_BONUS, base + LIVES * LIFE_BONUS + 800];
   },
   par: (d) => byLevel(d, [40, 45, 60, 65, 70]),
   pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const W = s.cols * CELL;
     const H = s.rows * CELL;
     const arena = new Arena(ctx.root, W, H, () => draw());
@@ -92,10 +105,13 @@ export const chase: GameDef = {
     let munchAt = -10;
     let bonusAt = -10;
     let shown = '';
+    /** Lit radius drawn in a night maze (eases towards the target). */
+    let sight = s.sight * CELL;
 
     const status = () => {
       const parts = [P(s.left, ['seed left', 'seeds left'], ['graine restante', 'graines restantes'])];
       if (s.fright > 0) parts.push(L(`owls scared ${Math.ceil(s.fright)} s`, `hiboux effrayés ${Math.ceil(s.fright)} s`));
+      else if (s.streak >= 5) parts.push(L(`streak ${s.streak}`, `série ${s.streak}`));
       else if (!moved) parts.push(L('swipe to set off', 'balayez pour partir'));
       const t = parts.join(' · ');
       if (t !== shown) ctx.status((shown = t));
@@ -128,86 +144,6 @@ export const chase: GameDef = {
       paint(x);
       if (x < CELL / 2) paint(x + W);
       else if (x > W - CELL / 2) paint(x - W);
-    }
-
-    function drawOwl(g: CanvasRenderingContext2D, ch: Chaser, n: number) {
-      const c = arena.colors;
-      const p = pos(s, ch);
-      let x0 = p.x * CELL;
-      let y = p.y * CELL;
-      const dx = ch.moving ? DX[ch.dir] : 0;
-      const dy = ch.moving ? DY[ch.dir] : 1;
-      const r = CELL * 0.46;
-      if (ch.mode === 'den') {
-        // Two owls can share the middle of the nest before the first one leaves.
-        if (s.chasers.length === 4 && (n === 0 || n === 3)) x0 += n === 0 ? -4 : 4;
-        y += Math.sin(arena.time * 4 + n * 1.7) * 1.6;
-      } else if (ch.mode !== 'eyes') y += Math.abs(Math.sin(arena.time * 11 + n)) * -1.2;
-      const blink = s.fright < 1.6 && Math.floor(arena.time * 6) % 2 === 0;
-      const fill = ch.fright ? (blink ? c.paper : arena.dark ? mix(c.muted, c.cell, 0.3) : c.muted) : c.p[OWL[ch.kind]];
-      const t = arena.tone(fill);
-      wrapped(x0, (x) => {
-        if (ch.mode !== 'eyes') {
-          // Ear tufts, then the round body, a paler belly and the beak.
-          g.fillStyle = t.lo;
-          g.strokeStyle = t.edge;
-          g.lineWidth = arena.lw * 0.5;
-          g.lineJoin = 'round';
-          for (const side of [-1, 1]) {
-            g.beginPath();
-            g.moveTo(x + side * r * 0.2, y - r * 0.7);
-            g.lineTo(x + side * r * 0.85, y - r * 1.2);
-            g.lineTo(x + side * r * 0.8, y - r * 0.35);
-            g.closePath();
-            g.fill();
-            g.stroke();
-          }
-          arena.ball(g, x, y, r, fill);
-          g.fillStyle = t.hi;
-          g.globalAlpha = 0.7;
-          g.beginPath();
-          g.ellipse(x, y + r * 0.42, r * 0.5, r * 0.36, 0, 0, Math.PI * 2);
-          g.fill();
-          g.globalAlpha = 1;
-        }
-        const scared = ch.fright;
-        for (const side of [-1, 1]) {
-          const ex = x + side * r * 0.36;
-          const ey = y - r * 0.12;
-          g.fillStyle = c.paper;
-          g.strokeStyle = t.edge;
-          g.lineWidth = arena.lw * 0.4;
-          g.beginPath();
-          g.arc(ex, ey, r * 0.34, 0, Math.PI * 2);
-          g.fill();
-          g.stroke();
-          g.fillStyle = c.coal;
-          g.beginPath();
-          if (scared) g.arc(ex, ey, r * 0.09, 0, Math.PI * 2);
-          else g.arc(ex + dx * r * 0.13, ey + dy * r * 0.13, r * 0.16, 0, Math.PI * 2);
-          g.fill();
-        }
-        if (ch.mode === 'eyes') return;
-        if (scared) {
-          // A wobbly frown instead of the beak.
-          g.strokeStyle = t.edge;
-          g.lineWidth = arena.lw * 0.45;
-          g.beginPath();
-          for (let k = 0; k <= 4; k++) g.lineTo(x - r * 0.4 + k * r * 0.2, y + r * 0.38 + (k % 2 ? -1.2 : 0));
-          g.stroke();
-          return;
-        }
-        g.fillStyle = c.p[3];
-        g.strokeStyle = arena.tone(c.p[3]).edge;
-        g.lineWidth = arena.lw * 0.35;
-        g.beginPath();
-        g.moveTo(x - r * 0.14, y + r * 0.12);
-        g.lineTo(x + r * 0.14, y + r * 0.12);
-        g.lineTo(x, y + r * 0.42);
-        g.closePath();
-        g.fill();
-        g.stroke();
-      });
     }
 
     function drawHero(g: CanvasRenderingContext2D) {
@@ -429,10 +365,76 @@ export const chase: GameDef = {
       }
 
       // Eyes going home under everything, then the owls, then the mouse on top.
-      s.chasers.forEach((ch, n) => ch.mode === 'eyes' && drawOwl(g, ch, n));
-      s.chasers.forEach((ch, n) => ch.mode !== 'eyes' && drawOwl(g, ch, n));
+      s.chasers.forEach((ch, n) => ch.mode === 'eyes' && drawOwl(arena, s, g, ch, n, wrapped));
+      s.chasers.forEach((ch, n) => ch.mode !== 'eyes' && drawOwl(arena, s, g, ch, n, wrapped));
+      drawPowers(g);
+      if (s.sight > 0 && !ended) drawNight(g);
       drawHero(g);
+      drawMeters(g);
       arena.overlay(g);
+    }
+
+    /** Night maze: darkness everywhere but a pool of light around the mouse (wider while owls are scared). */
+    function drawNight(g: CanvasRenderingContext2D) {
+      const c = arena.colors;
+      const p = pos(s, s.hero);
+      const hx = p.x * CELL;
+      const hy = p.y * CELL;
+      const want = s.sight * (s.fright > 0 ? 1.7 : s.dash > 0 ? 1.25 : 1) * CELL;
+      sight += (want - sight) * 0.12;
+      const dark = arena.dark ? mix(c.bg, c.coal, 0.5) : c.coal;
+      const grad = g.createRadialGradient(hx, hy, sight * 0.55, hx, hy, sight);
+      grad.addColorStop(0, alpha(dark, 0));
+      grad.addColorStop(1, alpha(dark, 0.93));
+      g.fillStyle = grad;
+      g.fillRect(0, 0, W, H);
+      drawGlowEyes(arena, s, g, wrapped);
+    }
+
+    /** A dash leaves a trail; a magnet spins a dotted ring around the mouse. */
+    function drawPowers(g: CanvasRenderingContext2D) {
+      if (ended || s.dying > 0) return;
+      const c = arena.colors;
+      const p = pos(s, s.hero);
+      const hx = p.x * CELL;
+      const hy = p.y * CELL;
+      if (s.dash > 0 && s.hero.moving) {
+        g.fillStyle = arena.tone(c.p[2]).glow;
+        for (let k = 1; k <= 4; k++) {
+          g.globalAlpha = 0.6 - k * 0.12;
+          g.beginPath();
+          g.arc(hx - DX[s.hero.dir] * k * 4, hy - DY[s.hero.dir] * k * 4, CELL * (0.4 - k * 0.05), 0, Math.PI * 2);
+          g.fill();
+        }
+        g.globalAlpha = 1;
+      }
+      if (s.magnet > 0 && (s.magnet > 1.5 || Math.floor(arena.time * 8) % 2)) {
+        g.strokeStyle = c.p[4];
+        g.lineWidth = arena.lw;
+        g.setLineDash([3, 4]);
+        g.lineDashOffset = -arena.time * 20;
+        g.beginPath();
+        g.arc(hx, hy, CELL * 1.3, 0, Math.PI * 2);
+        g.stroke();
+        g.setLineDash([]);
+        g.lineDashOffset = 0;
+      }
+    }
+
+    /** Along the top: the munch streak draining, then the dash and magnet time left. */
+    function drawMeters(g: CanvasRenderingContext2D) {
+      if (ended) return;
+      const c = arena.colors;
+      const bars: [number, string][] = [];
+      if (s.streak >= 3) bars.push([s.streakLeft / STREAK_WINDOW, c.accent]);
+      if (s.dash > 0) bars.push([s.dash / DASH_S, c.p[2]]);
+      if (s.magnet > 0) bars.push([s.magnet / MAGNET_S, c.p[4]]);
+      g.globalAlpha = 0.9;
+      bars.forEach(([k, col], i) => {
+        g.fillStyle = col;
+        g.fillRect(0, i * 4, W * Math.max(0, k), 3);
+      });
+      g.globalAlpha = 1;
     }
 
     function go(dir: Dir) {
@@ -477,6 +479,19 @@ export const chase: GameDef = {
           sfx('coin', { pitch: (seedN++ % 2) * 2, vol: 0.35 });
           munchAt = arena.time;
           fx.burst(hx, hy, c.p[3], 3, 50, 2, 0.25, 'dot', 0);
+          if (ev.streak >= 5 && Math.floor(ev.streak / 5) > Math.floor((ev.streak - ev.seeds) / 5))
+            comboPop(fx, hx, hy - 6, ev.streak - (ev.streak % 5), c.accent);
+        }
+        // Seeds the magnet pulled in fly to the mouse.
+        for (const i of ev.pulled) fx.burst(cx(i), cy(i), c.p[4], 3, 40, 2, 0.3, 'dot', 0, Math.atan2(hy - cy(i), hx - cx(i)), 0.4);
+        if (ev.tier && ev.unlocked) {
+          comboTier(fx, ev.tier, c.accent, POWER_NAMES[ev.unlocked]());
+          if (ev.unlocked !== 'magnet') fx.ring(hx, hy, c.p[2], 4, CELL * 2.5, 0.4, arena.lw * 1.2);
+          if (ev.unlocked !== 'dash') fx.ring(hx, hy, c.p[4], 4, CELL * 3, 0.5, arena.lw);
+          if (ev.unlocked === 'scare' || ev.unlocked === 'frenzy') {
+            chain = 0;
+            haptic(40);
+          }
         }
         if (ev.berry) {
           sfx('power');
@@ -491,9 +506,10 @@ export const chase: GameDef = {
           sfx('combo', { step: ++chain });
           const x = k.x * CELL;
           const y = k.y * CELL;
-          fx.burst(x, y, c.p[OWL[k.kind]], 14, 130, 3.5, 0.55);
+          const col = owlColor(arena, k.kind);
+          fx.burst(x, y, col, 14, 130, 3.5, 0.55);
           fx.burst(x, y, c.paper, 6, 80, 2.5, 0.4, 'spark', 0);
-          fx.ring(x, y, c.p[OWL[k.kind]], 4, CELL * 1.8, 0.35, arena.lw);
+          fx.ring(x, y, col, 4, CELL * 1.8, 0.35, arena.lw);
           fx.text(x, y - 10, `+${k.points}`, k.points >= 800 ? c.accent : c.fg, k.points >= 800 ? 15 : 12);
           fx.shake(2.5, 0.2);
         }

@@ -1,5 +1,6 @@
 import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
+import { dealKind, type Kind } from '../../core/variety';
 
 /** Playfield in world units (the canvas scales it to the card). Heights ("alt") grow upwards. */
 export const W = 300;
@@ -70,10 +71,42 @@ const decoyCrumbleFor = (d: Difficulty) => byLevel(d, [0, 0.2, 0.5, 0.6, 0.7]);
 /** A typical clear, in seconds. */
 export const parFor = (d: Difficulty) => byLevel(d, [18, 24, 30, 36, 42]);
 
-type Kind = 'ground' | 'normal' | 'moving' | 'crumble';
+/** The kinds of climb a level can deal. */
+export const KINDS = [
+  { id: 'classic', weight: 2 },
+  { id: 'springs' },
+  { id: 'crumbly', min: 2 },
+  { id: 'clouds', min: 2 },
+  { id: 'windy', min: 3 },
+  { id: 'swarm', min: 3 },
+] as const satisfies readonly Kind[];
+export type KindId = (typeof KINDS)[number]['id'];
+
+/** Seconds before a crumbled platform grows back. */
+export const REGROW_S = 3.5;
+/** Cloud platforms: seconds per cycle, and how long of it they're solid (they fade before vanishing). */
+export const CLOUD_CYCLE = 3.2;
+export const CLOUD_ON = 2;
+/** Strongest wind push (units/s) in a windy climb. */
+const WIND = 55;
+/** Bats: half width (for hits), and speed range. */
+export const BAT_R = 10;
+
+/** Seconds after a climb (landing higher up, or a stomp) before the chain breaks. */
+export const CHAIN_WINDOW = 1.6;
+/** Chain lengths that fire a combo event: super jumps, a shield, a rocket. */
+export const CHAIN_TIERS = [6, 12, 20] as const;
+export type Reward = 'super' | 'shield' | 'rocket';
+const REWARDS: readonly Reward[] = ['super', 'shield', 'rocket'];
+/** Super jumps granted, and their take-off speed; the rocket's. */
+const SUPER_JUMPS = 3;
+const SUPER = 820;
+const ROCKET = 1250;
+
+type PlatKind = 'ground' | 'normal' | 'moving' | 'crumble' | 'cloud';
 
 export interface Plat {
-  kind: Kind;
+  kind: PlatKind;
   /** Centre x now, centre of its sway, and height of its top. */
   x: number;
   x0: number;
@@ -87,8 +120,9 @@ export interface Plat {
   spring: number | null;
   /** On the guaranteed climbing path. */
   path: boolean;
-  /** Crumbled away. */
+  /** Crumbled away; seconds before it grows back. */
   gone: boolean;
+  regrow: number;
 }
 
 interface Critter {
@@ -98,6 +132,8 @@ interface Critter {
   alt: number;
   amp: number;
   phase: number;
+  /** Bats fly straight across at `v` units/s (0: a critter swaying in place). */
+  v: number;
   dead: boolean;
 }
 
@@ -110,6 +146,16 @@ interface Coin {
 
 export interface State {
   d: Difficulty;
+  kind: KindId;
+  /** Strongest wind push (0: calm). */
+  wind: number;
+  /** Platforms climbed in a row (and stomps), each within `CHAIN_WINDOW`; seconds left; milestones. */
+  chain: number;
+  chainLeft: number;
+  tier: number;
+  /** Super jumps left, a shield against the next hit. */
+  supers: number;
+  shield: boolean;
   goal: number;
   plats: Plat[];
   critters: Critter[];
@@ -155,9 +201,15 @@ export const wdelta = (a: number, b: number) => {
   return d > W / 2 ? d - W : d < -W / 2 ? d + W : d;
 };
 
-function plat(kind: Kind, x: number, alt: number, w: number, path: boolean): Plat {
-  return { kind, x, x0: x, alt, w, amp: 0, sway: 0, phase: 0, spring: null, path, gone: false };
+function plat(kind: PlatKind, x: number, alt: number, w: number, path: boolean): Plat {
+  return { kind, x, x0: x, alt, w, amp: 0, sway: 0, phase: 0, spring: null, path, gone: false, regrow: 0 };
 }
+
+/** Is a cloud platform solid at time `t`? (Other platforms always are.) */
+export const solid = (p: Plat, t: number) => p.kind !== 'cloud' || (((t + p.phase) % CLOUD_CYCLE) + CLOUD_CYCLE) % CLOUD_CYCLE < CLOUD_ON;
+
+/** The wind's push at time `t`: it swells and turns around slowly. */
+export const windAt = (s: State, t: number) => s.wind * Math.sin(t * 0.5);
 
 /** Span of x a jump from `a` to `b` sweeps: its centre and half length (sway included). */
 function arc(a: Plat, b: Plat) {
@@ -169,8 +221,11 @@ function arc(a: Plat, b: Plat) {
  * Deal a climb from the seed: a path of platforms whose gaps all fit inside one bounce (and one
  * sideways dash), then extras, springs, critters kept away from the path, coins and gems.
  */
-export function createLevel(d: Difficulty, rng: Rng): State {
+export function createLevel(d: Difficulty, rng: Rng, kindId?: KindId): State {
+  const kind = kindId ?? dealKind(rng, d, KINDS).id;
   const goal = goalFor(d);
+  const crumble = kind === 'crumbly' ? 0.45 : crumbleFor(d);
+  const cloud = kind === 'clouds' ? 0.4 : 0;
   const [gmin, gmax] = gapFor(d);
   const pw = widthFor(d);
   const shift = shiftFor(d);
@@ -185,9 +240,21 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     const dx = n === 1 ? rng.pick([-1, 1]) * rng.int(64, Math.max(70, shift)) : rng.int(-shift, shift);
     x = wrap(x + dx);
     const r = rng.next();
-    const kind: Kind = n > 3 && r < crumbleFor(d) ? 'crumble' : n > 2 && r < crumbleFor(d) + movingFor(d) ? 'moving' : 'normal';
-    const p = plat(kind, x, alt, pw, true);
-    if (kind === 'moving') {
+    // A cloud only follows a platform you can bounce on while waiting for it (not a cloud or a crumbling one).
+    const wait = path[n - 1].kind !== 'cloud' && path[n - 1].kind !== 'crumble';
+    const pk: PlatKind =
+      n > 3 && r < crumble
+        ? 'crumble'
+        : n > 2 && r < crumble + cloud
+          ? wait
+            ? 'cloud'
+            : 'normal'
+          : n > 2 && r < crumble + cloud + movingFor(d)
+            ? 'moving'
+            : 'normal';
+    const p = plat(pk, x, alt, pw, true);
+    if (pk === 'cloud') p.phase = rng.next() * CLOUD_CYCLE;
+    if (pk === 'moving') {
       p.amp = ampFor(d);
       p.sway = swayFor(d) * (0.8 + rng.next() * 0.4);
       p.phase = rng.next() * Math.PI * 2;
@@ -197,7 +264,9 @@ export function createLevel(d: Difficulty, rng: Rng): State {
   }
   // Springs on a few plain platforms of the path, spread along the climb.
   const plain = path.filter((p, i) => p.kind === 'normal' && i > 3 && i < path.length - 3);
-  const springs = springsFor(d);
+  // A spring park has plenty more springs (but no more gems than usual: one over each of the first few).
+  const gems = springsFor(d) + (kind === 'springs' ? 1 : 0);
+  const springs = springsFor(d) + (kind === 'springs' ? 5 : 0);
   for (let k = 0; k < springs && plain.length; k++) {
     const band = plain.filter((_, i) => Math.floor((i * springs) / plain.length) === k);
     const p = rng.pick(band.length ? band : plain);
@@ -206,7 +275,7 @@ export function createLevel(d: Difficulty, rng: Rng): State {
 
   // Critters hover in a gap, as far as possible from every jump that passes their height.
   const critters: Critter[] = [];
-  const want = crittersFor(d);
+  const want = crittersFor(d) + (kind === 'swarm' ? 2 : 0);
   if (want) {
     const slots = rng.shuffle(path.map((_, i) => i).filter((i) => i >= 5 && i < path.length - 2));
     for (const i of slots) {
@@ -228,7 +297,24 @@ export function createLevel(d: Difficulty, rng: Rng): State {
       const amp = 14;
       if (bestD < amp + CRIT_R + PR + 26) continue;
       const phase = rng.next() * Math.PI * 2;
-      critters.push({ x: wrap(bestX + amp * Math.sin(phase)), x0: bestX, alt: calt, amp, phase, dead: false });
+      critters.push({ x: wrap(bestX + amp * Math.sin(phase)), x0: bestX, alt: calt, amp, phase, v: 0, dead: false });
+    }
+  }
+  // A swarm adds bats flying straight across, each in its own band of the climb.
+  if (kind === 'swarm') {
+    const bats = byLevel(d, [0, 0, 3, 4, 5]);
+    const band = (goal - 500) / bats;
+    for (let k = 0; k < bats; k++) {
+      const balt = 400 + band * (k + 0.2 + rng.next() * 0.6);
+      critters.push({
+        x: rng.next() * W,
+        x0: rng.next() * W,
+        alt: balt,
+        amp: 0,
+        phase: 0,
+        v: rng.int(55, 85) * (rng.chance(0.5) ? -1 : 1),
+        dead: false,
+      });
     }
   }
 
@@ -250,12 +336,20 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     const p = path[i];
     if (i % 4 === 0) for (let k = 0; k < 3; k++) coins.push({ x: p.x0, alt: p.alt + 26 + k * 18, gem: false, taken: false });
     else if (rng.chance(0.5)) coins.push({ x: p.x0, alt: p.alt + 30, gem: false, taken: false });
-    if (p.spring != null) coins.push({ x: wrap(p.x0 + p.spring), alt: p.alt + SPRING_H * 0.8, gem: true, taken: false });
+    if (p.spring != null && coins.filter((c) => c.gem).length < gems)
+      coins.push({ x: wrap(p.x0 + p.spring), alt: p.alt + SPRING_H * 0.8, gem: true, taken: false });
   }
 
   const plats = [...path, ...extras].sort((a, b) => a.alt - b.alt);
   return {
     d,
+    kind,
+    wind: kind === 'windy' ? WIND * (rng.chance(0.5) ? -1 : 1) : 0,
+    chain: 0,
+    chainLeft: 0,
+    tier: 0,
+    supers: 0,
+    shield: false,
     goal,
     plats,
     critters,
@@ -293,24 +387,48 @@ export interface StepEvents {
   stomped: Critter | null;
   /** A heart lost: bumped a critter, or fell off the bottom. */
   hurt: 'bump' | 'fall' | null;
+  /** The shield took a hit instead (no heart lost). */
+  shielded: boolean;
+  /** Chain milestone reached this step (1-based, 0: none), and its reward. */
+  tier: number;
+  reward: Reward | null;
+  /** A super jump or the rocket took off this step. */
+  boost: 'super' | 'rocket' | null;
   won: boolean;
   over: boolean;
 }
 
 /** Advance the game by `dt` seconds. */
 export function step(s: State, dt: number): StepEvents {
-  const ev: StepEvents = { landed: null, spring: false, crumbled: null, taken: [], stomped: null, hurt: null, won: false, over: false };
+  const ev: StepEvents = {
+    landed: null,
+    spring: false,
+    crumbled: null,
+    taken: [],
+    stomped: null,
+    hurt: null,
+    shielded: false,
+    tier: 0,
+    reward: null,
+    boost: null,
+    won: false,
+    over: false,
+  };
   if (s.won || s.over) return ev;
   s.time += dt;
   s.invulnerable = Math.max(0, s.invulnerable - dt);
-  for (const p of s.plats) if (p.amp) p.x = wrap(p.x0 + p.amp * Math.sin(p.sway * s.time + p.phase));
-  for (const c of s.critters) c.x = wrap(c.x0 + c.amp * Math.sin(1.3 * s.time + c.phase));
+  for (const p of s.plats) {
+    if (p.amp) p.x = wrap(p.x0 + p.amp * Math.sin(p.sway * s.time + p.phase));
+    if (p.gone && (p.regrow -= dt) <= 0) p.gone = false;
+  }
+  for (const c of s.critters) c.x = wrap(c.v ? c.x0 + c.v * s.time : c.x0 + c.amp * Math.sin(1.3 * s.time + c.phase));
+  if (s.chain && (s.chainLeft -= dt) <= 0) s.chain = s.tier = s.chainLeft = 0;
 
-  // Sideways: speed towards the steering, with a quick brake when let go.
+  // Sideways: speed towards the steering, with a quick brake when let go; the wind pushes on top.
   const target = s.dir * VX;
   const a = s.dir ? ACC : BRAKE;
   s.vx = s.vx < target ? Math.min(target, s.vx + a * dt) : Math.max(target, s.vx - a * dt);
-  s.x = wrap(s.x + s.vx * dt);
+  s.x = wrap(s.x + (s.vx + windAt(s, s.time)) * dt);
 
   const before = s.alt;
   s.vy -= G * dt;
@@ -320,17 +438,34 @@ export function step(s: State, dt: number): StepEvents {
   if (s.vy < 0) {
     let hit: Plat | null = null;
     for (const p of s.plats)
-      if (!p.gone && before >= p.alt && s.alt <= p.alt && wdist(s.x, p.x) <= p.w / 2 + PR * 0.7 && (!hit || p.alt > hit.alt)) hit = p;
+      if (
+        !p.gone &&
+        solid(p, s.time) &&
+        before >= p.alt &&
+        s.alt <= p.alt &&
+        wdist(s.x, p.x) <= p.w / 2 + PR * 0.7 &&
+        (!hit || p.alt > hit.alt)
+      )
+        hit = p;
     if (hit) {
+      // Climbing to a higher platform keeps the chain going.
+      if (hit.alt > s.landedAlt + 1) climb(s, ev);
       s.alt = hit.alt;
       s.landedAlt = hit.alt;
       ev.landed = hit;
       ev.spring = hit.spring != null && wdist(s.x, hit.x + hit.spring) <= SPRING_W + PR * 0.5;
       s.vy = ev.spring ? SPRING : JUMP;
+      if (ev.reward === 'rocket') s.vy = ROCKET;
+      else if (s.supers > 0 && !ev.spring) {
+        s.supers--;
+        s.vy = SUPER;
+        ev.boost = 'super';
+      }
       if (hit.kind === 'crumble') {
         hit.gone = true;
+        hit.regrow = REGROW_S;
         ev.crumbled = hit;
-      } else s.safe = hit;
+      } else if (hit.kind !== 'cloud') s.safe = hit;
     }
   }
 
@@ -343,6 +478,7 @@ export function step(s: State, dt: number): StepEvents {
       s.vy = STOMP;
       s.stomps++;
       ev.stomped = c;
+      climb(s, ev);
     } else if (!s.invulnerable) ev.hurt = 'bump';
   }
 
@@ -359,6 +495,15 @@ export function step(s: State, dt: number): StepEvents {
   s.best = Math.max(s.best, s.alt);
   s.cam = Math.max(s.cam, s.alt - H * CAM_FRAC);
   if (!ev.hurt && s.alt < s.cam - FALL_MARGIN) ev.hurt = 'fall';
+  if (ev.hurt) s.chain = s.tier = s.chainLeft = 0;
+  if (ev.hurt && s.shield) {
+    // The shield takes the hit: a bump only makes the hopper blink; a fall puts it back on its platform.
+    s.shield = false;
+    ev.shielded = true;
+    if (ev.hurt === 'fall') respawn(s);
+    else s.invulnerable = INVULNERABLE_S;
+    ev.hurt = null;
+  }
   if (ev.hurt) {
     s.lives--;
     if (s.lives <= 0) {
@@ -374,6 +519,28 @@ export function step(s: State, dt: number): StepEvents {
   }
   s.score = scoreOf(s);
   return ev;
+}
+
+/** One more step in the chain (a climb or a stomp): milestones grant rewards. */
+function climb(s: State, ev: StepEvents) {
+  s.chain++;
+  s.chainLeft = CHAIN_WINDOW;
+  if (s.tier < CHAIN_TIERS.length && s.chain >= CHAIN_TIERS[s.tier]) {
+    ev.reward = REWARDS[s.tier];
+    ev.tier = ++s.tier;
+    grant(s, ev.reward);
+    if (ev.reward === 'rocket') ev.boost = 'rocket';
+  }
+}
+
+/** Give a chain reward: super jumps, a shield, or a rocket (on the next bounce, or right away in the air). */
+export function grant(s: State, r: Reward) {
+  if (r === 'super') s.supers = SUPER_JUMPS;
+  else if (r === 'shield') s.shield = true;
+  else {
+    s.vy = ROCKET;
+    s.invulnerable = Math.max(s.invulnerable, 1);
+  }
 }
 
 const scoreOf = (s: State) =>
@@ -401,9 +568,16 @@ function respawn(s: State) {
  */
 export function pilot(s: State): -1 | 0 | 1 {
   const floor = Math.max(s.landedAlt + 4, s.cam + 50);
-  const next = s.plats.find((p) => p.path && !p.gone && p.alt > floor);
+  let next = s.plats.find((p) => p.path && !p.gone && p.alt > floor);
   if (!next) return 0;
+  // A cloud that won't be there when the hopper comes down on it: bounce in place a while longer.
+  const rise = s.vy * s.vy + 2 * G * (s.alt - next.alt);
+  const land = rise >= 0 ? (s.vy + Math.sqrt(rise)) / G : 0;
+  const here = s.plats.find((p) => p.alt === s.landedAlt && !p.gone);
+  // Falling below it already: come back down onto the platform underneath instead.
+  if (here && ((next.kind === 'cloud' && !solid(next, s.time + land)) || (s.vy <= 0 && s.alt < next.alt))) next = here;
   const d = wdelta(s.x, next.x);
+
   const stop = Math.sign(s.vx) === Math.sign(d) ? (s.vx * s.vx) / (2 * BRAKE) : 0;
   return Math.abs(d) < 4 + stop ? 0 : d > 0 ? 1 : -1;
 }

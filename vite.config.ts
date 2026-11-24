@@ -51,6 +51,8 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: 'happy-dom',
       setupFiles: ['test/support/setup.ts'],
+      // Games are tested by simulating whole runs of every level kind: some take seconds under load.
+      testTimeout: 60_000,
     },
     plugins: [
       pagesFallback(),

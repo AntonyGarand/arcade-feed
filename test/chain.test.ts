@@ -1,16 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../src/core/rng';
 import { LEVELS, starsFor, type Difficulty } from '../src/core/types';
+import { kindsAt } from '../src/core/variety';
 import { chain } from '../src/games/chain';
 import {
   aimAt,
+  COIN_POINTS,
   coloursFor,
   countFor,
   createLevel,
   D,
+  grant,
   groupAt,
   H,
   insert,
+  KINDS,
   land,
   pointAt,
   present,
@@ -19,19 +23,32 @@ import {
   SHOOTER,
   shoot,
   speedFor,
+  STONE,
+  STREAK_TIERS,
   step,
   swapNext,
   trace,
   turnsFor,
   W,
   type Events,
+  type KindId,
   type Pop,
   type State,
 } from '../src/games/chain/rules';
 import { mountGame, type Mounted } from './support/mount';
 
 const DT = 1 / 60;
-const noEvents = (): Events => ({ landed: null, missed: null, pops: [], won: false, lost: false, bonus: 0 });
+const noEvents = (): Events => ({
+  landed: null,
+  missed: null,
+  pops: [],
+  coins: [],
+  tier: 0,
+  unlocked: null,
+  won: false,
+  lost: false,
+  bonus: 0,
+});
 
 /** Size of the run a marble of colour `k` would make where a shot at `aim` lands, nudged towards the head. */
 function rate(s: State, aim: number, k: number): number {
@@ -55,10 +72,11 @@ interface Shot {
  * where the loaded (or, with `swaps`, the next) colour makes the biggest run; with nothing worth a pair,
  * it shoots into empty space to be dealt another colour.
  */
-function autopilot(d: Difficulty, seed: number, think = 0.45, swaps = true) {
-  const s = createLevel(d, new Rng(seed));
+function autopilot(d: Difficulty, seed: number, think = 0.45, swaps = true, kind?: KindId) {
+  const s = createLevel(d, new Rng(seed), kind);
   const shots: Shot[] = [];
   let wait = 1;
+  let top = 0;
   for (let n = 0; n < 600 * 60; n++) {
     wait -= DT;
     if (!s.shot && wait <= 0) {
@@ -89,14 +107,15 @@ function autopilot(d: Difficulty, seed: number, think = 0.45, swaps = true) {
       wait = think;
     }
     const ev = step(s, DT);
-    if (ev.won || ev.lost) return { s, win: ev.won, shots, seconds: n * DT };
+    top = Math.max(top, s.tier);
+    if (ev.won || ev.lost) return { s, win: ev.won, shots, seconds: n * DT, top };
   }
   throw new Error('never ended');
 }
 
 /** A level-5 state with its chain replaced by `kinds`, touching, starting at track distance `from`. */
 function rigged(kinds: number[], from = 300): State {
-  const s = createLevel(5, new Rng(3));
+  const s = createLevel(5, new Rng(3), 'classic');
   s.chain = kinds.map((k, i) => ({ k, p: from + i * D, id: 100 + i }));
   return s;
 }
@@ -199,7 +218,9 @@ describe('chain rules', () => {
     expect(pops.map((p) => p.combo)).toEqual([1, 2, 3]);
     expect(pops.map((p) => p.gain)).toEqual([30, 60, 90]);
     expect(s.chain.map((m) => m.k)).toEqual([3, 4]);
-    expect(s.chain[1].p - s.chain[0].p).toBeCloseTo(D);
+    expect(s.chain[1].p - s.chain[0].p).toBeLessThanOrEqual(D + 0.5);
+    // Three pops in a row: the streak reached its first milestone, slow-mo.
+    expect(s.tier).toBe(1);
     // Ends that don't match just close up.
     const u = rigged([3, 0, 1, 1, 2]);
     land(u, 3, true, 1, 0, 0, noEvents());
@@ -267,8 +288,150 @@ describe('chain rules', () => {
   });
 });
 
+describe('chain kinds', () => {
+  it('deals the same kind from the same seed, and several kinds across seeds', () => {
+    for (const seed of [1, 2, 3]) {
+      const a = createLevel(4, new Rng(seed));
+      const b = createLevel(4, new Rng(seed));
+      expect(a.kind).toBe(b.kind);
+      expect(a.chain).toEqual(b.chain);
+      expect(a.coins).toEqual(b.coins);
+    }
+    const seen = new Set<string>();
+    for (let seed = 0; seed < 60; seed++) seen.add(createLevel(3, new Rng(seed)).kind);
+    expect(seen.size).toBeGreaterThanOrEqual(4);
+    for (let seed = 0; seed < 40; seed++) expect(kindsAt(1, KINDS).map((k) => k.id)).toContain(createLevel(1, new Rng(seed)).kind);
+  });
+
+  it('gives each kind its twist, and the autopilot clears every kind', () => {
+    for (const d of [1, 3, 5] as const)
+      for (const { id } of kindsAt(d, KINDS)) {
+        const s = createLevel(d, new Rng(8), id);
+        expect(s.chain.length, `${id} ${d}`).toBe(countFor(d));
+        const stones = s.chain.filter((m) => m.k === STONE).length;
+        const bombs = s.chain.filter((m) => m.bomb).length;
+        expect(stones >= 3, `${id} stones`).toBe(id === 'stones');
+        expect(stones > 0, `${id} stones`).toBe(id === 'stones');
+        expect(bombs >= 3, `${id} bombs`).toBe(id === 'powder');
+        expect(s.coins.length >= 3, `${id} coins`).toBe(id === 'gold');
+        expect(s.coins.length > 0, `${id} coins`).toBe(id === 'gold');
+        for (const seed of [2, 7]) {
+          const r = autopilot(d, seed, 0.45, true, id);
+          expect(r.win, `${id} level ${d} seed ${seed}`).toBe(true);
+        }
+      }
+  });
+
+  it('a surging chain speeds up and slows down', () => {
+    const s = createLevel(3, new Rng(5), 'surge');
+    const speeds: number[] = [];
+    for (let t = 0; t < 12; t += DT) {
+      step(s, DT);
+      if (t > 4) speeds.push(s.speed);
+    }
+    expect(Math.max(...speeds)).toBeGreaterThan(speedFor(3) * 1.5);
+    expect(Math.min(...speeds)).toBeLessThan(speedFor(3) * 0.5);
+  });
+
+  it('stones never match, crumble next to a pop, and go once only stones are left', () => {
+    const s = rigged([2, STONE, 1, 1, STONE, STONE, 3]);
+    const ev = noEvents();
+    land(s, 2, false, 1, 0, 0, ev);
+    expect(s.chain.map((m) => m.k)).toEqual([2, STONE, 3]);
+    expect(ev.pops[0].marbles.length).toBe(5);
+    const t = rigged([STONE, STONE, STONE]);
+    expect(groupAt(t.chain, 1)).toEqual([1, 1]);
+    const end = step(t, DT);
+    expect(end.won).toBe(true);
+    expect(t.chain).toEqual([]);
+  });
+
+  it('a bomb that pops blows up its neighbours, setting off other bombs', () => {
+    const s = rigged([0, 4, 3, 2, 1, 1, 3, 4, 2, 0, 4]);
+    s.chain[4].bomb = true;
+    s.chain[6].bomb = true;
+    const ev = noEvents();
+    land(s, 4, false, 1, 0, 0, ev);
+    // The shot lands before the bomb (now 5): its blast takes 3..7, setting off the bomb now at 7, which takes 5..9.
+    expect(s.chain.map((m) => m.k)).toEqual([0, 4, 3, 0, 4]);
+    expect(ev.pops[0].blasts.length).toBe(2);
+  });
+
+  it('a shot through a gold coin collects it and slows the chain', () => {
+    const s = createLevel(2, new Rng(4), 'gold');
+    s.chain = [];
+    s.chain.push({ k: 0, p: -500, id: 999 });
+    const coin = s.coins[0];
+    s.aim = Math.atan2(coin.y - SHOOTER.y, coin.x - SHOOTER.x);
+    const score = s.score;
+    shoot(s);
+    let got = 0;
+    for (let n = 0; n < 60; n++) got += step(s, DT).coins.length;
+    expect(got).toBeGreaterThanOrEqual(1);
+    expect(s.score).toBe(score + got * COIN_POINTS);
+    expect(s.slow).toBeGreaterThan(0);
+  });
+
+  it('a streak of pops unlocks slow-mo, then a bomb marble; a dud shot ends it; a push-back rolls the chain back', () => {
+    const kinds: number[] = [];
+    for (let i = 0; i < 12; i++) kinds.push(i % 4, i % 4);
+    const s = rigged(kinds, 400);
+    const got: string[] = [];
+    const pops: number[] = [];
+    // Complete each pair from the head end, one shot each.
+    for (let pair = 11; pair >= 0 && !got.includes('bomb'); pair--) {
+      const ev = noEvents();
+      land(s, pair * 2, false, pair % 4, 0, 0, ev);
+      pops.push(ev.pops.length);
+      if (ev.unlocked) got.push(ev.unlocked);
+    }
+    expect(pops.every((n) => n === 1)).toBe(true);
+    expect(got).toEqual(['slow', 'bomb']);
+    expect(s.slow).toBeGreaterThan(0);
+    expect(s.streak).toBe(STREAK_TIERS[1]);
+    expect(s.power).toBe('bomb');
+    // Fire it: it blows up 3 marbles on each side of where it lands.
+    const before = s.chain.length;
+    const bomb = noEvents();
+    land(s, 4, false, 0, 0, 0, bomb, 'bomb');
+    expect(s.chain.length).toBe(before + 1 - 7);
+    expect(bomb.pops[0].blasts.length).toBe(1);
+    // A shot that pops nothing ends the streak.
+    land(s, 0, false, (s.chain[0].k + 1) % 4, 0, 0, noEvents());
+    expect(s.streak).toBe(0);
+    expect(s.tier).toBe(0);
+    // A push-back rolls the chain towards the mouth.
+    grant(s, 'back');
+    const head = s.chain.at(-1)!.p;
+    for (let t = 0; t < 1; t += DT) step(s, DT);
+    expect(s.chain.at(-1)!.p).toBeLessThan(head - 30);
+  });
+
+  it('a wild marble takes the colour that makes a run', () => {
+    const s = rigged([3, 0, 0, 1, 2]);
+    const ev = noEvents();
+    land(s, 2, true, 2, 0, 0, ev, 'wild');
+    expect(ev.pops[0].marbles.length).toBe(3);
+    expect(s.chain.map((m) => m.k)).toEqual([3, 1, 2]);
+  });
+});
+
 describe('chain game', () => {
   const key = (m: Mounted, k: string, type = 'keydown') => m.inst.onKey?.(new KeyboardEvent(type, { key: k }));
+
+  it('names the kind of level on the start gate', () => {
+    const seen = new Set<string>();
+    for (let seed = 1; seed <= 12; seed++) {
+      const m = mountGame(chain, 3, seed);
+      expect(m.variant?.id).toBe(createLevel(3, new Rng(seed)).kind);
+      expect(m.variant!.name.length).toBeLessThanOrEqual(18);
+      expect(m.variant!.blurb!.length).toBeLessThanOrEqual(60);
+      seen.add(m.variant!.id);
+      m.inst.destroy?.();
+      m.root.remove();
+    }
+    expect(seen.size).toBeGreaterThanOrEqual(3);
+  });
 
   it('mounts at every level and keeps rolling without input', () => {
     for (const d of LEVELS) {

@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../src/core/rng';
 import { LEVELS, type Difficulty } from '../src/core/types';
+import { kindsAt } from '../src/core/variety';
+import { fallingBlocks } from '../src/games/falling-blocks';
 import {
+  BOMB,
+  BOMB_PIECE,
   COLS,
+  grant,
+  KINDS,
+  riseFor,
   createLevel,
   dropDistance,
   fits,
@@ -16,8 +23,10 @@ import {
   ROWS,
   shapeCells,
   step,
+  type KindId,
   type State,
 } from '../src/games/falling-blocks/rules';
+import { mountGame } from './support/mount';
 
 /** Board quality after a placement: fewer holes, lower and flatter is better, cleared lines best. */
 function evaluate(grid: number[], lines: number): number {
@@ -65,12 +74,14 @@ function placeBest(s: State) {
   return hardDrop(s);
 }
 
-function autopilot(d: Difficulty, seed: number) {
-  const s = createLevel(d, new Rng(seed));
+function autopilot(d: Difficulty, seed: number, kind?: KindId) {
+  const s = createLevel(d, new Rng(seed), kind);
+  const rewards: string[] = [];
   for (let i = 0; i < 1000; i++) {
     const ev = placeBest(s);
-    if (ev.won) return { s, win: true, pieces: i + 1 };
-    if (ev.over) return { s, win: false, pieces: i + 1 };
+    if (ev.reward) rewards.push(ev.reward);
+    if (ev.won) return { s, win: true, pieces: i + 1, rewards };
+    if (ev.over) return { s, win: false, pieces: i + 1, rewards };
   }
   throw new Error('never ended');
 }
@@ -91,8 +102,8 @@ describe('falling blocks rules', () => {
       expect(goalFor(d)).toBeGreaterThan(goalFor(lo));
       expect(gravityFor(d)).toBeLessThan(gravityFor(lo));
     }
-    const s = createLevel(4, new Rng(2));
-    const rows = new Set(s.grid.flatMap((v, i) => (v === GARBAGE ? [Math.floor(i / COLS)] : [])));
+    const s = createLevel(4, new Rng(2), 'classic');
+    const rows = new Set(s.grid.flatMap((v, i) => (v === GARBAGE || v === BOMB ? [Math.floor(i / COLS)] : [])));
     expect(rows.size).toBe(garbageFor(4));
     // No garbage row starts out full.
     for (const r of rows) expect(s.grid.slice(r * COLS, r * COLS + COLS).some((v) => v < 0)).toBe(true);
@@ -128,11 +139,114 @@ describe('falling blocks rules', () => {
       }
   });
 
+  it('deals the same kind from the same seed, and different kinds across seeds', () => {
+    const a = createLevel(4, new Rng(30));
+    expect(a.kind).toBe(createLevel(4, new Rng(30)).kind);
+    expect(a.grid).toEqual(createLevel(4, new Rng(30)).grid);
+    const seen = new Set<string>();
+    for (let seed = 0; seed < 50; seed++) seen.add(createLevel(4, new Rng(seed)).kind);
+    expect(seen.size).toBe(KINDS.length);
+    const easy = kindsAt(1, KINDS).map((k) => k.id);
+    for (let seed = 0; seed < 20; seed++) expect(easy).toContain(createLevel(1, new Rng(seed)).kind);
+  });
+
+  it('every kind can be cleared by the autopilot at every level it is dealt', () => {
+    for (const d of [2, 3, 5] as const)
+      for (const { id } of kindsAt(d, KINDS)) {
+        const wins = [1, 2, 3, 4].filter((seed) => autopilot(d, seed * 5 + d, id).win).length;
+        expect(wins, `${id} level ${d}`).toBeGreaterThanOrEqual(3);
+      }
+  });
+
+  it('lines a well up in one column, three rows at a time', () => {
+    const s = createLevel(3, new Rng(4), 'well');
+    const holes = (r: number) => [...Array(COLS).keys()].filter((c) => s.grid[r * COLS + c] < 0);
+    expect(holes(ROWS - 1)).toHaveLength(1);
+    expect(holes(ROWS - 1)).toEqual(holes(ROWS - 2));
+    expect(holes(ROWS - 1)).toEqual(holes(ROWS - 3));
+  });
+
+  it('a bomb in a cleared row blows up the rows next to it', () => {
+    const s = createLevel(2, new Rng(3), 'classic');
+    s.grid.fill(-1);
+    // Two rows of rubble with a gap at column 0, a bomb in the upper one; a ragged row above them.
+    for (const r of [ROWS - 2, ROWS - 1]) for (let c = 1; c < COLS; c++) s.grid[r * COLS + c] = GARBAGE;
+    s.grid[(ROWS - 2) * COLS + 5] = BOMB;
+    for (let c = 5; c < COLS; c++) s.grid[(ROWS - 3) * COLS + c] = GARBAGE;
+    // An upright bar dropped in column 0 fills both gaps.
+    s.piece = { k: 0, rot: 1, x: -2, y: 0 };
+    const ev = hardDrop(s);
+    expect(ev.cleared).toEqual([ROWS - 2, ROWS - 1]);
+    expect(ev.blasted).toEqual([ROWS - 3]);
+    expect(ev.booms).toEqual([{ x: 5, y: ROWS - 2 }]);
+    expect(s.lines).toBe(3);
+  });
+
+  it('a bomb piece blows away the rows where it lands', () => {
+    const s = createLevel(3, new Rng(5), 'classic');
+    grant(s, 'bomb');
+    // The bomb is next in line, after the current piece.
+    expect(s.queue[0]).toBe(BOMB_PIECE);
+    hardDrop(s);
+    expect(s.piece.k).toBe(BOMB_PIECE);
+    const lines = s.lines;
+    const ev = hardDrop(s);
+    expect(ev.booms).toHaveLength(1);
+    expect(ev.blasted.length).toBeGreaterThanOrEqual(1);
+    expect(s.lines).toBe(lines + ev.cleared.length + ev.blasted.length);
+  });
+
+  it('rising rubble pushes a row up every few pieces', () => {
+    const s = createLevel(3, new Rng(6), 'rising');
+    const count = () => s.grid.filter((v) => v === GARBAGE || v === BOMB).length;
+    let rose = 0;
+    for (let i = 0; i < riseFor(3); i++) if (hardDrop(s).rose) rose++;
+    expect(rose).toBe(1);
+    expect(count()).toBeGreaterThan(0);
+  });
+
+  it('speeds up with every line in a speed-up level', () => {
+    const s = createLevel(3, new Rng(7), 'speed');
+    const g0 = s.gravity;
+    expect(g0).toBeGreaterThan(gravityFor(3));
+    for (let i = 0; i < 40 && s.lines < 2; i++) placeBest(s);
+    expect(s.gravity).toBeLessThan(g0);
+  });
+
+  it('clears in a row slow the fall, then bring bomb pieces', () => {
+    const rewards: string[] = [];
+    for (let seed = 1; seed < 40 && !rewards.includes('bomb'); seed++) rewards.push(...autopilot(5, seed, 'classic').rewards);
+    expect(rewards).toContain('slow');
+    expect(rewards).toContain('bomb');
+    const s = createLevel(2, new Rng(8), 'classic');
+    grant(s, 'slow');
+    s.piece.y = 0;
+    const y = s.piece.y;
+    step(s, gravityFor(2) * 1.5);
+    expect(s.piece.y).toBe(y);
+    step(s, gravityFor(2) * 0.6);
+    expect(s.piece.y).toBe(y + 1);
+  });
+
   it('tops out when pieces pile up in the middle', () => {
     const s = createLevel(5, new Rng(8));
     let over = false;
     for (let i = 0; i < 200 && !over; i++) over = hardDrop(s).over;
     expect(over).toBe(true);
     expect(s.lines).toBeLessThan(goalFor(5));
+  });
+});
+
+describe('falling blocks game', () => {
+  it('mounts, names the kind of level and plays a few seconds', () => {
+    for (const d of LEVELS) {
+      const m = mountGame(fallingBlocks, d, 4);
+      expect(m.variant?.id).toBe(createLevel(d, new Rng(4)).kind);
+      expect(m.status).not.toBe('');
+      m.run(3);
+      expect(m.outcome).toBe('');
+      m.inst.destroy?.();
+      m.root.remove();
+    }
   });
 });

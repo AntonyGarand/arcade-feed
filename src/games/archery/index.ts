@@ -4,18 +4,26 @@ import { aimUpDown, btn, power } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { gestures, type Point } from '../../kits/gesture/gesture';
 import { haptic, sfx } from '../../kits/sound/sound';
+import { drawArrow, drawBalloons, drawWall, drawWind } from './draw';
 import {
   aimPath,
   ARROW_LEN,
   arrowsFor,
+  BALLOON_PTS,
+  BALLOON_R,
   BOW,
   createLevel,
   current,
   GROUND,
+  guided,
   H,
+  mult,
   RINGS,
+  STREAK_MIN,
+  STREAK_TIERS,
   setAim,
   shoot,
   step,
@@ -23,7 +31,36 @@ import {
   W,
   wind,
   WIND_STEP,
+  type KindId,
+  type Reward,
 } from './rules';
+
+/** What each kind of range is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  range: () => [
+    L('Classic range', 'Champ de tir'),
+    L('Targets in turn, a new wind every arrow.', 'Des cibles à tour de rôle, un vent neuf à chaque flèche.'),
+  ],
+  balloons: () => [
+    L('Balloon fair', 'Fête des ballons'),
+    L('Pop the rising balloons on the way for bonus points.', 'Crevez les ballons au passage pour des points en prime.'),
+  ],
+  wall: () => [
+    L('Palisade', 'Palissade'),
+    L('A wooden wall stands in the way: lob over it.', 'Un mur de bois bloque le tir : passez par-dessus.'),
+  ],
+  gusty: () => [
+    L('Gusty day', 'Jour de rafales'),
+    L('The wind swells and drops: time your shot.', 'Le vent forcit et faiblit : choisissez votre moment.'),
+  ],
+  carnival: () => [L('Carnival', 'Carnaval'), L('Every target bobs up and down.', 'Toutes les cibles montent et descendent.')],
+};
+
+const REWARD_NAMES: Record<Reward, () => string> = {
+  guide: () => L('Wind guide!', 'Guide du vent!'),
+  double: () => L('Points ×2!', 'Points ×2!'),
+  extra: () => L('Bonus arrow!', 'Flèche en prime!'),
+};
 
 /** Drag length (world units) for a full draw. */
 const PULL_MAX = 120;
@@ -57,6 +94,10 @@ export const archery: GameDef = {
         'Le guide pointillé ne montre que le début du vol, sans le vent. Certaines cibles bougent.',
       ),
       L(
+        `Some ranges add a twist: balloons to pop on the way (+${BALLOON_PTS}), a palisade to lob over, gusts that swell and drop.`,
+        `Certains champs ajoutent un défi : des ballons à crever au passage (+${BALLOON_PTS}), une palissade à franchir, des rafales qui varient.`,
+      ),
+      L(
         'Drag back from anywhere to draw and aim (the arrow flies the other way), release to shoot.',
         'Glissez vers l’arrière n’importe où pour bander l’arc et viser (la flèche part à l’opposé), relâchez pour tirer.',
       ),
@@ -71,20 +112,28 @@ export const archery: GameDef = {
         'Un vent vers la cible porte la flèche plus loin : visez un peu plus bas.',
       ),
       L('A flatter, faster shot gives the wind less time to act.', 'Un tir plus tendu et plus fort laisse moins de prise au vent.'),
+      L(
+        `Hit the ${STREAK_MIN}-ring or better in a row: ${STREAK_TIERS[0]} unlock a guide that shows the wind, ${STREAK_TIERS[1]} double your points, ${STREAK_TIERS[2]} earn a bonus arrow. A weaker shot ends the streak.`,
+        `Touchez l’anneau de ${STREAK_MIN} ou mieux d’affilée : ${STREAK_TIERS[0]} débloquent un guide qui montre le vent, ${STREAK_TIERS[1]} doublent vos points, ${STREAK_TIERS[2]} donnent une flèche en prime. Un tir plus faible brise la série.`,
+      ),
     ],
   }),
+  // The streak's double points and bonus arrow lift a sharp run well above the goal: three stars need
+  // most arrows in the 6-ring or better, the streak kept going.
   stars: (d) =>
     byLevel(d, [
-      [40, 50],
-      [42, 57],
-      [45, 56],
-      [44, 60],
-      [42, 59],
+      [55, 88],
+      [60, 100],
+      [60, 100],
+      [70, 108],
+      [65, 96],
     ] as const),
-  par: (d) => arrowsFor(d) * 6 + 5,
+  par: (d) => arrowsFor(d) * 6 + 8,
   pad: () => ({ left: aimUpDown(), right: [...power('ArrowLeft', 'ArrowRight'), btn(' ', 'fire', L('Shoot', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     /** When each arrow stuck (arena time), for its quiver. */
@@ -99,66 +148,15 @@ export const archery: GameDef = {
     let ended = false;
 
     const status = () =>
-      ctx.status(`${L('Points', 'Points')} ${s.score}/${s.goal} · ${L('arrow', 'flèche')} ${Math.min(s.shot + 1, s.arrows)}/${s.arrows}`);
-
-    function drawArrow(g: CanvasRenderingContext2D, x: number, y: number, a: number) {
-      const c = arena.colors;
-      const tx = x - Math.cos(a) * ARROW_LEN;
-      const ty = y - Math.sin(a) * ARROW_LEN;
-      g.strokeStyle = c.ink;
-      g.lineWidth = 2.2;
-      g.lineCap = 'round';
-      g.beginPath();
-      g.moveTo(tx, ty);
-      g.lineTo(x - Math.cos(a) * 3, y - Math.sin(a) * 3);
-      g.stroke();
-      g.lineCap = 'butt';
-      // Head.
-      g.fillStyle = c.ink;
-      g.beginPath();
-      g.moveTo(x + Math.cos(a) * 1.5, y + Math.sin(a) * 1.5);
-      g.lineTo(x - Math.cos(a) * 5 - Math.sin(a) * 3, y - Math.sin(a) * 5 + Math.cos(a) * 3);
-      g.lineTo(x - Math.cos(a) * 5 + Math.sin(a) * 3, y - Math.sin(a) * 5 - Math.cos(a) * 3);
-      g.closePath();
-      g.fill();
-      // Fletching.
-      g.fillStyle = c.accent;
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.4;
-      for (const k of [-1, 1]) {
-        g.beginPath();
-        g.moveTo(tx + Math.cos(a) * 8, ty + Math.sin(a) * 8);
-        g.lineTo(tx - Math.sin(a) * 4.5 * k, ty + Math.cos(a) * 4.5 * k);
-        g.lineTo(tx, ty);
-        g.closePath();
-        g.fill();
-        g.stroke();
-      }
-    }
-
-    /** Wind streaks drifting across the sky: their speed and side show the wind at a glance. */
-    function drawWind(g: CanvasRenderingContext2D, w: number) {
-      if (!w) return;
-      const c = arena.colors;
-      const speed = 40 + Math.abs(w) * 1.6;
-      const len = 10 + Math.min(30, Math.abs(w) / 4);
-      g.strokeStyle = c.muted;
-      g.lineWidth = 1.2;
-      g.lineCap = 'round';
-      for (let i = 0; i < 9; i++) {
-        const span = W + 80;
-        const off = (i * 97.3 + arena.time * speed * (0.75 + (i % 3) * 0.15)) % span;
-        const x = w > 0 ? off - 40 : W + 40 - off;
-        const y = 70 + ((i * 53) % 230);
-        g.globalAlpha = 0.18 + (i % 3) * 0.07;
-        g.beginPath();
-        g.moveTo(x, y);
-        g.lineTo(x - Math.sign(w) * len, y);
-        g.stroke();
-      }
-      g.globalAlpha = 1;
-      g.lineCap = 'butt';
-    }
+      ctx.status(
+        [
+          `${L('Points', 'Points')} ${s.score}/${s.goal}`,
+          `${L('arrow', 'flèche')} ${Math.min(s.shot + 1, s.arrows)}/${s.arrows}`,
+          s.streak > 1 ? L(`streak ${s.streak}`, `série ${s.streak}`) : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      );
 
     function draw() {
       const g = arena.begin();
@@ -167,7 +165,7 @@ export const archery: GameDef = {
       // Sky and ground: a grass strip over the earth.
       arena.field(g, 0, 0, W, GROUND, 25, 0, false);
       const w = s.phase === 'done' ? 0 : wind(s);
-      drawWind(g, w);
+      drawWind(arena, g, w);
       g.fillStyle = mix(c.p[7], c.cellAlt, 0.55);
       g.fillRect(0, GROUND, W, H - GROUND);
       g.fillStyle = mix(c.p[7], c.cellAlt, 0.2);
@@ -235,7 +233,7 @@ export const archery: GameDef = {
           g.fill();
           g.stroke();
         }
-        for (const a of s.stuck) if (a.t === i) drawArrow(g, t.x, y + a.y, a.a + wobble(a));
+        for (const a of s.stuck) if (a.t === i) drawArrow(arena, g, t.x, y + a.y, a.a + wobble(a));
         if (live) {
           const bob = Math.sin(arena.time * 5) * 2;
           g.fillStyle = c.accent;
@@ -251,17 +249,21 @@ export const archery: GameDef = {
         }
       }
       g.globalAlpha = 1;
-      for (const a of s.stuck) if (a.t < 0) drawArrow(g, a.x, a.y, a.a + wobble(a));
+      drawWall(arena, g, s);
+      drawBalloons(arena, g, s);
+      for (const a of s.stuck) if (a.t < 0) drawArrow(arena, g, a.x, a.y, a.a + wobble(a));
 
-      // Aim guide: dots fading out along the first stretch of the flight.
+      // Aim guide: dots fading out along the first stretch of the flight (longer, bent by the wind and
+      // in the accent colour while the streak's wind guide is on).
       if (s.phase === 'aim') {
         const path = aimPath(s);
-        g.fillStyle = c.fg;
+        const g2 = guided(s);
+        g.fillStyle = g2 ? c.accent : c.fg;
         for (const [i, p] of path.entries())
           if (i % 2 === 0) {
             g.globalAlpha = 0.85 * (1 - i / (path.length + 2));
             g.beginPath();
-            g.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
+            g.arc(p.x, p.y, g2 ? 2.6 : 2.2, 0, Math.PI * 2);
             g.fill();
           }
         g.globalAlpha = 1;
@@ -323,8 +325,8 @@ export const archery: GameDef = {
       g.strokeStyle = c.p[3];
       g.stroke();
       g.lineCap = 'butt';
-      if (s.phase === 'aim') drawArrow(g, nock.x + ca * ARROW_LEN, nock.y + sa * ARROW_LEN, -s.angle);
-      if (s.phase === 'flight') drawArrow(g, s.ax, s.ay, Math.atan2(s.vy, s.vx));
+      if (s.phase === 'aim') drawArrow(arena, g, nock.x + ca * ARROW_LEN, nock.y + sa * ARROW_LEN, -s.angle);
+      if (s.phase === 'flight') drawArrow(arena, g, s.ax, s.ay, Math.atan2(s.vy, s.vx));
 
       // Power gauge by the archer: fills as the bow is drawn, red near full draw.
       const gh = 84;
@@ -366,6 +368,20 @@ export const archery: GameDef = {
       g.font = `700 11px ${FONT}`;
       g.textAlign = 'left';
       g.fillText(`${s.score}/${s.goal}`, 13 + bw, 38.5);
+
+      // Streak meter under the tally: one pip per good shot towards the next reward, and the rewards on.
+      if (s.streak > 0 && s.phase !== 'done') {
+        const next = STREAK_TIERS.find((t) => t > s.streak) ?? STREAK_TIERS.at(-1)!;
+        for (let i = 0; i < next; i++) {
+          arena.disc(g, 13 + i * 11, 52, 3.8, i < s.streak ? c.accent : c.cellAlt);
+        }
+        const tags = [guided(s) ? L('wind guide', 'guide du vent') : '', mult(s) > 1 ? '×2' : ''].filter(Boolean).join(' · ');
+        if (tags) {
+          g.fillStyle = mult(s) > 1 ? c.accent : c.fg;
+          g.font = `800 10px ${FONT}`;
+          g.fillText(tags, 13 + next * 11, 52.5);
+        }
+      }
 
       // Wind flag: side and strength (in steps), fresh for every arrow.
       const fx0 = W - 40;
@@ -467,6 +483,19 @@ export const archery: GameDef = {
           trail.push({ x: s.ax, y: s.ay });
           if (trail.length > 14) trail.shift();
         } else trail = [];
+        for (const p of ev.pops) {
+          const c = arena.colors;
+          sfx('pop', { pitch: 6 });
+          fx.burst(p.x, p.y, c.accent, 14, 120, 3, 0.45, 'dot', 120);
+          fx.ring(p.x, p.y, c.fg, 3, BALLOON_R * 2.2, 0.3, arena.lw);
+          fx.text(p.x, p.y - 14, `+${p.points}`, c.accent, 13);
+          ctx.score(s.score);
+        }
+        if (ev.landed && ev.streak >= 2) comboPop(fx, ev.x - 10, ev.y - 42, ev.streak, arena.colors.accent);
+        if (ev.tier && ev.unlocked) {
+          comboTier(fx, ev.tier, arena.colors.accent, REWARD_NAMES[ev.unlocked]());
+          status();
+        }
         if (ev.landed) {
           const c = arena.colors;
           const last = s.stuck.at(-1);
@@ -474,20 +503,25 @@ export const archery: GameDef = {
           if (ev.points) {
             shake = 1;
             shaken = last?.t ?? -1;
-            const fill = ringFills()[RINGS.findIndex((r) => r === ev.points)] ?? c.accent;
-            fx.burst(ev.x, ev.y, fill, 8 + ev.points, 90 + ev.points * 8, 3, 0.5, 'square', 160, Math.PI, Math.PI * 0.9);
-            fx.ring(ev.x, ev.y, fill, 3, 14 + ev.points * 2, 0.35, arena.lw);
-            if (ev.points >= 10) {
+            const r = ev.ring;
+            const fill = ringFills()[RINGS.findIndex((k) => k === r)] ?? c.accent;
+            fx.burst(ev.x, ev.y, fill, 8 + r, 90 + r * 8, 3, 0.5, 'square', 160, Math.PI, Math.PI * 0.9);
+            fx.ring(ev.x, ev.y, fill, 3, 14 + r * 2, 0.35, arena.lw);
+            if (r >= 10) {
               sfx('power');
               haptic(20);
               fx.text(ev.x - 10, ev.y - 30, L('Bullseye!', 'En plein dans le mille!'), c.accent, 15, 1.2);
-              fx.text(ev.x - 10, ev.y - 10, '+10', c.accent, 17, 1.1);
+              fx.text(ev.x - 10, ev.y - 10, `+${ev.points}`, c.accent, 17, 1.1);
               fx.flash(c.accent, 0.18, 0.3);
               fx.shake(2.5, 0.2);
             } else {
-              sfx('hit', { pitch: ev.points / 2 });
-              fx.text(ev.x - 10, ev.y - 16, `+${ev.points}`, ev.points >= 6 ? c.accent : c.fg, 13 + ev.points * 0.3);
+              sfx('hit', { pitch: r / 2 });
+              fx.text(ev.x - 10, ev.y - 16, `+${ev.points}`, r >= STREAK_MIN ? c.accent : c.fg, 13 + r * 0.3);
             }
+          } else if (ev.blocked) {
+            sfx('hit', { pitch: -4 });
+            fx.burst(ev.x, ev.y, mix(c.p[3], c.coal, 0.35), 10, 80, 2.5, 0.4, 'square', 200, Math.PI, Math.PI * 0.8);
+            fx.text(ev.x, ev.y - 16, L('Blocked', 'Bloquée'), c.fg, 12);
           } else {
             sfx('error');
             fx.burst(ev.x, ev.y, c.muted, 10, 70, 2.5, 0.45, 'dot', 220, -Math.PI / 2, Math.PI * 0.8);

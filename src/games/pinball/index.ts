@@ -3,16 +3,20 @@ import { L, P } from '../../core/i18n';
 import { btn } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
-import { sfx } from '../../kits/sound/sound';
+import { comboPop, comboTier } from '../../kits/combo/combo';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   ARC,
   BALL_BONUS,
   BALL_R,
   BALLS,
+  COMBO_TIERS,
+  COMBO_WINDOW,
   createLevel,
   FLIP_R0,
   FLIP_R1,
   flipperTip,
+  GUARD,
   goalFor,
   H,
   LANE_X,
@@ -20,16 +24,53 @@ import {
   LANE_Y1,
   MID,
   PLUNGER_Y,
-  pull,
-  release,
-  SLING,
-  step,
+  SAUCER_R,
+  STAR_R,
+  VORTEX_R,
   W,
-} from './rules';
+  type KindId,
+  type Reward,
+} from './table';
+import { drawExtras, drawPowers, drawSlings, SLING_P } from './draw';
+import { pull, release, step } from './rules';
 
-/** Palette slots for the bumpers (the kicker post first), then the slings and the target banks. */
+/** What each kind of table is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [
+    L('Classic table', 'Table classique'),
+    L('Bumpers, drop targets and top lanes.', 'Champignons, cibles et couloirs du haut.'),
+  ],
+  storm: () => [
+    L('Bumper storm', 'Tempête'),
+    L('Extra bumpers; the drifting ones score double.', 'Plus de champignons; ceux qui bougent valent double.'),
+  ],
+  gallery: () => [
+    L('Target gallery', 'Galerie de cibles'),
+    L('Three target banks: stack the multiplier.', 'Trois rangées de cibles : montez le multiplicateur.'),
+  ],
+  stars: () => [
+    L('Star hunt', 'Chasse aux étoiles'),
+    L('Roll over all five stars for a big bonus.', 'Passez sur les cinq étoiles pour un gros boni.'),
+  ],
+  saucer: () => [
+    L('Kickout saucer', 'Soucoupe'),
+    L('Sink the saucer again and again: it pays more.', 'Visez la soucoupe encore et encore : elle paie plus.'),
+  ],
+  vortex: () => [
+    L('Black hole', 'Trou noir'),
+    L('It pulls the ball in and eats your multiplier.', 'Il attire la bille et mange votre multiplicateur.'),
+  ],
+};
+
+const REWARD_NAMES: Record<Reward, () => string> = {
+  frenzy: () => L('Frenzy: points ×2!', 'Frénésie : points ×2!'),
+  save: () => L('Ball save!', 'Bille protégée!'),
+  guard: () => L('Drain guard!', 'Garde-bille!'),
+  jackpot: () => L('Jackpot!', 'Gros lot!'),
+};
+
+/** Palette slots for the bumpers (the kicker post first), then the target banks. */
 const BUMPER_P = [7, 1, 6, 0, 2, 5];
-const SLING_P = 3;
 const BANK_P = [0, 6, 2];
 
 export const pinball: GameDef = {
@@ -60,19 +101,23 @@ export const pinball: GameDef = {
         'Abattez toute une rangée de cibles pour monter le multiplicateur (jusqu’à ×4) de tous les points suivants.',
       ),
       L(
+        'Tables vary: roll over stars, sink the saucer, hit drifting bumpers (double points), and dodge the black hole.',
+        'Les tables changent : passez sur les étoiles, visez la soucoupe, frappez les champignons mobiles (points doubles) et évitez le trou noir.',
+      ),
+      L(
         'Hard and up: side outlanes swallow the ball too. A ball lost right after launch comes back once.',
         'Dès Difficile, les couloirs extérieurs avalent aussi la bille. Une bille perdue juste après le lancer revient une fois.',
       ),
       L(
-        'Touch the left or right half to flip that flipper (both at once works).',
-        'Touchez la moitié gauche ou droite pour actionner ce batteur (les deux à la fois, ça marche).',
-      ),
-      L(
-        'Keyboard: ← or A / Z and → or D / / to flip, Space or ↓ to launch, P to pause.',
-        'Clavier : ← ou A / Z et → ou D / / pour les batteurs, Espace ou ↓ pour lancer, P pour la pause.',
+        'Touch the left or right half to flip that flipper. Keyboard: ← or A / Z and → or D / / to flip, Space or ↓ to launch, P to pause.',
+        'Touchez la moitié gauche ou droite pour actionner ce batteur. Clavier : ← ou A / Z et → ou D / / pour les batteurs, Espace ou ↓ pour lancer, P pour la pause.',
       ),
     ],
     tips: [
+      L(
+        `Keep the ball up top: hits within ${COMBO_WINDOW} s of each other build a combo. At ${COMBO_TIERS[0]} a frenzy doubles points, at ${COMBO_TIERS[1]} a ball save, at ${COMBO_TIERS[2]} a post guards the drain, at ${COMBO_TIERS[3]} a jackpot.`,
+        `Gardez la bille en haut : des coups à moins de ${COMBO_WINDOW} s d’intervalle font un combo. À ${COMBO_TIERS[0]}, une frénésie double les points; à ${COMBO_TIERS[1]}, la bille est protégée; à ${COMBO_TIERS[2]}, un poteau garde le bas; à ${COMBO_TIERS[3]}, le gros lot.`,
+      ),
       L(
         'Flip as the ball reaches the middle of the flipper: hitting near the tip sends it across the table.',
         'Frappez quand la bille arrive au milieu du batteur : près du bout, elle traverse la table.',
@@ -95,6 +140,8 @@ export const pinball: GameDef = {
   }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     /** Arena time of each bumper's, sling's and target's last hit, for their flash and pop. */
@@ -103,6 +150,8 @@ export const pinball: GameDef = {
     const targetAt = new Float32Array(s.targets.length).fill(-9);
     const flipAt = new Float32Array(2).fill(-9);
     let laneAt = -9;
+    let saucerAt = -9;
+    let swallowAt = -9;
     let multAt = -9;
     const TRAIL = 8;
     const trail = new Float32Array(TRAIL * 2);
@@ -118,6 +167,7 @@ export const pinball: GameDef = {
         [
           P(Math.max(0, s.goal - s.score), ['point to go', 'points to go'], ['point à faire', 'points à faire']),
           s.mult > 1 ? `×${s.mult}` : '',
+          s.combo > 1 ? `combo ${s.combo}` : '',
           s.save > 0 && !s.saveUsed ? L('ball save on', 'bille protégée') : '',
         ]
           .filter(Boolean)
@@ -199,38 +249,7 @@ export const pinball: GameDef = {
         );
       }
 
-      // Slingshots: a rubber face that flashes when it kicks.
-      for (const side of [0, 1]) {
-        const m = (x: number) => (side ? 2 * MID - x : x);
-        const fill = c.p[SLING_P];
-        const tone = arena.tone(fill);
-        const k = flash(slingAt[side], 0.18);
-        g.beginPath();
-        g.moveTo(m(SLING.ax), SLING.ay);
-        g.lineTo(m(SLING.bx), SLING.by);
-        g.lineTo(m(SLING.cx), SLING.cy);
-        g.closePath();
-        g.fillStyle = k > 0 ? tone.hi : fill;
-        g.fill();
-        g.strokeStyle = tone.edge;
-        g.lineWidth = arena.lw * 0.8;
-        g.lineJoin = 'round';
-        g.stroke();
-        const bulge = 3 * k;
-        const nx = side ? -0.92 : 0.92;
-        g.strokeStyle = k > 0 ? c.paper : tone.hi;
-        g.lineWidth = 2.4;
-        g.lineCap = 'round';
-        g.beginPath();
-        g.moveTo(m(SLING.ax) + nx * 1.5, SLING.ay + 3);
-        g.quadraticCurveTo(
-          (m(SLING.ax) + m(SLING.cx)) / 2 + nx * (2 + bulge),
-          (SLING.ay + SLING.cy) / 2 - 1,
-          m(SLING.cx) - nx * 1,
-          SLING.cy - 3,
-        );
-        g.stroke();
-      }
+      drawSlings(arena, g, flash(slingAt[0], 0.18), flash(slingAt[1], 0.18));
 
       // Walls, guides and lane posts.
       g.strokeStyle = c.ink;
@@ -277,6 +296,8 @@ export const pinball: GameDef = {
         arena.disc(g, lx, ly, 2.4 + k * 2, tg.down ? fill : c.cellAlt);
       }
 
+      drawExtras(arena, g, s, flash(saucerAt, 0.6), flash(swallowAt, 0.5));
+
       // Bumpers: a rubber ring and a cap that pops when struck.
       for (let i = 0; i < s.bumpers.length; i++) {
         const b = s.bumpers[i];
@@ -289,6 +310,19 @@ export const pinball: GameDef = {
           g.arc(b.x, b.y, b.r + 5 * k + 2, 0, Math.PI * 2);
           g.fill();
         }
+        if (b.amp) {
+          // Drifting bumper: the rail it sways along.
+          g.strokeStyle = tone.edge;
+          g.globalAlpha = 0.4;
+          g.lineWidth = 2;
+          g.setLineDash([3, 4]);
+          g.beginPath();
+          g.moveTo(b.x0 - b.amp, b.y);
+          g.lineTo(b.x0 + b.amp, b.y);
+          g.stroke();
+          g.setLineDash([]);
+          g.globalAlpha = 1;
+        }
         arena.disc(g, b.x, b.y, b.r, tone.lo);
         arena.ball(g, b.x, b.y - 1, b.r * (0.74 + 0.12 * k), k > 0.3 ? tone.hi : fill, false);
         g.fillStyle = c.paper;
@@ -297,6 +331,12 @@ export const pinball: GameDef = {
         g.arc(b.x, b.y - 1, b.r * 0.22, 0, Math.PI * 2);
         g.fill();
         g.globalAlpha = 1;
+        if (b.amp) {
+          // It's worth double.
+          g.fillStyle = tone.edge;
+          g.font = `800 8px ${arena.family}`;
+          g.fillText('×2', b.x, b.y + b.r * 0.55);
+        }
       }
 
       // Plunger: a spring that squeezes as it's pulled.
@@ -360,6 +400,8 @@ export const pinball: GameDef = {
         arena.disc(g, f.px, f.py, 2.4, c.paper);
       }
 
+      drawPowers(arena, g, s);
+
       // Ball and its trail.
       const ballFill = arena.dark ? c.fg : c.cell;
       if (!s.held && !ended) {
@@ -378,7 +420,7 @@ export const pinball: GameDef = {
       arena.overlay(g);
     }
 
-    function react(ev: ReturnType<typeof step>) {
+    function react(ev: ReturnType<typeof step>, combo0: number) {
       const c = arena.colors;
       for (const h of ev.hits) {
         if (h.kind === 'bumper') {
@@ -408,6 +450,26 @@ export const pinball: GameDef = {
           fx.text(MID, 246, `+${h.pts}`, c.fg, 13, 1);
           fx.flash(c.accent, 0.18, 0.35);
           fx.shake(2.5, 0.25);
+        } else if (h.kind === 'star') {
+          sfx('coin', { pitch: 4 });
+          fx.burst(h.x, h.y, c.accent, 12, 120, 3, 0.5, 'dot');
+          fx.ring(h.x, h.y, c.accent, STAR_R, STAR_R * 3, 0.35, arena.lw);
+          fx.text(h.x, h.y - 12, `+${h.pts}`, c.accent, 13);
+        } else if (h.kind === 'stars') {
+          sfx('power');
+          fx.text(MID, 200, L('All stars!', 'Toutes les étoiles!'), c.accent, 18, 1.2);
+          fx.text(MID, 222, `+${h.pts}`, c.fg, 14, 1.1);
+          fx.flash(c.accent, 0.18, 0.35);
+        } else if (h.kind === 'saucer') {
+          saucerAt = arena.time;
+          sfx('pop', { pitch: 6 });
+          fx.ring(h.x, h.y, c.p[4], SAUCER_R, SAUCER_R * 3, 0.4, arena.lw * 1.2);
+          fx.text(h.x, h.y - 18, `+${h.pts}`, c.p[4], 15, 0.9);
+          fx.shake(1.5, 0.15);
+        } else if (h.kind === 'jackpot') {
+          multAt = arena.time;
+          fx.text(MID, 246, `+${h.pts}`, c.accent, 18, 1.2);
+          for (let i = 0; i < 4; i++) fx.burst(MID, 230, c.p[i], 8, 180, 3.5, 0.8, 'square', 200);
         } else if (h.kind === 'lane') {
           laneAt = arena.time;
           sfx('coin');
@@ -418,6 +480,32 @@ export const pinball: GameDef = {
           for (const x of s.lanes) fx.burst(x, (LANE_Y0 + LANE_Y1) / 2, c.accent, 5, 90, 2.5, 0.4, 'dot', 80);
           fx.flash(c.accent, 0.12, 0.25);
         }
+      }
+      // Combo steps pop by the last hit; a milestone gets the banner with what it unlocked.
+      const last = ev.hits.at(-1);
+      if (last && s.combo !== combo0 && s.combo >= 3) comboPop(fx, Math.min(W - 24, Math.max(24, last.x)), last.y - 14, s.combo, c.accent);
+      if (ev.unlocked) {
+        comboTier(
+          fx,
+          ev.tier,
+          ev.unlocked === 'frenzy' ? c.bad : ev.unlocked === 'jackpot' ? c.accent : c.good,
+          REWARD_NAMES[ev.unlocked](),
+        );
+        if (ev.unlocked === 'guard') fx.ring(GUARD.x, GUARD.y, c.good, GUARD.r, 40, 0.5, arena.lw * 1.4);
+        if (ev.unlocked === 'save') fx.text(MID, 330, L('Ball save on', 'Bille protégée'), c.good, 13, 1.2);
+      }
+      if (ev.swallowed && s.vortex) {
+        swallowAt = arena.time;
+        sfx('error');
+        haptic(40);
+        fx.ring(s.vortex.x, s.vortex.y, c.bad, VORTEX_R, 6, 0.4, arena.lw * 1.5);
+        fx.text(s.vortex.x, s.vortex.y - 22, L('Swallowed!', 'Avalée!'), c.bad, 14, 1);
+        fx.shake(3, 0.25);
+        multAt = arena.time;
+      }
+      if (ev.kicked) {
+        sfx('shoot', { pitch: 3 });
+        fx.burst(s.bx, s.by, c.muted, 8, 110, 2.5, 0.3, 'spark', 0);
       }
       for (let k = 0; k < 2; k++) {
         if (!ev.flip[k]) continue;
@@ -470,12 +558,13 @@ export const pinball: GameDef = {
       frame(dt) {
         const score = s.score;
         const mult = s.mult;
+        const combo = s.combo;
         const saving = s.save > 0 && !s.saveUsed;
         const ev = step(s, dt);
         arena.update(dt);
-        react(ev);
+        react(ev, combo);
         if (s.score !== score) ctx.score(s.score);
-        if (s.score !== score || s.mult !== mult || saving !== (s.save > 0 && !s.saveUsed) || ev.drained) status();
+        if (s.score !== score || s.mult !== mult || s.combo !== combo || saving !== (s.save > 0 && !s.saveUsed) || ev.drained) status();
         if (!s.held) {
           trail[trailAt * 2] = s.bx;
           trail[trailAt * 2 + 1] = s.by;

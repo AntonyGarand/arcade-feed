@@ -4,10 +4,14 @@ import { btn } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena, type Trace } from '../../kits/arena/arena';
 import { glyphPath } from '../../kits/glyph/glyph';
+import { drawBird, drawCave, drawCoin, drawDrafts } from './draw';
 import { alpha, mix } from '../../kits/arena/color';
-import { sfx } from '../../kits/sound/sound';
+import { comboPop, comboTier } from '../../kits/combo/combo';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
+  COIN_POINTS,
   COL_W,
+  COMBO_TIERS,
   createLevel,
   flap,
   FLYER_R,
@@ -18,15 +22,53 @@ import {
   H,
   LIFE_BONUS,
   livesFor,
+  MAGNET_R,
+  MAGNET_S,
   nextColumn,
   PICKUP_POINTS,
   PICKUP_R,
   pickupsFor,
   spacingFor,
+  SLOW_S,
   speedFor,
   step,
+  TRAIL,
   W,
+  type KindId,
+  type Power,
 } from './rules';
+
+/** What each kind of flight is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  meadow: () => [L('Open sky', 'Ciel dégagé'), L('Classic columns with bonus stars.', 'Des colonnes classiques et des étoiles bonus.')],
+  trails: () => [
+    L('Coin trails', 'Pistes de pièces'),
+    L('Coins curve between the gates: grab whole trails.', 'Des pièces serpentent entre les portes : prenez-les toutes.'),
+  ],
+  cave: () => [
+    L('Cave', 'Caverne'),
+    L('Rock walls between the gates, and the tunnel narrows.', 'Des parois de roc entre les portes; le tunnel rétrécit.'),
+  ],
+  sliding: () => [
+    L('Sliding gates', 'Portes mobiles'),
+    L('The gaps glide up and down: time your pass.', 'Les ouvertures montent et descendent : visez juste.'),
+  ],
+  windy: () => [
+    L('Gusty', 'Bourrasques'),
+    L('Updrafts lift you, downdrafts push you down.', 'Les courants d’air vous soulèvent ou vous rabattent.'),
+  ],
+  flock: () => [
+    L('Bird flock', 'Volée d’oiseaux'),
+    L('Birds bob between the columns: fly around them.', 'Des oiseaux flottent entre les colonnes : contournez-les.'),
+  ],
+};
+
+const POWER_NAMES: Record<Power, () => string> = {
+  shield: () => L('Shield!', 'Bouclier!'),
+  magnet: () => L('Star magnet!', 'Aimant à étoiles!'),
+  slow: () => L('Slow motion!', 'Ralenti!'),
+  super: () => L('Shield, magnet, slow-mo!', 'Bouclier, aimant, ralenti!'),
+};
 
 /** Glyph used for bonus stars (a five-point star). */
 const STAR = 4;
@@ -52,18 +94,21 @@ export const flutter: GameDef = {
         'Votre oiseau tombe sans arrêt; chaque battement le fait remonter un peu.',
       ),
       L(
-        'Pass through the gap of each column. Touching a column or the ground costs a heart.',
-        'Passez par l’ouverture de chaque colonne. Toucher une colonne ou le sol coûte un cœur.',
+        'Pass through the gap of each column. Touching a column, the ground, a cave wall or a bird costs a heart.',
+        'Passez par l’ouverture de chaque colonne. Toucher une colonne, le sol, une paroi ou un oiseau coûte un cœur.',
+      ),
+      L(
+        'Each level has its twist: sliding gates, a narrowing cave, gusts (follow the arrows), coin trails or a flock of birds.',
+        'Chaque niveau a sa particularité : portes mobiles, caverne qui rétrécit, bourrasques (suivez les flèches), pistes de pièces ou volée d’oiseaux.',
       ),
       L(
         'After a crash you reappear in the gap and blink: you’re safe for a moment.',
         'Après un choc, vous réapparaissez dans l’ouverture et clignotez : vous êtes à l’abri un instant.',
       ),
       L(
-        'Tap anywhere to flap. Nothing moves until your first tap.',
-        'Touchez n’importe où pour battre des ailes. Rien ne bouge avant votre première touche.',
+        'Tap anywhere to flap (keyboard: Space, ↑ or W; P to pause). Nothing moves until your first flap.',
+        'Touchez n’importe où pour battre des ailes (clavier : Espace, ↑ ou W; P pour la pause). Rien ne bouge avant le premier battement.',
       ),
-      L('Keyboard: Space, ↑ or W to flap, P to pause.', 'Clavier : Espace, ↑ ou W pour battre des ailes, P pour la pause.'),
     ],
     tips: [
       L(
@@ -71,8 +116,12 @@ export const flutter: GameDef = {
         'Des touches courtes et régulières vous gardent à niveau; laissez-vous tomber un peu avant une ouverture basse.',
       ),
       L(
-        `${GATE_POINTS} points per gate, ${PICKUP_POINTS} per star, ${LIFE_BONUS} per heart left at the end.`,
-        `${GATE_POINTS} points par porte, ${PICKUP_POINTS} par étoile, ${LIFE_BONUS} par cœur restant à la fin.`,
+        `Fly clean to build a combo: each gate, star and coin trail in a row (a gate right through the middle counts double). At ${COMBO_TIERS[0]} you get a shield, at ${COMBO_TIERS[1]} a star magnet, at ${COMBO_TIERS[2]} slow motion, at ${COMBO_TIERS[3]} all three. A crash resets it.`,
+        `Volez sans faute pour bâtir un combo : chaque porte, étoile et piste de pièces d’affilée (une porte franchie en plein centre compte double). À ${COMBO_TIERS[0]}, vous gagnez un bouclier, à ${COMBO_TIERS[1]} un aimant à étoiles, à ${COMBO_TIERS[2]} le ralenti, à ${COMBO_TIERS[3]} les trois. Un choc le remet à zéro.`,
+      ),
+      L(
+        `${GATE_POINTS} points per gate, ${PICKUP_POINTS} per star, ${COIN_POINTS} per coin, ${LIFE_BONUS} per heart left at the end.`,
+        `${GATE_POINTS} points par porte, ${PICKUP_POINTS} par étoile, ${COIN_POINTS} par pièce, ${LIFE_BONUS} par cœur restant à la fin.`,
       ),
     ],
   }),
@@ -82,13 +131,15 @@ export const flutter: GameDef = {
     const lives = livesFor(d);
     return [
       base + Math.floor(picks * 0.3) * PICKUP_POINTS + LIFE_BONUS,
-      base + (picks - Math.ceil(picks / 4)) * PICKUP_POINTS + lives * LIFE_BONUS,
+      base + (picks - Math.ceil(picks / 5)) * PICKUP_POINTS + lives * LIFE_BONUS,
     ];
   },
   par: (d) => Math.round((gatesFor(d) * spacingFor(d)) / speedFor(d) + 3),
   pad: () => ({ right: [btn(' ', 'flap', L('Flap', 'Battre'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const max = s.lives;
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
@@ -108,7 +159,13 @@ export const flutter: GameDef = {
     const status = () =>
       ctx.status(
         s.started
-          ? [`${L('Gate', 'Porte')} ${s.passed}/${s.goal}`, P(s.pickups, ['star', 'stars'], ['étoile', 'étoiles'])].join(' · ')
+          ? [
+              `${L('Gate', 'Porte')} ${s.passed}/${s.goal}`,
+              s.kind === 'trails' ? P(s.coins, ['coin', 'coins'], ['pièce', 'pièces']) : P(s.got, ['star', 'stars'], ['étoile', 'étoiles']),
+              s.combo >= 2 ? `combo ×${s.combo}` : '',
+            ]
+              .filter(Boolean)
+              .join(' · ')
           : L('Tap to fly', 'Touchez pour voler'),
       );
 
@@ -179,6 +236,34 @@ export const flutter: GameDef = {
       g.stroke();
       g.restore();
       g.globalAlpha = 1;
+      if (!ended && s.shield) {
+        // Shield: a wobbling bubble around the flyer.
+        const r = FLYER_R + 7 + Math.sin(arena.time * 6) * 1.2;
+        const sh = arena.tone(c.p[4]);
+        g.fillStyle = alpha(c.p[4], 0.16);
+        g.strokeStyle = sh.edge;
+        g.lineWidth = arena.lw;
+        g.beginPath();
+        g.arc(FX, y, r, 0, Math.PI * 2);
+        g.fill();
+        g.stroke();
+        g.strokeStyle = sh.hi;
+        g.beginPath();
+        g.arc(FX, y, r - 3, Math.PI * 1.1, Math.PI * 1.45);
+        g.stroke();
+      }
+      if (!ended && s.magnet > 0) {
+        // Magnet: a dashed ring of the pull radius, turning.
+        g.save();
+        g.strokeStyle = alpha(c.p[3], 0.25 + 0.35 * Math.min(1, s.magnet / 1.5));
+        g.lineWidth = arena.lw * 0.8;
+        g.setLineDash([5, 6]);
+        g.lineDashOffset = -arena.time * 30;
+        g.beginPath();
+        g.arc(FX, y, MAGNET_R, 0, Math.PI * 2);
+        g.stroke();
+        g.restore();
+      }
       if (respawn < 0.45) {
         const k = respawn / 0.45;
         g.globalAlpha = 1 - k;
@@ -216,6 +301,43 @@ export const flutter: GameDef = {
           g.restore();
         }
       }
+    }
+
+    /** Powers running (a labelled bar each, top left) and the combo count (top right). */
+    function drawPowers(g: CanvasRenderingContext2D) {
+      if (ended) return;
+      const c = arena.colors;
+      const bars: [string, number, string][] = [];
+      if (s.shield) bars.push([L('Shield', 'Bouclier'), 1, c.p[4]]);
+      if (s.magnet > 0) bars.push([L('Magnet', 'Aimant'), s.magnet / MAGNET_S, c.p[3]]);
+      if (s.slow > 0) bars.push([L('Slow-mo', 'Ralenti'), s.slow / SLOW_S, c.p[6]]);
+      g.font = `800 9px ${arena.family}`;
+      g.textAlign = 'left';
+      g.textBaseline = 'middle';
+      g.lineJoin = 'round';
+      bars.forEach(([label, k, col], i) => {
+        const y = 24 + i * 13;
+        g.fillStyle = alpha(c.muted, 0.35);
+        g.fillRect(8, y - 3, 46, 6);
+        g.fillStyle = col;
+        g.fillRect(8, y - 3, 46 * k, 6);
+        g.lineWidth = 3;
+        g.strokeStyle = c.cell;
+        g.strokeText(label, 58, y);
+        g.fillStyle = c.fg;
+        g.fillText(label, 58, y);
+      });
+      if (s.combo >= 2) {
+        const str = `×${s.combo}`;
+        g.textAlign = 'right';
+        g.font = `900 ${Math.round(Math.min(18, 11 + s.combo * 0.25))}px ${arena.family}`;
+        g.lineWidth = 4;
+        g.strokeStyle = c.cell;
+        g.strokeText(str, W - 8, 26);
+        g.fillStyle = s.tier ? c.accent : c.fg;
+        g.fillText(str, W - 8, 26);
+      }
+      g.textBaseline = 'alphabetic';
     }
 
     function draw() {
@@ -265,12 +387,16 @@ export const flutter: GameDef = {
         g.arc(x, GROUND + 12, 44 + (((n % 3) + 3) % 3) * 10, Math.PI, 0);
       }
       g.fill();
+      drawDrafts(g, arena, s);
+      const rock = mix(c.muted, c.cellAlt, 0.45);
+      drawCave(g, arena, s, rock);
+      const pipe = s.cave ? rock : c.p[2];
       const next = nextColumn(s);
       for (const col of s.cols) {
         const x = col.x - s.dist;
         if (x > W + 8 || x + COL_W < -10) continue;
-        const top = col.gy - s.gap / 2;
-        const bottom = col.gy + s.gap / 2;
+        const top = col.gy - col.gap / 2;
+        const bottom = col.gy + col.gap / 2;
         if (col === next && s.started && !ended && x > FX + FLYER_R) {
           // Chevrons in the gate to aim for, pulsing gently.
           g.strokeStyle = arena.dark ? c.accent : mix(c.accent, c.ink, 0.4);
@@ -290,11 +416,33 @@ export const flutter: GameDef = {
           g.lineCap = 'butt';
         }
         const done = x + COL_W < FX - FLYER_R;
-        drawColumn(g, x, top, bottom, done ? mix(c.p[2], c.cellAlt, 0.6) : c.p[2], col === last);
-        if (col.star != null && !col.taken) {
-          const tw = Math.sin(arena.time * 5 + col.x);
-          arena.gem(g, x + COL_W / 2, col.star + tw * 2, PICKUP_R + 1, c.p[3], star, true, 1 + 0.06 * tw, tw * 0.2);
+        drawColumn(g, x, top, bottom, done ? mix(pipe, c.cellAlt, 0.6) : pipe, col === last);
+        if (col.amp && !done) {
+          // Sliding gate: little arrows on the lips, pointing the way it's heading.
+          const dir = Math.cos(s.flight * 1.5 + col.phase) >= 0 ? 1 : -1;
+          g.fillStyle = arena.tone(pipe).edge;
+          for (const ly of [top - 6.5, bottom + 6.5]) {
+            g.beginPath();
+            g.moveTo(x + COL_W / 2 - 5, ly - dir * 2.5);
+            g.lineTo(x + COL_W / 2 + 5, ly - dir * 2.5);
+            g.lineTo(x + COL_W / 2, ly + dir * 3);
+            g.closePath();
+            g.fill();
+          }
         }
+      }
+      for (const p of s.pickups) {
+        const x = p.x - s.dist;
+        if (p.taken || x > W + 12 || x < -12) continue;
+        if (p.coin) drawCoin(g, arena, x, p.y);
+        else {
+          const tw = Math.sin(arena.time * 5 + p.x);
+          arena.gem(g, x, p.y + tw * 2, PICKUP_R + 1, c.p[3], star, true, 1 + 0.06 * tw, tw * 0.2);
+        }
+      }
+      for (const b of s.birds) {
+        const x = b.x - s.dist;
+        if (!b.gone && x < W + 20 && x > -20) drawBird(g, arena, x, b.y, b.phase * 10);
       }
       // Ground: grass edge over a strip with moving stripes.
       arena.box(g, -4, GROUND, W + 8, H - GROUND + 4, c.cellAlt, 0, false);
@@ -312,7 +460,13 @@ export const flutter: GameDef = {
       }
       g.restore();
       arena.block(g, -4, GROUND, W + 8, 7, c.good, 0, false, 0.6);
+      if (s.slow > 0 && !ended) {
+        // Slow motion: a cool tint that fades out as it ends.
+        g.fillStyle = alpha(c.p[6], 0.1 * Math.min(1, s.slow / 0.6));
+        g.fillRect(0, 0, W, H);
+      }
       drawFlyer(g);
+      drawPowers(g);
       // Progress along the top: one pip per gate.
       const pipW = Math.min(14, (W - 40) / s.goal - 2);
       const x0 = W / 2 - (s.goal * (pipW + 2) - 2) / 2;
@@ -365,19 +519,49 @@ export const flutter: GameDef = {
         const c = arena.colors;
         const y0 = s.y;
         const before = s.score;
+        const combo = s.combo;
         const ev = step(s, dt);
         if (ev.passed) {
           sfx('coin', { vol: 0.7, step: 1 + (s.passed % 7) });
-          fx.ring(FX, s.y, c.accent, FLYER_R, FLYER_R + 16, 0.3, arena.lw * 0.8);
+          fx.ring(FX, s.y, ev.perfect ? c.good : c.accent, FLYER_R, FLYER_R + (ev.perfect ? 24 : 16), 0.3, arena.lw * 0.8);
           if (s.passed === s.goal - 1) fx.text(W / 2, 40, L('Last gate!', 'Dernière porte!'), c.accent, 15, 1.2);
-          fx.text(FX, s.y - 30, `+${GATE_POINTS}`, c.fg, 12);
+          fx.text(
+            FX,
+            s.y - 30,
+            ev.perfect ? L('Perfect!', 'Parfait!') : `+${GATE_POINTS}`,
+            ev.perfect ? c.good : c.fg,
+            ev.perfect ? 13 : 12,
+          );
+        }
+        if (ev.coins) {
+          sfx('coin', { vol: 0.5, step: 3 + (s.coins % TRAIL) * 2 });
+          fx.burst(FX + 6, s.y, c.p[3], 5, 80, 2.5, 0.35, 'spark', 0);
+          if (!ev.picked) fx.text(FX + 16, s.y - 14, `+${COIN_POINTS}`, c.p[3], 11, 0.5);
         }
         if (ev.picked) {
           sfx('power', { vol: 0.8 });
           fx.burst(FX + 8, s.y, c.p[3], 12, 120, 3.5, 0.5, 'spark', 0);
           fx.ring(FX + 8, s.y, c.p[3], 4, 26, 0.3, arena.lw);
-          fx.text(FX + 18, s.y - 18, `+${PICKUP_POINTS}`, c.p[3], 15);
+          fx.text(FX + 18, s.y - 18, ev.coins ? L('Trail!', 'Piste!') : `+${PICKUP_POINTS}`, c.p[3], 15);
         }
+        if (s.combo > combo && !ev.tier) comboPop(fx, FX + 34, s.y - 8, s.combo, c.accent);
+        if (ev.tier && ev.unlocked) {
+          comboTier(fx, ev.tier, c.accent, POWER_NAMES[ev.unlocked]());
+          const p = ev.unlocked;
+          if (p === 'shield' || p === 'super') fx.ring(FX, s.y, c.p[4], FLYER_R, FLYER_R + 30, 0.45, arena.lw * 1.4);
+          if (p === 'magnet' || p === 'super') fx.ring(FX, s.y, c.p[3], MAGNET_R, FLYER_R, 0.5, arena.lw);
+          if (p === 'slow' || p === 'super') fx.burst(FX, s.y, c.p[6], 14, 110, 3, 0.6, 'dot', 0);
+        }
+        if (ev.shielded) {
+          sfx('hit');
+          haptic(25);
+          fx.ring(FX, s.y, c.p[4], FLYER_R + 6, FLYER_R + 34, 0.4, arena.lw * 1.4);
+          fx.burst(FX, s.y, arena.tone(c.p[4]).hi, 14, 140, 3, 0.5, 'dot', 0);
+          fx.text(FX, s.y - 28, L('Shield saved you!', 'Sauvé par le bouclier!'), c.p[4], 12, 0.9);
+          fx.shake(3, 0.2);
+        }
+        if (ev.bird) fx.burst(ev.bird.x, ev.bird.y, c.bad, 14, 150, 3.5, 0.6, 'square', 200);
+        if (ev.broke >= 5) fx.text(W - 30, 44, L('Combo lost', 'Combo perdu'), c.muted, 11, 0.9);
         if (ev.hurt) {
           ctx.lives(s.lives, max);
           fx.shake(5, 0.35);
@@ -388,7 +572,7 @@ export const flutter: GameDef = {
           if (!ev.over) respawn = 0;
         }
         if (s.score !== before) ctx.score(s.score);
-        if (ev.passed || ev.picked || ev.hurt) status();
+        if (ev.passed || ev.picked || ev.coins || ev.hurt || ev.shielded) status();
         if (ev.over) {
           ended = 'lost';
           fallY = y0;

@@ -1,5 +1,6 @@
 import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
+import { dealKind, type Kind } from '../../core/variety';
 
 /** Playfield in world units. */
 export const W = 300;
@@ -30,6 +31,41 @@ export const POP_POINTS = 10;
 /** Bonus for a clear: all of it if the head never got past the intro mark, none if it reached the hole. */
 export const SAFE_BONUS = 600;
 
+/** Colour of a stone: it never matches, and crumbles when a run next to it pops. */
+export const STONE = -1;
+const STONE_POINTS = 10;
+/** Marbles a bomb blows up on each side when it pops. */
+const BLAST = 2;
+/** A bomb shot blows up this many marbles on each side of where it lands. */
+const BOMB_SHOT = 3;
+/** Gold coins: radius, points, and the slow-down they give when a shot flies through. */
+export const COIN_R = 8;
+export const COIN_POINTS = 50;
+const COIN_SLOW = 4;
+/** Streak milestones (pops in a row without a dud shot) and what each unlocks. */
+export const STREAK_TIERS = [3, 6, 10, 15, 21] as const;
+const REWARDS = ['slow', 'bomb', 'back', 'wild', 'bomb'] as const;
+export type Power = (typeof REWARDS)[number];
+/** Slow-mo: seconds, and the chain's speed while it runs. */
+export const SLOW_S = 6;
+const SLOW_K = 0.35;
+/** Push-back: seconds, and how fast the chain rolls back. */
+export const BACK_S = 1.6;
+const BACK_SPEED = 70;
+/** Surging chains: period (seconds) and swing of their speed around the usual. */
+const SURGE_T = 8;
+const SURGE_K = 0.8;
+
+/** The kinds of level: a plain chain, stones in it, bombs in it, a surging push, coins to shoot. */
+export const KINDS = [
+  { id: 'classic', weight: 2 },
+  { id: 'powder' },
+  { id: 'gold' },
+  { id: 'stones', min: 2 },
+  { id: 'surge', min: 2 },
+] as const satisfies readonly Kind[];
+export type KindId = (typeof KINDS)[number]['id'];
+
 export const countFor = (d: Difficulty) => byLevel(d, [22, 30, 38, 46, 54]);
 export const coloursFor = (d: Difficulty) => byLevel(d, [3, 4, 5, 5, 6]);
 /** Steady push of the chain, world units per second. */
@@ -51,8 +87,10 @@ export interface Track {
 }
 
 export interface Marble {
-  /** Colour (and glyph). */
+  /** Colour (and glyph); `STONE` for a stone. */
   k: number;
+  /** A bomb: blows up its neighbours when it pops. */
+  bomb?: boolean;
   /** Distance along the track (negative: still inside the mouth). */
   p: number;
   id: number;
@@ -64,10 +102,13 @@ interface Shot {
   dx: number;
   dy: number;
   k: number;
+  /** A combo reward fired with it. */
+  power: 'bomb' | 'wild' | null;
 }
 
 export interface State {
   d: Difficulty;
+  kind: KindId;
   colours: number;
   track: Track;
   /** Ordered from the tail (pushed from the mouth) to the head (nearest the hole). */
@@ -85,6 +126,19 @@ export interface State {
   score: number;
   /** Pops in a row since the last shot landed (each multiplies the points). */
   combo: number;
+  /** Pops in a row across shots; a shot that lands without popping ends it. */
+  streak: number;
+  /** Streak milestones reached (index into `STREAK_TIERS`). */
+  tier: number;
+  /** Seconds of slow-mo and push-back left. */
+  slow: number;
+  back: number;
+  /** A combo reward loaded in the shooter: the next shot is a bomb or a wild marble. */
+  power: 'bomb' | 'wild' | null;
+  /** Gold coins floating between the loops (gold rush). */
+  coins: Point[];
+  /** Seconds since the start (surging chains). */
+  t: number;
   popped: number;
   shots: number;
   /** Furthest the head got along the track. */
@@ -150,9 +204,25 @@ function tangentAt(t: Track, p: number): Point {
   return { x: (b.x - a.x) / l, y: (b.y - a.y) / l };
 }
 
-/** Colours still in the chain, in order. */
+/** Colours still in the chain, in order (stones aren't a colour). */
 export function present(chain: readonly Marble[]): number[] {
-  return [...new Set(chain.map((m) => m.k))].sort((a, b) => a - b);
+  return [...new Set(chain.map((m) => m.k))].filter((k) => k >= 0).sort((a, b) => a - b);
+}
+
+/** Seeded spots for gold coins, in the gaps between the loops and clear of the shooter. */
+function placeCoins(track: Track, n: number, rng: Rng): Point[] {
+  const coins: Point[] = [];
+  for (let tries = 0; tries < 400 && coins.length < n; tries++) {
+    const x = rng.int(COIN_R + 4, W - COIN_R - 4);
+    const y = rng.int(COIN_R + 4, H - COIN_R - 4);
+    if (Math.hypot(x - SHOOTER.x, y - SHOOTER.y) < 40) continue;
+    if (coins.some((c) => Math.hypot(c.x - x, c.y - y) < 50)) continue;
+    let near = Infinity;
+    for (let i = 0; i < track.pts.length; i += 2) near = Math.min(near, Math.hypot(track.pts[i] - x, track.pts[i + 1] - y));
+    if (near < R + COIN_R + 2) continue;
+    coins.push({ x, y });
+  }
+  return coins;
 }
 
 const pickColour = (s: State) => {
@@ -160,7 +230,8 @@ const pickColour = (s: State) => {
   return left.length ? s.rng.pick(left) : 0;
 };
 
-export function createLevel(d: Difficulty, rng: Rng): State {
+export function createLevel(d: Difficulty, rng: Rng, kindId?: KindId): State {
+  const kind = kindId ?? dealKind(rng, d, KINDS).id;
   const colours = coloursFor(d);
   const track = buildTrack(d, rng);
   const n = countFor(d);
@@ -174,9 +245,22 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     prev = k;
   }
   // The head starts at the mouth, the rest queued behind it.
-  const chain = kinds.map((k, i) => ({ k, p: -(n - 1 - i) * D, id: i }));
+  const chain: Marble[] = kinds.map((k, i) => ({ k, p: -(n - 1 - i) * D, id: i }));
+  // Stones replace marbles here and there (never two side by side, never at the head).
+  const stones = kind === 'stones' ? Math.round(n / 7) : 0;
+  for (let placed = 0, tries = 0; placed < stones && tries < 200; tries++) {
+    const i = rng.int(1, n - 3);
+    if ([i - 1, i, i + 1].some((j) => chain[j].k === STONE)) continue;
+    chain[i].k = STONE;
+    placed++;
+  }
+  // Bombs: lots in a powder keg, a couple from level 3 in a classic chain.
+  const bombs = kind === 'powder' ? Math.round(n / 6) : kind === 'classic' && d >= 3 ? 2 : 0;
+  const plain = rng.shuffle(chain.filter((m) => m.k !== STONE));
+  for (let i = 0; i < bombs && plain.length; i++) plain.pop()!.bomb = true;
   const s: State = {
     d,
+    kind,
     colours,
     track,
     chain,
@@ -189,6 +273,13 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     turn: 0,
     score: 0,
     combo: 0,
+    streak: 0,
+    tier: 0,
+    slow: 0,
+    back: 0,
+    power: null,
+    coins: kind === 'gold' ? placeCoins(track, 5, rng) : [],
+    t: 0,
     popped: 0,
     shots: 0,
     reach: 0,
@@ -262,7 +353,8 @@ export function shoot(s: State): boolean {
   if (s.shot || s.over) return false;
   const dx = Math.cos(s.aim);
   const dy = Math.sin(s.aim);
-  s.shot = { x: SHOOTER.x + dx * MUZZLE, y: SHOOTER.y + dy * MUZZLE, dx, dy, k: s.cur };
+  s.shot = { x: SHOOTER.x + dx * MUZZLE, y: SHOOTER.y + dy * MUZZLE, dx, dy, k: s.cur, power: s.power };
+  s.power = null;
   s.cur = s.next;
   s.next = pickColour(s);
   s.shots++;
@@ -293,6 +385,7 @@ export function groupAt(chain: readonly Marble[], i: number): [number, number] {
   const k = chain[i].k;
   let lo = i;
   let hi = i;
+  if (k === STONE) return [lo, hi];
   while (lo > 0 && chain[lo - 1].k === k && touching(chain[lo - 1], chain[lo])) lo--;
   while (hi < chain.length - 1 && chain[hi + 1].k === k && touching(chain[hi], chain[hi + 1])) hi++;
   return [lo, hi];
@@ -302,6 +395,8 @@ export interface Pop {
   marbles: (Point & { k: number })[];
   combo: number;
   gain: number;
+  /** Where bombs went off in it. */
+  blasts: Point[];
 }
 
 export interface Events {
@@ -310,31 +405,97 @@ export interface Events {
   /** A shot left the field, here. */
   missed: Point | null;
   pops: Pop[];
+  /** Coins a shot flew through. */
+  coins: Point[];
+  /** A streak milestone reached (1-based) and what it unlocked; 0 for none. */
+  tier: number;
+  unlocked: Power | null;
   won: boolean;
   lost: boolean;
   /** The safety bonus added on a clear. */
   bonus: number;
 }
 
+/** Score marbles `lo..hi` out of the chain (and the bombs and stones they take along) as one pop. */
+function remove(s: State, from: number, to: number, ev: Events, blasted: Point[] = []) {
+  const c = s.chain;
+  let lo = from;
+  let hi = to;
+  // Bombs in the range blow up their neighbours, which may be bombs too.
+  const lit = new Set<number>();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (let i = lo; i <= hi; i++)
+      if (c[i].bomb && !lit.has(i)) {
+        lit.add(i);
+        blasted.push(pointAt(s.track, c[i].p));
+        lo = Math.max(0, Math.min(lo, i - BLAST));
+        hi = Math.min(c.length - 1, Math.max(hi, i + BLAST));
+        grew = true;
+      }
+  }
+  // Stones right next to the pop crumble.
+  if (lo > 0 && c[lo - 1].k === STONE && touching(c[lo - 1], c[lo])) lo--;
+  if (hi < c.length - 1 && c[hi + 1].k === STONE && touching(c[hi], c[hi + 1])) hi++;
+  const gone = c.splice(lo, hi - lo + 1);
+  s.combo++;
+  const gain = gone.reduce((t, m) => t + (m.k === STONE ? STONE_POINTS : POP_POINTS * s.combo), 0);
+  s.score += gain;
+  s.popped += gone.length;
+  ev.pops.push({ marbles: gone.map((m) => ({ ...pointAt(s.track, m.p), k: m.k })), combo: s.combo, gain, blasts: blasted });
+  s.streak++;
+  if (s.tier < STREAK_TIERS.length && s.streak >= STREAK_TIERS[s.tier]) {
+    const p = REWARDS[s.tier++];
+    grant(s, p);
+    ev.tier = s.tier;
+    ev.unlocked = p;
+  }
+}
+
 /** Pop the run through `i` if it holds 3 or more. */
 function tryPop(s: State, i: number, ev: Events): boolean {
   const [lo, hi] = groupAt(s.chain, i);
   if (hi - lo < 2) return false;
-  const gone = s.chain.splice(lo, hi - lo + 1);
-  s.combo++;
-  const gain = gone.length * POP_POINTS * s.combo;
-  s.score += gain;
-  s.popped += gone.length;
-  ev.pops.push({ marbles: gone.map((m) => ({ ...pointAt(s.track, m.p), k: m.k })), combo: s.combo, gain });
+  remove(s, lo, hi, ev);
   return true;
 }
 
+/** Turn a streak reward on: slow-mo, a push-back, or a bomb or wild marble in the shooter. */
+export function grant(s: State, p: Power) {
+  if (p === 'slow') s.slow = SLOW_S;
+  else if (p === 'back') {
+    s.back = BACK_S;
+    // Don't let the quick roll-in undo it.
+    s.intro = Math.min(s.intro, head(s) - BACK_S * BACK_SPEED - D);
+  } else s.power = p;
+}
+
+/** The colour a wild marble landing at index `at` takes: the neighbour's that makes the longest run. */
+function wildColour(s: State, at: number): number {
+  let best = -1;
+  let k = s.chain[at].k;
+  for (const j of [at - 1, at + 1]) {
+    const m = s.chain[j];
+    if (!m || m.k === STONE) continue;
+    s.chain[at].k = m.k;
+    const [lo, hi] = groupAt(s.chain, at);
+    if (hi - lo > best) [best, k] = [hi - lo, m.k];
+  }
+  return k;
+}
+
 /** Settle a shot in the chain next to marble `j`, popping its run if it makes 3. */
-export function land(s: State, j: number, after: boolean, k: number, x: number, y: number, ev: Events) {
+export function land(s: State, j: number, after: boolean, k: number, x: number, y: number, ev: Events, power: Shot['power'] = null) {
   const i = insert(s, j, after, k);
   ev.landed = { id: s.chain[i].id, x, y, k };
   s.combo = 0;
-  tryPop(s, i, ev);
+  if (power === 'bomb') {
+    remove(s, Math.max(0, i - BOMB_SHOT), Math.min(s.chain.length - 1, i + BOMB_SHOT), ev, [{ x, y }]);
+    return;
+  }
+  if (power === 'wild') s.chain[i].k = ev.landed.k = wildColour(s, i);
+  // A shot that pops nothing ends the streak.
+  if (!tryPop(s, i, ev)) s.streak = s.tier = 0;
 }
 
 /** Move the chain: the rear part is pushed from the mouth, every part in front slides back to meet it. */
@@ -343,8 +504,10 @@ function roll(s: State, dt: number, ev: Events) {
   if (!c.length) return;
   // Fast while the head is short of the intro mark (at the start, or after a big clear), easing in.
   const short = s.intro - head(s);
-  const v = speedFor(s.d);
-  s.speed = short > 0 ? v + (INTRO_SPEED - v) * Math.max(0.12, Math.min(1, short / 90)) : v;
+  let v = speedFor(s.d);
+  if (s.kind === 'surge') v *= 1 + SURGE_K * Math.sin((s.t / SURGE_T) * Math.PI * 2);
+  if (s.slow > 0) v *= SLOW_K;
+  s.speed = s.back > 0 ? -BACK_SPEED : short > 0 ? v + (INTRO_SPEED - v) * Math.max(0.12, Math.min(1, short / 90)) : v;
   const gaps = new Set<number>();
   for (let i = 0; i + 1 < c.length; i++) if (!touching(c[i], c[i + 1])) gaps.add(c[i].id);
   let i = 0;
@@ -365,7 +528,7 @@ function roll(s: State, dt: number, ev: Events) {
   // Gaps that just closed between two marbles of a colour may pop: a chain reaction.
   for (const id of gaps) {
     const a = c.findIndex((m) => m.id === id);
-    if (a < 0 || a + 1 >= c.length || !touching(c[a], c[a + 1]) || c[a].k !== c[a + 1].k) continue;
+    if (a < 0 || a + 1 >= c.length || !touching(c[a], c[a + 1]) || c[a].k !== c[a + 1].k || c[a].k === STONE) continue;
     tryPop(s, a, ev);
   }
 }
@@ -380,8 +543,11 @@ function reload(s: State) {
 
 /** Advance by `dt` seconds: keyboard aim, the chain, and the shot in flight. */
 export function step(s: State, dt: number): Events {
-  const ev: Events = { landed: null, missed: null, pops: [], won: false, lost: false, bonus: 0 };
+  const ev: Events = { landed: null, missed: null, pops: [], coins: [], tier: 0, unlocked: null, won: false, lost: false, bonus: 0 };
   if (s.over) return ev;
+  s.t += dt;
+  s.slow = Math.max(0, s.slow - dt);
+  s.back = Math.max(0, s.back - dt);
   if (s.turn) s.aim += s.turn * AIM_SPEED * dt;
   roll(s, dt, ev);
   const shot = s.shot;
@@ -392,12 +558,21 @@ export function step(s: State, dt: number): Events {
       left -= h;
       shot.x += shot.dx * h;
       shot.y += shot.dy * h;
+      // Coins: the shot flies straight through them.
+      for (let c = s.coins.length - 1; c >= 0; c--) {
+        const coin = s.coins[c];
+        if (Math.hypot(coin.x - shot.x, coin.y - shot.y) > R + COIN_R) continue;
+        s.coins.splice(c, 1);
+        s.score += COIN_POINTS;
+        s.slow = Math.max(s.slow, COIN_SLOW);
+        ev.coins.push(coin);
+      }
       for (let j = 0; j < s.chain.length; j++) {
         if (!visible(s, s.chain[j])) continue;
         const m = pointAt(s.track, s.chain[j].p);
         if ((m.x - shot.x) ** 2 + (m.y - shot.y) ** 2 < HIT * HIT) {
           s.shot = null;
-          land(s, j, sideOf(s, j, shot.x, shot.y), shot.k, shot.x, shot.y, ev);
+          land(s, j, sideOf(s, j, shot.x, shot.y), shot.k, shot.x, shot.y, ev, shot.power);
           break;
         }
       }
@@ -408,6 +583,8 @@ export function step(s: State, dt: number): Events {
     }
   }
   s.reach = Math.max(s.reach, head(s));
+  // Only stones left: they crumble.
+  if (s.chain.length && !present(s.chain).length) remove(s, 0, s.chain.length - 1, ev);
   if (!s.chain.length) {
     s.over = true;
     ev.won = true;

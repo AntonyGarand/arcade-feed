@@ -10,7 +10,7 @@ import type { Fx } from '../arena/fx';
 import { haptic, sfx } from '../sound/sound';
 
 /** Default milestones: the counts that fire `onTier` (tier 1 at 5 hits, tier 2 at 10…). */
-export const TIERS: readonly number[] = [5, 10, 15, 25, 40, 60];
+const TIERS: readonly number[] = [5, 10, 15, 25, 40, 60];
 
 export interface ComboOptions {
   /** Seconds a combo stays alive after a hit (0: it only ends on `break()`). */
@@ -79,7 +79,7 @@ export class Combo {
 }
 
 /** The hype word for a milestone: "Nice!", "Great!"… */
-export function tierWord(tier: number): string {
+function tierWord(tier: number): string {
   const words = [
     L('Nice!', 'Beau!'),
     L('Great!', 'Super!'),

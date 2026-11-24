@@ -5,9 +5,12 @@ import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { alpha, mix } from '../../kits/arena/color';
 import { approach } from '../../kits/arena/ease';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { glyphPath } from '../../kits/glyph/glyph';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
+  CHAIN_TIERS,
+  CHAIN_WINDOW,
   COIN_POINTS,
   COIN_R,
   createLevel,
@@ -29,8 +32,31 @@ import {
   STOMP_POINTS,
   TIME_POINTS,
   W,
+  windAt,
+  type KindId,
   type Plat,
+  type Reward,
 } from './rules';
+import { drawBat, drawCloud, drawCritter } from './sprites';
+
+/** What each kind of climb is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [L('Classic', 'Classique'), L('A steady climb up to the flag.', 'Une montée régulière jusqu’au drapeau.')],
+  springs: () => [L('Spring park', 'Parc à ressorts'), L('Springs everywhere: fly high!', 'Des ressorts partout : envolez-vous!')],
+  crumbly: () => [L('Crumbling', 'Effritement'), L('Many ledges break after one bounce.', 'Bien des corniches cèdent après un rebond.')],
+  clouds: () => [
+    L('Cloud hop', 'Saut de nuages'),
+    L('Clouds come and go: time your bounce.', 'Les nuages vont et viennent : visez le bon moment.'),
+  ],
+  windy: () => [L('Windy', 'Venteux'), L('A gusty wind pushes you sideways.', 'Des rafales vous poussent de côté.')],
+  swarm: () => [L('Swarm', 'Essaim'), L('More critters, and bats flying across.', 'Plus de bestioles, et des chauves-souris.')],
+};
+
+const REWARD_NAMES: Record<Reward, () => string> = {
+  super: () => L('Super jumps!', 'Super sauts!'),
+  shield: () => L('Shield!', 'Bouclier!'),
+  rocket: () => L('Rocket!', 'Fusée!'),
+};
 
 /** Coins a level deals, about (one in two path platforms, three over every fourth). */
 const coinsAbout = (d: Parameters<typeof goalFor>[0]) => Math.round((goalFor(d) / byLevel(d, [52, 59, 65, 69, 73])) * 1.1);
@@ -63,8 +89,12 @@ export const hop: GameDef = {
         'Certaines plateformes glissent, les fissurées cèdent après un rebond et les ressorts vous propulsent très haut.',
       ),
       L(
-        'Spiky critters cost a heart if you bump into them, but you can stomp them from above.',
-        'Les bestioles à piquants coûtent un cœur si vous les heurtez, mais vous pouvez les écraser par le dessus.',
+        'Spiky critters and bats cost a heart if you bump into them, but you can stomp them from above. Clouds vanish now and then; cracked ledges grow back.',
+        'Les bestioles à piquants et les chauves-souris coûtent un cœur si vous les heurtez, mais vous pouvez les écraser par le dessus. Les nuages disparaissent par moments; les corniches fissurées repoussent.',
+      ),
+      L(
+        `Climb to a higher platform (or stomp) on every bounce to build a chain: ${CHAIN_TIERS[0]} gives super jumps, ${CHAIN_TIERS[1]} a shield, ${CHAIN_TIERS[2]} a rocket.`,
+        `Montez d’une plateforme (ou écrasez une bestiole) à chaque rebond pour enchaîner : ${CHAIN_TIERS[0]} donnent des super sauts, ${CHAIN_TIERS[1]} un bouclier, ${CHAIN_TIERS[2]} une fusée.`,
       ),
       L(
         'Hold the left or right half of the field to steer. Keyboard: ← → or A D, P to pause.',
@@ -94,6 +124,8 @@ export const hop: GameDef = {
   pad: () => ({ left: [btn('ArrowLeft', 'left', L('Left', 'Gauche'))], right: [btn('ArrowRight', 'right', L('Right', 'Droite'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     /** Squash after a landing, 1 → 0. */
@@ -151,7 +183,13 @@ export const hop: GameDef = {
 
     const status = () => {
       const pct = Math.floor(progress(s) * 100);
-      const text = [L(`${pct}%`, `${pct} %`), P(s.coinsTaken + s.gemsTaken, ['coin', 'coins'], ['pièce', 'pièces'])].join(' · ');
+      const text = [
+        L(`${pct}%`, `${pct} %`),
+        P(s.coinsTaken + s.gemsTaken, ['coin', 'coins'], ['pièce', 'pièces']),
+        s.chain > 2 ? L(`chain ${s.chain}`, `chaîne ${s.chain}`) : '',
+      ]
+        .filter(Boolean)
+        .join(' · ');
       if (text !== shown) ctx.status((shown = text));
     };
 
@@ -168,6 +206,10 @@ export const hop: GameDef = {
       if (y < -20 || y > H + 20) return;
       if (p.kind === 'ground') {
         arena.block(g, -6, y, W + 12, H, c.p[2], 0, false);
+        return;
+      }
+      if (p.kind === 'cloud') {
+        drawCloud(arena, g, p, y, s.time, wrapped);
         return;
       }
       const fill = p.kind === 'moving' ? c.p[4] : p.kind === 'crumble' ? crumbleFill() : c.p[2];
@@ -257,41 +299,21 @@ export const hop: GameDef = {
           g.fill();
         }
         g.restore();
+        if (s.shield) {
+          g.strokeStyle = c.p[4];
+          g.lineWidth = arena.lw * 1.2;
+          g.globalAlpha = 0.6 + 0.3 * Math.sin(arena.time * 6);
+          g.beginPath();
+          g.arc(x, sy(s.alt) - PH / 2, PH * 0.95, 0, Math.PI * 2);
+          g.stroke();
+          g.globalAlpha = 1;
+        }
+        if (s.supers > 0) {
+          // Super jumps left: little stars over the sprout.
+          g.fillStyle = c.p[3];
+          for (let k = 0; k < s.supers; k++) arena.disc(g, x + (k - (s.supers - 1) / 2) * 7, sy(s.alt) - PH - 16, 2.4, c.p[3]);
+        }
       });
-    }
-
-    function drawCritter(g: CanvasRenderingContext2D, x: number, y: number) {
-      const c = arena.colors;
-      const wob = Math.sin(arena.time * 8 + x) * 1.2;
-      // Spikes all round the sides and bottom; the top is a smooth shell, safe to stomp.
-      g.fillStyle = c.ink;
-      for (let k = 0; k < 7; k++) {
-        const a = -0.2 + (k / 6) * (Math.PI + 0.4);
-        const ca = Math.cos(a);
-        const sa = Math.sin(a);
-        g.beginPath();
-        g.moveTo(x + ca * (CRIT_R + 5), y + sa * (CRIT_R + 5) + wob);
-        g.lineTo(x + Math.cos(a - 0.3) * CRIT_R, y + Math.sin(a - 0.3) * CRIT_R);
-        g.lineTo(x + Math.cos(a + 0.3) * CRIT_R, y + Math.sin(a + 0.3) * CRIT_R);
-        g.closePath();
-        g.fill();
-      }
-      arena.ball(g, x, y, CRIT_R, c.bad);
-      for (const k of [-1, 1]) {
-        arena.disc(g, x + k * 4, y - 1, 2.6, c.paper);
-        g.fillStyle = c.coal;
-        g.beginPath();
-        g.arc(x + k * 4, y - 0.5, 1.2, 0, Math.PI * 2);
-        g.fill();
-      }
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.6;
-      g.beginPath();
-      g.moveTo(x - 6, y - 5.5);
-      g.lineTo(x - 2, y - 4);
-      g.moveTo(x + 6, y - 5.5);
-      g.lineTo(x + 2, y - 4);
-      g.stroke();
     }
 
     function draw() {
@@ -383,7 +405,31 @@ export const hop: GameDef = {
       }
       for (const k of s.critters) {
         const y = sy(k.alt);
-        if (!k.dead && y > -20 && y < H + 20) wrapped(k.x, CRIT_R + 5, (x) => drawCritter(g, x, y));
+        if (!k.dead && y > -20 && y < H + 20)
+          wrapped(k.x, CRIT_R + 5, (x) => (k.v ? drawBat(arena, g, x, y, k.v) : drawCritter(arena, g, x, y)));
+      }
+      if (s.wind) {
+        // Wind streaks blowing across the field.
+        const w = windAt(s, s.time);
+        g.strokeStyle = c.muted;
+        g.lineWidth = 1;
+        g.globalAlpha = Math.min(0.5, Math.abs(w) / 80);
+        g.beginPath();
+        for (let i = 0; i < 12; i++) {
+          const x = ((((i * 71 + arena.time * w * 3) % (W + 30)) + W + 30) % (W + 30)) - 15;
+          const y = (i * 113 + view * 0.3) % H;
+          g.moveTo(x, y);
+          g.lineTo(x + Math.sign(w) * 14, y);
+        }
+        g.stroke();
+        g.globalAlpha = 1;
+      }
+      // Chain meter along the top: drains until the chain of climbs runs out.
+      if (s.chain > 1 && !ended) {
+        g.fillStyle = c.accent;
+        g.globalAlpha = 0.85;
+        g.fillRect(0, 0, W * Math.max(0, s.chainLeft / CHAIN_WINDOW), 4);
+        g.globalAlpha = 1;
       }
       if (!ended || s.won) drawHopper(g);
       else if (dead) {
@@ -447,6 +493,7 @@ export const hop: GameDef = {
         const keys = (keyR ? 1 : 0) - (keyL ? 1 : 0);
         s.dir = (keys || pointerDir) as -1 | 0 | 1;
         const score = s.score;
+        const chain = s.chain;
         const ev = step(s, dt);
         arena.update(dt);
         // The camera only climbs, except after a lost heart: then glide back down instead of jumping.
@@ -504,8 +551,22 @@ export const hop: GameDef = {
           fx.text(ev.stomped.x, ky - 14, `+${STOMP_POINTS}`, c.accent, 13);
           fx.shake(2.5, 0.2);
         }
+        if (s.chain > chain && s.chain >= 3) comboPop(fx, hx, hy - PH - 10, s.chain, c.accent);
+        if (ev.tier && ev.reward) comboTier(fx, ev.tier, ev.reward === 'shield' ? c.p[4] : c.accent, REWARD_NAMES[ev.reward]());
+        if (ev.boost) {
+          const col = ev.boost === 'rocket' ? c.bad : c.p[3];
+          fx.burst(hx, hy, col, ev.boost === 'rocket' ? 24 : 10, 160, 3, 0.5, 'spark', 0, Math.PI / 2, Math.PI * 0.5);
+          fx.ring(hx, hy, col, 4, 30, 0.35, arena.lw * 1.2);
+          if (ev.boost === 'rocket') fx.shake(3, 0.3);
+        }
+        if (ev.shielded) {
+          fx.ring(hx, hy - PH / 2, c.p[4], 6, 40, 0.45, arena.lw * 1.5);
+          fx.text(hx, hy - PH - 14, L('Shielded!', 'Protégé!'), c.p[4], 13);
+          sfx('hit');
+        }
         if (ev.hurt) {
           ctx.lives(s.lives, LIVES);
+
           fx.shake(6, 0.4);
           fx.flash(c.bad, 0.3, 0.4);
           if (ev.hurt === 'bump') fx.burst(hx, hy, c.bad, 12, 140, 3, 0.5);
