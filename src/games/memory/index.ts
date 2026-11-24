@@ -29,7 +29,6 @@ const BAR = 36;
 const GX = 8;
 const GY = BAR + 8;
 const GS = W - 2 * GX;
-const FONT = "'Space Grotesk Variable', system-ui, sans-serif";
 
 export const memory: GameDef = {
   id: 'memory',
@@ -111,49 +110,77 @@ export const memory: GameDef = {
       const x = tileX(i) + gap / 2;
       const y = tileY(i) + gap / 2;
       const w = cs - gap;
-      const pop = arena.time - struck[i] < 0.3 ? 1 + 0.12 * Math.sin(((arena.time - struck[i]) / 0.3) * Math.PI) : 1;
+      const since = arena.time - struck[i];
+      const pop = since < 0.3 && !s.miss[i] ? 1 + 0.12 * Math.sin((since / 0.3) * Math.PI) : 1;
+      // A wrong tile shakes its head.
+      const wob = since < 0.35 && s.miss[i] ? Math.sin(since * 60) * 3 * (1 - since / 0.35) : 0;
+      const order = s.lit[i] ? (s.patterns[s.round - 1]?.indexOf(i) ?? 0) : 0;
       const showing = s.phase === 'show' && s.lit[i];
+      // Just after the show the lit tiles flip over, face down.
+      const flip = s.phase === 'input' && s.lit[i] && !s.found[i] && s.t < 0.18 ? Math.abs(Math.cos((s.t / 0.18) * Math.PI)) : 1;
       const over = s.phase === 'late' || (s.phase === 'done' && s.left > 0);
       let k = pop;
       let fill = c.cellAlt;
       if (showing) {
-        // The tiles pop in as they light up, and pulse while lit.
-        k = Math.min(1.04, outBack(s.t / 0.18)) * (1 + 0.025 * Math.sin(s.t * 14));
+        // The tiles pop in one after another as they light up, and pulse while lit.
+        k = Math.min(1.04, Math.max(0.02, outBack((s.t - order * 0.05) / 0.18))) * (1 + 0.025 * Math.sin(s.t * 14));
         fill = c.accent;
-      } else if (s.found[i]) fill = s.phase === 'good' || (s.phase === 'done' && !s.left) ? c.good : c.accent;
+      } else if (flip < 1 && s.t < 0.09) fill = c.accent;
+      else if (s.found[i]) fill = s.phase === 'good' || (s.phase === 'done' && !s.left) ? c.good : c.accent;
       else if (s.miss[i]) fill = c.bad;
       const kw = w * k;
-      const ox = x + (w - kw) / 2;
+      const kx = kw * flip;
+      const ox = x + (w - kx) / 2 + wob;
       const oy = y + (w - kw) / 2;
       if (showing) {
         g.fillStyle = arena.tone(c.accent).glow;
         g.beginPath();
-        g.roundRect(ox - 4, oy - 4, kw + 8, kw + 8, 10);
+        g.roundRect(ox - 4, oy - 4, kx + 8, kw + 8, 10);
         g.fill();
       }
-      arena.block(g, ox, oy, kw, kw, fill, 6);
+      if (kx > 1) arena.block(g, ox, oy, kx, kw, fill, 6);
+      const mx = ox + kx / 2;
+      const my = oy + kw / 2;
+      const m = kw * 0.2;
+      g.lineCap = 'round';
+      g.lineJoin = 'round';
       if (s.miss[i]) {
-        const m = kw * 0.28;
-        const mx = ox + kw / 2;
-        const my = oy + kw / 2;
-        g.strokeStyle = c.ink;
-        g.lineWidth = arena.lw * 1.4;
+        g.strokeStyle = c.coal;
+        g.lineWidth = arena.lw * 1.6;
         g.beginPath();
         g.moveTo(mx - m, my - m);
         g.lineTo(mx + m, my + m);
         g.moveTo(mx + m, my - m);
         g.lineTo(mx - m, my + m);
         g.stroke();
+      } else if (s.found[i]) {
+        // A tick, so found tiles don't rely on colour alone; it draws itself in.
+        const d = Math.min(1, since / 0.2);
+        g.strokeStyle = c.coal;
+        g.lineWidth = arena.lw * 1.6;
+        g.beginPath();
+        g.moveTo(mx - m, my);
+        if (d < 0.4) g.lineTo(mx - m + (m * 0.7 * d) / 0.4, my + (m * 0.7 * d) / 0.4);
+        else {
+          g.lineTo(mx - m * 0.3, my + m * 0.7);
+          g.lineTo(mx - m * 0.3 + m * 1.3 * ((d - 0.4) / 0.6), my + m * 0.7 - m * 1.5 * ((d - 0.4) / 0.6));
+        }
+        g.stroke();
       }
-      // After the clock ran out (or the last heart went), ring the tiles that were missed.
+      g.lineCap = 'butt';
+      // After the clock ran out (or the last heart went), ring the tiles that were missed: marching dashes.
       if (over && s.lit[i] && !s.found[i]) {
         g.strokeStyle = c.accent;
         g.lineWidth = arena.lw * 1.6;
         g.setLineDash([5, 4]);
+        g.lineDashOffset = -arena.time * 20;
+        g.globalAlpha = 0.75 + 0.25 * Math.sin(arena.time * 10);
         g.beginPath();
         g.roundRect(x + 3, y + 3, w - 6, w - 6, 5);
         g.stroke();
         g.setLineDash([]);
+        g.lineDashOffset = 0;
+        g.globalAlpha = 1;
       }
     }
 
@@ -178,6 +205,15 @@ export const memory: GameDef = {
       g.beginPath();
       g.roundRect(tx + 2, y - 5, Math.max(0, (tw - 4) * Math.min(1, frac)), 10, 5);
       g.fill();
+      // Seconds left, once the clock runs.
+      if (s.phase === 'input') {
+        g.font = `800 10px ${arena.family}`;
+        g.textAlign = 'right';
+        g.textBaseline = 'middle';
+        g.fillStyle = c.fg;
+        g.fillText(left.toFixed(1), tx + tw - 7, y + 0.5);
+        g.textBaseline = 'alphabetic';
+      }
     }
 
     function draw() {
@@ -204,9 +240,9 @@ export const memory: GameDef = {
         g.fillStyle = c.fg;
         g.textAlign = 'center';
         g.textBaseline = 'middle';
-        g.font = `800 24px ${FONT}`;
+        g.font = `800 24px ${arena.family}`;
         g.fillText(`${L('Round', 'Ronde')} ${s.round}`, W / 2, GY + GS / 2 - 9);
-        g.font = `600 13px ${FONT}`;
+        g.font = `600 13px ${arena.family}`;
         g.fillStyle = c.muted;
         g.fillText(P(s.left, ['tile', 'tiles'], ['case', 'cases']), W / 2, GY + GS / 2 + 16);
         g.globalAlpha = 1;
@@ -300,6 +336,7 @@ export const memory: GameDef = {
           sfx('boom', { vol: 0.5 });
           fx.shake(5, 0.3);
           fx.flash(c.bad, 0.25, 0.4);
+          fx.text(W / 2, GY + GS / 2, L('Time’s up!', 'Temps écoulé!'), c.bad, 20, 1.2);
           ctx.lives(s.lives, LIVES);
         }
         draw();

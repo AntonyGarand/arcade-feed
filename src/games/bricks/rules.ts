@@ -7,9 +7,9 @@ export const H = 400;
 const COLS = 7;
 export const LIVES = 3;
 const MARGIN = 10;
-const GAP = 4;
-const TOP = 44;
-const BRICK_H = 16;
+const GAP = 5;
+const TOP = 54;
+const BRICK_H = 18;
 export const BALL_R = 6;
 export const PADDLE_Y = 366;
 export const PADDLE_H = 12;
@@ -49,6 +49,8 @@ export interface State {
   /** Ball resting on the paddle, launching after `hold` seconds. */
   held: boolean;
   hold: number;
+  /** Launch angle of the resting ball (radians from straight up), rolled when it lands on the paddle. */
+  aim: number;
   lives: number;
   score: number;
   /** Bricks hit since the ball last touched the paddle (the next hit scores ×combo). */
@@ -62,7 +64,8 @@ export function createLevel(d: Difficulty, rng: Rng): State {
   const tough = byLevel(d, [0, 0, 0.15, 0.25, 0.35]);
   const bw = (W - 2 * MARGIN - (COLS - 1) * GAP) / COLS;
   const bricks: Brick[] = [];
-  const colours = rng.shuffle([0, 1, 2, 3, 4, 5, 6, 7]);
+  // Every palette colour but the paddle's (the accent, --p2), so the paddle never blends into a row.
+  const colours = rng.shuffle([0, 2, 3, 4, 5, 6, 7]);
   for (let r = 0; r < rows; r++)
     for (let c = 0; c < COLS; c++)
       bricks.push({
@@ -71,7 +74,7 @@ export function createLevel(d: Difficulty, rng: Rng): State {
         w: bw,
         h: BRICK_H,
         hp: rng.chance(tough) ? 2 : 1,
-        c: colours[r % 8],
+        c: colours[r % colours.length],
       });
   const pw = byLevel(d, [84, 74, 64, 56, 50]);
   const speed = byLevel(d, [230, 260, 290, 320, 350]);
@@ -89,6 +92,7 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     speed,
     held: true,
     hold: HOLD_S,
+    aim: rollAim(rng),
     lives: LIVES,
     score: 0,
     combo: 0,
@@ -107,11 +111,14 @@ export interface StepEvents {
   over: boolean;
 }
 
-/** Launch the ball off the paddle now (tap or Space), at an angle from the seed. */
+/** A launch angle from the seed: up to 30° either side of straight up. */
+const rollAim = (rng: Rng) => (rng.next() - 0.5) * (Math.PI / 3);
+
+/** Launch the ball off the paddle now (tap or Space), at the angle rolled for it. */
 export function launch(s: State) {
   if (!s.held) return;
   s.held = false;
-  const a = (s.rng.next() - 0.5) * (Math.PI / 3); // ±30° from straight up
+  const a = s.aim;
   s.vx = Math.sin(a) * s.speed;
   s.vy = -Math.cos(a) * s.speed;
 }
@@ -179,6 +186,7 @@ export function step(s: State, dt: number): StepEvents {
       }
       s.held = true;
       s.hold = HOLD_S;
+      s.aim = rollAim(s.rng);
       s.bx = s.px;
       s.by = PADDLE_Y - BALL_R;
       return ev;

@@ -8,7 +8,7 @@ export const PLAYER_R = 10;
 const KEY_SPEED = 240;
 const INVULNERABLE_S = 1.5;
 export const PICKUP_R = 9;
-const PICKUP_LIFE_S = 4.5;
+export const PICKUP_LIFE_S = 4.5;
 export const PICKUP_POINTS = 50;
 /** Points per second survived, and per life left at the end. */
 const SECOND_POINTS = 10;
@@ -19,7 +19,7 @@ const WARN_S = 0.7;
 export const durationFor = (d: Difficulty) => byLevel(d, [30, 35, 40, 45, 50]);
 export const livesFor = (d: Difficulty) => byLevel(d, [3, 3, 3, 3, 2]);
 /** Hazards per second at the start (it ramps up 50% by the end). */
-export const rateFor = (d: Difficulty) => byLevel(d, [0.9, 1.2, 1.45, 1.65, 1.85]);
+export const rateFor = (d: Difficulty) => byLevel(d, [1.2, 1.4, 1.6, 1.8, 2]);
 const speedFor = (d: Difficulty) => byLevel(d, [1, 1.08, 1.16, 1.24, 1.32]);
 /** Roughly how many pickups a run offers (one every 3.5 s on average). */
 export const pickupsFor = (d: Difficulty) => Math.floor((durationFor(d) - 3) / 3.5);
@@ -90,7 +90,7 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     // Bars come at most every 2.2 s, so there's time to reach the next gap.
     if (kind === 'bar' && t < barAt) kind = 'block';
     if (kind === 'block') {
-      const w = rng.int(16, 30);
+      const w = rng.int(18, 34);
       schedule.push({ kind, t, x: rng.int(0, W - w), y: -w, vx: 0, vy: rng.int(110, 170) * sp, w, h: w });
     } else if (kind === 'disc') {
       const w = rng.int(14, 22);

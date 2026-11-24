@@ -315,6 +315,26 @@ export const pinball: GameDef = {
       }
       g.stroke();
       arena.block(g, LANE_X - 9, top, 18, 5, c.accent, 2, false, 0.5);
+      // Launch chevrons up the lane: they fill with the pull, and blink while the ball waits.
+      if (s.held) {
+        const idle = s.charge <= 0 && Math.sin(arena.time * 6) > 0;
+        for (let i = 0; i < 5; i++) {
+          const y = PLUNGER_Y - 22 - i * 11;
+          const on = s.charge > i / 5 || (idle && i === Math.floor(arena.time * 5) % 5);
+          g.strokeStyle = on ? (s.charge >= 1 ? c.good : c.accent) : c.muted;
+          g.globalAlpha = on ? 1 : 0.35;
+          g.lineWidth = 2.2;
+          g.lineCap = 'round';
+          g.lineJoin = 'round';
+          g.beginPath();
+          g.moveTo(LANE_X - 5, y + 3);
+          g.lineTo(LANE_X, y - 2);
+          g.lineTo(LANE_X + 5, y + 3);
+          g.stroke();
+        }
+        g.globalAlpha = 1;
+        g.lineCap = 'butt';
+      }
 
       // Flippers: tapered bats that flash on a swing.
       for (let k = 0; k < 2; k++) {

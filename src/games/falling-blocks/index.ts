@@ -3,7 +3,8 @@ import { L, P } from '../../core/i18n';
 import { btn } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
-import { outCubic } from '../../kits/arena/ease';
+import { alpha } from '../../kits/arena/color';
+import { outBack, outCubic } from '../../kits/arena/ease';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
@@ -30,6 +31,8 @@ const PANEL = FX + COLS * CELL + 10;
 const W = PANEL + 64;
 const H = FY * 2 + ROWS * CELL;
 const CLEAR_S = 0.3;
+/** The stack's top row from which the spawn area starts to glow red (lower rows: worse). */
+const DANGER = 7;
 
 export const fallingBlocks: GameDef = {
   id: 'falling-blocks',
@@ -104,6 +107,9 @@ export const fallingBlocks: GameDef = {
     let lockAt = -1;
     /** Hard-drop streak: the piece's columns and the rows it fell through. */
     let streak: { cols: number[]; from: number; to: number; at: number } | null = null;
+    /** Lines shown on the side bar (it catches up with the count), and when the count last went up. */
+    let barLines = 0;
+    let linesAt = -10;
 
     const status = () => ctx.status(P(Math.max(0, s.goal - s.lines), ['line to go', 'lines to go'], ['ligne à faire', 'lignes à faire']));
 
@@ -148,6 +154,11 @@ export const fallingBlocks: GameDef = {
             fx.text(FX + (COLS * CELL) / 2, my - 22, word, c.accent, 15 + n * 2, 1.1);
           }
           fx.shake(1 + n, 0.25);
+          if (n > 1) {
+            fx.ring(FX + (COLS * CELL) / 2, my, c.accent, 10, COLS * CELL * 0.7, 0.45, arena.lw * (1 + n * 0.3));
+            fx.flash(n >= 4 ? c.accent : c.paper, n >= 4 ? 0.3 : 0.14, 0.3);
+          }
+          linesAt = arena.time;
           status();
         }
       }
@@ -155,6 +166,7 @@ export const fallingBlocks: GameDef = {
       if (ev.won || ev.over) {
         done = true;
         won = ev.won;
+        barLines = s.lines;
         endAt = arena.time;
         if (won) {
           for (let i = 0; i < 4; i++) fx.burst(FX + (COLS * CELL) / 2, FY + ROWS * CELL * 0.5, c.p[i], 10, 200, 4, 0.9, 'square', 200);
@@ -255,18 +267,46 @@ export const fallingBlocks: GameDef = {
         });
       }
       // Hard-drop streak.
-      if (streak && arena.time - streak.at < 0.18) {
-        const f = 1 - (arena.time - streak.at) / 0.18;
-        g.fillStyle = arena.tone(tone(prePiece.k)).glow;
+      // Hard-drop streak: a trail in the piece's colour, solid where it landed, fading up to where it fell from.
+      if (streak && arena.time - streak.at < 0.22 && streak.to > streak.from) {
+        const f = 1 - (arena.time - streak.at) / 0.22;
+        const y0 = FY + Math.max(0, streak.from) * CELL;
+        const y1 = FY + streak.to * CELL + CELL;
+        const trail = g.createLinearGradient(0, y0, 0, y1);
+        trail.addColorStop(0, alpha(tone(prePiece.k), 0));
+        trail.addColorStop(1, alpha(tone(prePiece.k), 0.55));
+        g.fillStyle = trail;
         g.globalAlpha = f;
-        for (const col of streak.cols)
-          g.fillRect(
-            FX + col * CELL + 2,
-            FY + Math.max(0, streak.from) * CELL,
-            CELL - 4,
-            Math.max(0, streak.to - Math.max(0, streak.from)) * CELL,
-          );
+        for (const col of streak.cols) g.fillRect(FX + col * CELL + 2.5, y0, CELL - 5, y1 - y0);
         g.globalAlpha = 1;
+      }
+      // Danger: the stack is near the top, so the spawn rows glow red and pulse.
+      if (!done) {
+        let top = ROWS;
+        for (let i = 0; i < COLS * ROWS; i++)
+          if (s.grid[i] >= 0) {
+            top = Math.floor(i / COLS);
+            break;
+          }
+        const risk = Math.min(1, Math.max(0, (DANGER - top) / (DANGER - 1)));
+        if (risk > 0) {
+          const beat = 0.65 + 0.35 * Math.sin(arena.time * (5 + risk * 5));
+          const band = g.createLinearGradient(0, FY, 0, FY + 5 * CELL);
+          band.addColorStop(0, alpha(c.bad, 0.45 * risk * beat));
+          band.addColorStop(1, alpha(c.bad, 0));
+          g.fillStyle = band;
+          g.fillRect(FX, FY, COLS * CELL, 5 * CELL);
+          g.strokeStyle = c.bad;
+          g.globalAlpha = 0.5 + 0.5 * risk * beat;
+          g.lineWidth = arena.lw * 0.6;
+          g.setLineDash([4, 3]);
+          g.beginPath();
+          g.moveTo(FX, FY + 2 * CELL);
+          g.lineTo(FX + COLS * CELL, FY + 2 * CELL);
+          g.stroke();
+          g.setLineDash([]);
+          g.globalAlpha = 1;
+        }
       }
       if (!done) {
         const { k, rot, x, y } = s.piece;
@@ -319,14 +359,32 @@ export const fallingBlocks: GameDef = {
         );
       const barTop = FY + 74;
       const barH = ROWS * CELL - 96;
-      const fill = Math.min(1, s.lines / s.goal) * (barH - 6);
+      // The bar fills up smoothly after a clear, with a notch per line to go.
+      const inner = barH - 6;
+      const fill = Math.min(1, barLines / s.goal) * inner;
       g.fillStyle = c.muted;
       g.fillText(L('LINES', 'LIGNES'), px + pw / 2, barTop - 6);
       arena.block(g, PANEL + 15, barTop, 24, barH, c.cellAlt, 8, true, 0);
-      if (fill > 0) arena.block(g, PANEL + 18, barTop + barH - 3 - fill, 18, fill, c.accent, 6, false);
-      g.fillStyle = c.fg;
+      if (fill > 1) arena.block(g, PANEL + 18, barTop + barH - 3 - fill, 18, fill, c.accent, 6, false);
+      g.strokeStyle = alpha(c.ink, 0.35);
+      g.lineWidth = arena.lw * 0.45;
+      g.beginPath();
+      for (let i = 1; i < s.goal; i++) {
+        const y = barTop + barH - 3 - (inner * i) / s.goal;
+        g.moveTo(PANEL + 20, y);
+        g.lineTo(PANEL + 34, y);
+      }
+      g.stroke();
+      const bump = 1 + 0.35 * (1 - outBack(Math.min(1, (arena.time - linesAt) * 3)));
+      g.save();
+      g.translate(px + pw / 2, barTop + barH + 14);
+      g.scale(bump, bump);
+      g.fillStyle = bump > 1.02 ? c.accent : c.fg;
       g.font = `800 13px ${arena.family}`;
-      g.fillText(`${s.lines}/${s.goal}`, px + pw / 2, barTop + barH + 18);
+      g.textBaseline = 'middle';
+      g.fillText(`${s.lines}/${s.goal}`, 0, 0);
+      g.restore();
+      g.textBaseline = 'alphabetic';
       arena.overlay(g);
     }
 
@@ -368,6 +426,7 @@ export const fallingBlocks: GameDef = {
       draw,
       frame(dt) {
         arena.update(dt);
+        barLines += (s.lines - barLines) * Math.min(1, dt * 8);
         if (!done) {
           remember();
           apply(step(s, dt));

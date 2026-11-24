@@ -291,16 +291,47 @@ export const dig: GameDef = {
       const mw = (dw + 1) * CELL;
       const my = (dy + 3.2) * CELL;
       g.fillStyle = c.cell;
-      g.fillRect(mx, my, mw, 3);
+      g.fillRect(mx, my, mw, 4);
       g.fillStyle = s.delivered >= s.need ? c.good : c.accent;
-      g.fillRect(mx, my, (mw * s.delivered) / s.total, 3);
+      g.fillRect(mx, my, (mw * s.delivered) / s.total, 4);
       g.fillStyle = c.ink;
-      g.fillRect(mx + (mw * need) / 100 - 0.5, my - 1, 1, 5);
-      g.font = `800 8px ${arena.family}`;
+      g.fillRect(mx + (mw * need) / 100 - 0.6, my - 1.5, 1.2, 7);
+      g.font = `800 10px ${arena.family}`;
       g.textAlign = 'center';
       g.textBaseline = 'middle';
+      const label = pc(pct());
+      const lw = g.measureText(label).width + 8;
+      const ly = Math.min(H - 7, my + 11);
+      arena.box(g, mouth.x - lw / 2, ly - 6.5, lw, 13, c.cell, 3, false);
       g.fillStyle = s.delivered >= s.need ? c.good : c.fg;
-      g.fillText(pc(pct()), mouth.x, my + 9);
+      g.fillText(label, mouth.x, ly + 0.5);
+
+      // Still water with the goal not met: the run ends soon. Count it down over the field and point at
+      // the pipe's mouth, where the water has to go in.
+      const left = SETTLE_S - s.still;
+      if (s.released && !ended && s.delivered < s.need && s.still > 0.8 && left > 0) {
+        const pulse = 0.5 + 0.5 * Math.sin(T * 10);
+        const bob = Math.abs(Math.sin(T * 6)) * 4;
+        g.fillStyle = c.bad;
+        g.strokeStyle = arena.tone(c.bad).edge;
+        g.lineWidth = arena.lw * 0.6;
+        g.beginPath();
+        g.moveTo(mouth.x, mouth.y - 4 - bob);
+        g.lineTo(mouth.x - 7, mouth.y - 13 - bob);
+        g.lineTo(mouth.x + 7, mouth.y - 13 - bob);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        g.font = `800 ${(15 + pulse * 2).toFixed(1)}px ${arena.family}`;
+        const warn = L(`Dig! ${Math.ceil(left)}`, `Creusez! ${Math.ceil(left)}`);
+        g.lineJoin = 'round';
+        g.lineWidth = 4;
+        g.strokeStyle = c.cell;
+        g.strokeText(warn, W / 2, 22);
+        g.fillStyle = c.bad;
+        g.fillText(warn, W / 2, 22);
+      }
+      g.textBaseline = 'alphabetic';
 
       // Before the first dig: a pulse on the water and on the pipe.
       if (!s.dug && !ended) {

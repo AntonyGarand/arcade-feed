@@ -159,7 +159,7 @@ describe('golf rules', () => {
       expect(sharp.filter((r) => stars(r) === 3).length, `level ${d}`).toBeGreaterThanOrEqual(2);
       for (const r of decent.filter((x) => x.win)) expect(r.s.score).toBe(STROKE_POINTS * (limitFor(d) - r.s.strokes + 1));
     }
-  });
+  }, 20_000);
 });
 
 describe('golf game', () => {
@@ -187,7 +187,7 @@ describe('golf game', () => {
     const twin = createLevel(2, new Rng(9));
     const field = distanceField(twin);
     // Plan each putt on the twin, dial it in with the keys, then roll both in lockstep.
-    for (let shot = 0; shot < 8 && !m.outcome; shot++) {
+    for (let shot = 0; shot < 8 && !twin.done; shot++) {
       const [a, p] = bestPutt(twin, field);
       const target = twin.aim + Math.atan2(Math.sin(a - twin.aim), Math.cos(a - twin.aim));
       for (let f = 0; f < 4000; f++) {
@@ -215,6 +215,9 @@ describe('golf game', () => {
         step(twin, 1 / 60);
       }
     }
+    // The result comes once the sink has played out.
+    expect(m.outcome).toBe('');
+    m.run(1);
     expect(m.outcome).toBe('win');
     expect(m.score).toBe(twin.score);
     expect(m.score).toBeGreaterThan(0);

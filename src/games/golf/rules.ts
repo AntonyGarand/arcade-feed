@@ -6,7 +6,7 @@ export const W = 300;
 export const H = 400;
 /** Thickness of the border walls. */
 export const WALL = 10;
-export const BALL_R = 4.5;
+export const BALL_R = 5.5;
 export const CUP_R = 8;
 const MIN_SPEED = 30;
 const MAX_SPEED = 440;
@@ -21,8 +21,11 @@ const STOP_SPEED = 4;
 const BOUNCE = 0.75;
 /** Bumpers kick the ball back a little harder than it came. */
 const BUMPER_KICK = 1.1;
-/** Keyboard aim (radians/s) and power (per second) speeds. */
-const TURN_SPEED = 1.5;
+/** Keyboard aim (radians/s: slow for a fine nudge, then fast once held) and power (per second) speeds. */
+const TURN_FINE = 0.35;
+const TURN_SPEED = 1.6;
+/** Seconds an aim key is held before it speeds up. */
+const TURN_RAMP = 0.4;
 const POWER_SPEED = 0.7;
 /** Points per stroke left under the limit when the ball drops (plus one share for holing out). */
 export const STROKE_POINTS = 100;
@@ -81,6 +84,8 @@ export interface State {
   /** Keyboard keys held: turn −1/0/1, power −1/0/1. */
   turn: number;
   pump: number;
+  /** How long the current aim key has been held. */
+  turnT: number;
   strokes: number;
   par: number;
   limit: number;
@@ -219,6 +224,7 @@ function layout(d: Difficulty, rng: Rng, hazards: boolean): State {
     power: 0.5,
     turn: 0,
     pump: 0,
+    turnT: 0,
     strokes: 0,
     par: parFor(d),
     limit: limitFor(d),
@@ -366,7 +372,8 @@ export function step(s: State, dt: number): StepEvents {
   const ev: StepEvents = { bump: 0, splash: false, stopped: false, cleared: false, over: false };
   if (s.done) return ev;
   if (!s.rolling) {
-    s.aim += s.turn * TURN_SPEED * dt;
+    s.turnT = s.turn ? s.turnT + dt : 0;
+    s.aim += s.turn * (s.turnT < TURN_RAMP ? TURN_FINE : TURN_SPEED) * dt;
     s.power = clamp(s.power + s.pump * POWER_SPEED * dt, 0, 1);
     return ev;
   }

@@ -30,7 +30,7 @@ export const fruitsFor = (d: Difficulty) => byLevel(d, [14, 20, 26, 32, 40]);
 /** Of those, fruits with a hard rind that need two cuts. */
 export const toughFor = (d: Difficulty) => byLevel(d, [0, 0, 3, 5, 7]);
 /** Fruit radius. */
-const radiusFor = (d: Difficulty) => byLevel(d, [24, 22, 20, 18, 16]);
+const radiusFor = (d: Difficulty) => byLevel(d, [29, 27, 25, 23, 21]);
 /** Gravity: higher levels throw faster arcs. */
 const gravityFor = (d: Difficulty) => byLevel(d, [400, 430, 470, 510, 550]);
 /** Fruits per wave. */

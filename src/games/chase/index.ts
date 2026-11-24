@@ -285,6 +285,30 @@ export const chase: GameDef = {
         g.restore();
       });
       g.globalAlpha = 1;
+      if (h.want >= 0 && h.moving && !ended && s.dying <= 0) {
+        // The turn asked for, waiting for the next opening: a chevron on that side of the mouse.
+        const wx = DX[h.want as Dir];
+        const wy = DY[h.want as Dir];
+        const d = CELL * (0.78 + 0.08 * Math.sin(arena.time * 14));
+        const ax = p.x * CELL + wx * d;
+        const ay = p.y * CELL + wy * d;
+        const k = CELL * 0.2;
+        g.lineCap = 'round';
+        g.lineJoin = 'round';
+        for (const [col, w] of [
+          [arena.tone(c.accent).edge, arena.lw * 1.8],
+          [c.accent, arena.lw * 0.9],
+        ] as const) {
+          g.strokeStyle = col;
+          g.lineWidth = w;
+          g.beginPath();
+          g.moveTo(ax - wx * k - wy * k, ay - wy * k - wx * k);
+          g.lineTo(ax, ay);
+          g.lineTo(ax - wx * k + wy * k, ay - wy * k + wx * k);
+          g.stroke();
+        }
+        g.lineCap = 'butt';
+      }
       if (!moved && !ended) {
         // Waiting for the first swipe: a pulse around the mouse.
         const f = (arena.time * 0.8) % 1;
@@ -360,17 +384,18 @@ export const chase: GameDef = {
       g.stroke();
       g.setLineDash([]);
 
-      // Seeds (little tilted grains) in one pass, then the berries.
-      const seed = arena.tone(c.p[3]);
+      // Seeds (little tilted grains) in one pass, then the berries. On light surfaces the yellow is
+      // warmed towards orange so the grains don't fade into the path.
+      const seed = arena.tone(arena.dark ? c.p[3] : mix(c.p[3], c.p[0], 0.4));
       g.fillStyle = seed.base;
       g.strokeStyle = seed.edge;
-      g.lineWidth = arena.lw * 0.35;
+      g.lineWidth = arena.lw * 0.45;
       g.beginPath();
       for (let i = 0; i < s.items.length; i++) {
         if (s.items[i] !== SEED) continue;
         const a = (i % 3) - 1;
-        g.moveTo(cx(i) + 2 * Math.cos(a), cy(i) + 2 * Math.sin(a));
-        g.ellipse(cx(i), cy(i), 2, 1.35, a, 0, Math.PI * 2);
+        g.moveTo(cx(i) + 2.3 * Math.cos(a), cy(i) + 2.3 * Math.sin(a));
+        g.ellipse(cx(i), cy(i), 2.3, 1.55, a, 0, Math.PI * 2);
       }
       g.fill();
       g.stroke();

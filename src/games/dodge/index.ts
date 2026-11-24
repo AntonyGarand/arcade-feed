@@ -2,9 +2,9 @@ import './style.css';
 import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena, type Trace } from '../../kits/arena/arena';
-import { approach } from '../../kits/arena/ease';
+import { approach, outBack } from '../../kits/arena/ease';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
-import { sfx } from '../../kits/sound/sound';
+import { haptic, sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
 import {
   createLevel,
@@ -13,6 +13,7 @@ import {
   incoming,
   LIFE_BONUS,
   livesFor,
+  PICKUP_LIFE_S,
   PICKUP_POINTS,
   PICKUP_R,
   pickupsFor,
@@ -24,6 +25,12 @@ import {
 
 /** Glyph used for pickups (a five-point star). */
 const STAR = 4;
+/** The player is drawn a little larger than its hit circle: grazes that look close stay fair. */
+const DRAW_R = PLAYER_R + 2.5;
+/** A hazard passing this close (gap in world units) without a hit is a near miss. */
+const CLOSE = 7;
+/** The last seconds are counted down in the middle of the field. */
+const COUNTDOWN = 5;
 
 export const dodge: GameDef = {
   id: 'dodge',
@@ -87,6 +94,13 @@ export const dodge: GameDef = {
     let trailN = 0;
     let trailAt = 0;
     let ended = false;
+    /** Hazards that already sparked a near miss, and when the last one did (so they don't spam). */
+    const grazed = new WeakSet<object>();
+    let grazeAt = -9;
+    /** Last countdown second announced. */
+    let counted = COUNTDOWN + 1;
+    /** Hurt wobble on the player, 1 → 0. */
+    let hurtT = 0;
     const star: Trace = (g, r) => glyphPath(g, STAR, 0, 0, r);
 
     const status = () => {
@@ -156,15 +170,45 @@ export const dodge: GameDef = {
       g.fillStyle = c.cellAlt;
       g.fillRect(0, 0, W, 7);
       const f = Math.min(1, s.time / s.duration);
-      if (f > 0) arena.block(g, -4, -4, W * f + 4, 11, c.accent, 4, false, 0.6);
+      const left = s.duration - s.time;
+      if (f > 0) arena.block(g, -4, -4, W * f + 4, 11, left < COUNTDOWN ? c.good : c.accent, 4, false, 0.6);
+      // The last seconds, big and faint behind the action.
+      if (left < COUNTDOWN && left > 0 && !ended) {
+        const n = Math.ceil(left);
+        const k = n - left;
+        g.globalAlpha = 0.2 * (1 - k * 0.6);
+        g.fillStyle = c.fg;
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.font = `800 ${(96 * (1.15 - 0.15 * Math.min(1, k * 4))).toFixed(1)}px ${arena.family}`;
+        g.fillText(String(n), W / 2, H * 0.42);
+        g.globalAlpha = 1;
+        g.textBaseline = 'alphabetic';
+      }
 
       for (const p of starsOut(s)) {
+        const age = s.time - p.t;
+        const rest = PICKUP_LIFE_S - age;
+        // Pops in, then blinks faster and faster before it goes.
+        if (rest < 1.5 && Math.floor(rest * (rest < 0.6 ? 14 : 8)) % 2) continue;
+        const pop = outBack(Math.min(1, age / 0.35), 2.4);
         const tw = Math.sin(arena.time * 5 + p.x);
-        g.fillStyle = arena.tone(c.p[3]).glow;
+        const t = arena.tone(c.p[3]);
+        g.fillStyle = t.glow;
         g.beginPath();
-        g.arc(p.x, p.y, PICKUP_R * (1.5 + 0.2 * tw), 0, Math.PI * 2);
+        g.arc(p.x, p.y, PICKUP_R * (1.6 + 0.2 * tw) * pop, 0, Math.PI * 2);
         g.fill();
-        arena.gem(g, p.x, p.y, PICKUP_R, c.p[3], star, true, 1 + 0.08 * tw, Math.sin(arena.time * 2 + p.y) * 0.25);
+        // Time left on the pickup, as a ring that empties.
+        g.strokeStyle = arena.dark ? t.hi : t.edge;
+        g.globalAlpha = 0.6;
+        g.lineWidth = arena.lw * 0.6;
+        g.lineCap = 'round';
+        g.beginPath();
+        g.arc(p.x, p.y, PICKUP_R * 1.8 * pop, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0, rest / PICKUP_LIFE_S));
+        g.stroke();
+        g.lineCap = 'butt';
+        g.globalAlpha = 1;
+        arena.gem(g, p.x, p.y, PICKUP_R, c.p[3], star, true, pop * (1 + 0.08 * tw), Math.sin(arena.time * 2 + p.y) * 0.25);
       }
       // Edge markers for what's about to enter: pulsing arrows.
       const pulse = 0.6 + 0.4 * Math.abs(Math.sin(arena.time * 9));
@@ -179,14 +223,16 @@ export const dodge: GameDef = {
           const y = z.y + z.h / 2;
           const x = z.vx > 0 ? 3 : W - 3;
           const k = z.vx > 0 ? 1 : -1;
-          g.moveTo(x, y - 7);
-          g.lineTo(x + 9 * k, y);
-          g.lineTo(x, y + 7);
+          g.moveTo(x, y - 8);
+          g.lineTo(x + 11 * k, y);
+          g.lineTo(x, y + 8);
         } else {
+          // A strip shows the span of what's coming, an arrow its middle.
           const x = z.x + z.w / 2;
-          g.moveTo(x - 7, 9);
-          g.lineTo(x, 18);
-          g.lineTo(x + 7, 9);
+          g.fillRect(z.x + 2, 8, z.w - 4, 3);
+          g.moveTo(x - 8, 10);
+          g.lineTo(x, 20);
+          g.lineTo(x + 8, 10);
         }
         g.closePath();
         g.fill();
@@ -213,27 +259,42 @@ export const dodge: GameDef = {
           const fi = 1 - i / TRAIL;
           g.globalAlpha = fi * 0.7;
           g.beginPath();
-          g.arc(trail[k * 2], trail[k * 2 + 1], PLAYER_R * (0.3 + 0.55 * fi), 0, Math.PI * 2);
+          g.arc(trail[k * 2], trail[k * 2 + 1], DRAW_R * (0.3 + 0.55 * fi), 0, Math.PI * 2);
           g.fill();
         }
         g.globalAlpha = 1;
+        // Safe after a hit: a shield bubble that fades as the safety runs out.
+        if (s.invulnerable > 0) {
+          g.strokeStyle = arena.tone(c.accent).hi;
+          g.globalAlpha = Math.min(1, s.invulnerable * 1.5) * 0.7;
+          g.lineWidth = arena.lw * 0.7;
+          g.beginPath();
+          g.arc(s.px, s.py, DRAW_R + 4 + Math.sin(arena.time * 12), 0, Math.PI * 2);
+          g.stroke();
+          g.globalAlpha = 1;
+        }
         if (!s.invulnerable || Math.floor(s.invulnerable * 10) % 2 === 0) {
-          arena.ball(g, s.px, s.py, PLAYER_R, c.accent);
-          const ex = lookX * 2.2;
-          const ey = lookY * 2.2;
-          for (const dx of [-3.6, 3.6]) {
-            const x = s.px + dx + ex * 0.6;
-            const y = s.py - 1.5 + ey * 0.6;
+          const px = s.px + (hurtT > 0 ? Math.sin(hurtT * 40) * hurtT * 3 : 0);
+          arena.ball(g, px, s.py, DRAW_R, c.accent);
+          const ex = lookX * 2.6;
+          const ey = lookY * 2.6;
+          const wince = hurtT > 0.45;
+          for (const dx of [-4.4, 4.4]) {
+            const x = px + dx + ex * 0.6;
+            const y = s.py - 1.8 + ey * 0.6;
             g.fillStyle = c.paper;
             g.strokeStyle = arena.tone(c.accent).edge;
             g.lineWidth = arena.lw * 0.4;
             g.beginPath();
-            g.arc(x, y, 2.9, 0, Math.PI * 2);
+            // Squeezed shut for a moment after a hit.
+            if (wince) g.ellipse(x, y, 3.4, 1.1, 0, 0, Math.PI * 2);
+            else g.arc(x, y, 3.4, 0, Math.PI * 2);
             g.fill();
             g.stroke();
+            if (wince) continue;
             g.fillStyle = c.coal;
             g.beginPath();
-            g.arc(x + ex * 0.5, y + ey * 0.5, 1.45, 0, Math.PI * 2);
+            g.arc(x + ex * 0.5, y + ey * 0.5, 1.7, 0, Math.PI * 2);
             g.fill();
           }
         }
@@ -297,14 +358,41 @@ export const dodge: GameDef = {
           fx.text(x, y - 14, `+${PICKUP_POINTS}`, c.p[3], 13);
           sfx('coin', { pitch: s.pickups % 4 });
         }
+        hurtT = Math.max(0, hurtT - dt * 1.6);
         if (ev.hurt) {
+          hurtT = 1;
+          haptic(60);
           ctx.lives(s.lives, max);
           fx.shake(6, 0.35);
           fx.flash(c.bad, 0.3, 0.35);
           fx.burst(s.px, s.py, c.bad, 14, 150, 3.5, 0.5);
           fx.ring(s.px, s.py, c.bad, PLAYER_R, PLAYER_R * 4, 0.4, arena.lw * 1.4);
         }
-        if (ev.picked || Math.ceil(s.duration - s.time) !== shown) status();
+        // Near misses: a hazard brushing past the dot sparks (visual only, no points).
+        if (!ev.hurt && !s.invulnerable && arena.time - grazeAt > 0.5)
+          for (const z of s.live) {
+            if (grazed.has(z)) continue;
+            const zx = z.x + z.w / 2;
+            const zy = z.y + z.h / 2;
+            const gap =
+              z.kind === 'disc'
+                ? Math.hypot(zx - s.px, zy - s.py) - z.w / 2
+                : Math.hypot(s.px - Math.max(z.x, Math.min(s.px, z.x + z.w)), s.py - Math.max(z.y, Math.min(s.py, z.y + z.h)));
+            if (gap - PLAYER_R > CLOSE) continue;
+            grazed.add(z);
+            grazeAt = arena.time;
+            const a = Math.atan2(zy - s.py, zx - s.px);
+            fx.burst(s.px + Math.cos(a) * DRAW_R, s.py + Math.sin(a) * DRAW_R, c.fg, 6, 90, 2, 0.3, 'spark', 0, a + Math.PI, 1.6);
+            fx.text(s.px, s.py - DRAW_R - 10, L('close!', 'de justesse!'), c.fg, 12, 0.6);
+            sfx('tick', { pitch: 7, vol: 0.6 });
+            break;
+          }
+        const left = Math.ceil(s.duration - s.time);
+        if (left < counted && left <= COUNTDOWN && left > 0) {
+          counted = left;
+          sfx('tick', { pitch: 12 - left * 2 });
+        }
+        if (ev.picked || left !== shown) status();
         if (ev.won) {
           ended = true;
           for (let i = 0; i < 4; i++) fx.burst(s.px, s.py, c.p[i], 10, 190, 4, 0.9, 'square', 200);
