@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn, leftRight } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { sfx } from '../../kits/sound/sound';
@@ -45,6 +46,7 @@ export const bricks: GameDef = {
     return [n * 16 + LIFE_BONUS, n * 24 + 2 * LIFE_BONUS];
   },
   par: (d) => 40 + brickCount(d) * 2,
+  pad: () => ({ left: leftRight(), right: [btn(' ', 'launch', L('Launch', 'Lancer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

@@ -1,5 +1,6 @@
 import './style.css';
 import { L } from '../../core/i18n';
+import { btn, leftRight, power } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, type Point } from '../../kits/gesture/gesture';
@@ -71,6 +72,7 @@ export const golf: GameDef = {
     return [STROKE_POINTS * (limitFor(d) - three), STROKE_POINTS * (limitFor(d) - three + 1)];
   },
   par: (d) => byLevel(d, [20, 25, 35, 40, 50]),
+  pad: () => ({ left: leftRight(), right: [...power('ArrowDown', 'ArrowUp'), btn(' ', 'fire', L('Putt', 'Frapper'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

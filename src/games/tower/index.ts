@@ -1,5 +1,6 @@
 import './style.css';
 import { L } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { haptic, sfx } from '../../kits/sound/sound';
@@ -81,6 +82,7 @@ export const tower: GameDef = {
     return [n * byLevel(d, [26, 24, 22, 20, 18]), n * byLevel(d, [46, 44, 42, 40, 38])];
   },
   par: (d) => Math.round(goalFor(d) * (W / speedFor(d)) * 0.9 + 8),
+  pad: () => ({ right: [btn(' ', 'drop', L('Drop', 'Lâcher'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

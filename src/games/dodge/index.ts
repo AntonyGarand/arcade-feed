@@ -70,6 +70,7 @@ export const dodge: GameDef = {
     ];
   },
   par: (d) => durationFor(d),
+  pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const max = livesFor(ctx.difficulty);

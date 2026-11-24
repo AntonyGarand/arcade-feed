@@ -269,3 +269,118 @@
     animation: none;
   }
 }
+
+/* ---------- on-screen pad (GameDef.pad) ---------- */
+/* Buttons under the field, one group per thumb. They send the game its keyboard keys. */
+.pad {
+  --pad-h: 48px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: opacity 0.15s;
+}
+.pad.idle {
+  opacity: 0.6;
+}
+:root[data-pad='off'] .pad {
+  display: none;
+}
+.pad-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pad-group.dpad {
+  --pad-h: 40px;
+  display: grid;
+  grid-template-columns: repeat(3, 52px);
+  grid-template-rows: repeat(2, var(--pad-h));
+  gap: 4px;
+}
+/* A d-pad alone sits in the middle, under the field. */
+.pad:has(.pad-group.right:empty) {
+  justify-content: center;
+}
+.pad:has(.pad-group.right:empty) .pad-group.right {
+  display: none;
+}
+.pad-group.dpad .pad-btn:first-child {
+  grid-column: 2;
+}
+.pad-group.dpad .pad-btn:not(:first-child) {
+  grid-row: 2;
+}
+.pad-btn {
+  height: var(--pad-h);
+  min-width: 56px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: var(--bw) solid var(--ink);
+  border-radius: var(--r);
+  background: var(--cell);
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  box-shadow: 3px 3px 0 var(--drop);
+  touch-action: none;
+  transition:
+    transform 0.05s,
+    box-shadow 0.05s;
+}
+.pad-btn.icon-only {
+  padding: 0;
+}
+.pad-group.dpad .pad-btn {
+  min-width: 0;
+  box-shadow: 2px 2px 0 var(--drop);
+}
+/* The main action (the right thumb's last button) wears the game's colour. */
+.pad-group.right .pad-btn:last-child:not(.icon-only) {
+  background: var(--accent);
+  color: var(--on-tone);
+}
+.pad-btn.held {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--drop);
+  background: var(--hi);
+  color: var(--on-tone);
+}
+.pad-icon {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+:root[data-style='soft'] .pad-btn {
+  box-shadow: 0 3px 8px var(--drop);
+}
+@media (max-height: 700px) {
+  .pad {
+    --pad-h: 42px;
+  }
+  .pad-group.dpad {
+    --pad-h: 34px;
+  }
+}
+@media (max-width: 380px) {
+  .pad-btn {
+    min-width: 48px;
+    padding: 0 10px;
+  }
+  .pad-group.dpad {
+    grid-template-columns: repeat(3, 46px);
+  }
+}

@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { sfx } from '../../kits/sound/sound';
@@ -88,6 +89,10 @@ export const pinball: GameDef = {
   }),
   stars: (d) => [goalFor(d) + BALL_BONUS, goalFor(d) + 2 * BALL_BONUS],
   par: (d) => byLevel(d, [70, 80, 90, 100, 110]),
+  pad: () => ({
+    left: [btn('ArrowLeft', 'left', L('Left flipper', 'Batteur gauche'))],
+    right: [btn(' ', 'launch', L('Launch', 'Lancer')), btn('ArrowRight', 'right', L('Right flipper', 'Batteur droit'))],
+  }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

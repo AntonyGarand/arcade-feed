@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { outCubic } from '../../kits/arena/ease';
@@ -73,6 +74,14 @@ export const fallingBlocks: GameDef = {
   }),
   stars: (d) => [goalFor(d) * 110 + 350, goalFor(d) * 160 + 450],
   par: (d) => goalFor(d) * 7 + 20,
+  pad: () => ({
+    left: [
+      btn('ArrowLeft', 'left', L('Left', 'Gauche'), true),
+      btn('ArrowDown', 'down', L('Soft drop', 'Descendre'), true),
+      btn('ArrowRight', 'right', L('Right', 'Droite'), true),
+    ],
+    right: [btn('x', 'cw', L('Turn', 'Tourner')), btn(' ', 'drop', L('Drop', 'Lâcher'))],
+  }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

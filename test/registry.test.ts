@@ -47,4 +47,22 @@ describe('game registry', () => {
         m.root.remove();
       }
   });
+
+  it.each(['en', 'fr'] as const)('gives on-screen buttons keys their game handles, with short labels (%s)', (locale) => {
+    _setLocaleForTests(locale);
+    for (const g of GAMES) {
+      const pad = g.pad?.();
+      if (!pad) continue;
+      const buttons = [...(pad.left === 'dpad' ? [] : (pad.left ?? [])), ...(pad.right ?? [])];
+      const keys = [...buttons.map((b) => b.key), ...(pad.left === 'dpad' ? ['ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight'] : [])];
+      for (const b of buttons) expect(b.label.length, `${g.id} ${b.label}`).toBeLessThanOrEqual(18);
+      const m = mountGame(g, 1, 7);
+      for (const key of keys) {
+        expect(m.inst.onKey?.(new KeyboardEvent('keydown', { key })), `${g.id} ${key} down`).toBe(true);
+        m.inst.onKey?.(new KeyboardEvent('keyup', { key })); // releases may go unhandled (a tap action)
+      }
+      m.inst.destroy?.();
+      m.root.remove();
+    }
+  });
 });

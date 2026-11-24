@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
@@ -92,6 +93,10 @@ export const rocks: GameDef = {
     ];
   },
   par: (d) => parFor(d),
+  pad: () => ({
+    left: [btn('ArrowLeft', 'ccw', L('Turn left', 'Tourner à gauche')), btn('ArrowRight', 'cw', L('Turn right', 'Tourner à droite'))],
+    right: [btn('ArrowUp', 'thrust', L('Thrust', 'Avancer')), btn(' ', 'fire', L('Fire', 'Tirer'))],
+  }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

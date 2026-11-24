@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { glyphPath } from '../../kits/glyph/glyph';
@@ -91,6 +92,7 @@ export const flutter: GameDef = {
     ];
   },
   par: (d) => Math.round((gatesFor(d) * spacingFor(d)) / speedFor(d) + 3),
+  pad: () => ({ right: [btn(' ', 'flap', L('Flap', 'Battre'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const max = s.lives;

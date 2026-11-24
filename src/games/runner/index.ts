@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
@@ -89,6 +90,7 @@ export const runner: GameDef = {
     return [Math.round(coins * 0.5) + (lives - 1) * LIFE_BONUS, Math.round(coins * 0.95) + lives * LIFE_BONUS];
   },
   par: (d) => Math.round(lengthFor(d) / (speedFor(d) * 1.15)),
+  pad: () => ({ left: [btn('ArrowDown', 'duck', L('Duck', 'Pencher'))], right: [btn(' ', 'jump', L('Jump', 'Sauter'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const max = s.lives;
