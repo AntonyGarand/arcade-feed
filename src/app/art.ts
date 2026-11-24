@@ -269,6 +269,13 @@ const ART: Partial<Record<string, () => Part[]>> = {
     path('M54 50.5V42.5', 'none', 'stroke-width:1.6'),
     path('M54 42.5L60 44.8L54 47Z', P(1)),
   ],
+  memory: () => [
+    ...[0, 1, 2, 3].flatMap((r) =>
+      [0, 1, 2, 3].map((c) => rect(19 + c * 11, 7 + r * 11, 9.5, 9.5, [1, 6, 7, 13].includes(r * 4 + c) ? P(5) : PAPER, 2)),
+    ),
+    path('M66 42L66 54M60 48H72', 'none'),
+    circle(66, 48, 2.6, P(5)),
+  ],
   echo: () => [
     rect(18, 4, 21, 24, P(2), 5),
     rect(41, 4, 21, 24, P(3), 5),

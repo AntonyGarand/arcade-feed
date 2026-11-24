@@ -66,6 +66,7 @@ Tie-break: if every animation were instant and the player took an hour per move,
 | Stack & drop | Fruit Merge (`merge`)             | drop and merge pieces up to a target size before the jar overflows               |
 | Stack & drop | Tower (`tower`)                   | time each drop to stack a tower to a target height                               |
 | Think        | Mines (`mines`)                   | open every safe cell of a no-guess mine field against the clock                  |
+| Think        | Memory (`memory`)                 | tap back the tiles that flashed, round after round, before the clock runs out    |
 | Think        | Echo (`echo`)                     | repeat a growing sequence of pads for a number of rounds                         |
 | Think        | Dig (`dig`)                       | dig tunnels to lead a share of the water into the pipe, avoiding rock and sludge |
 | Think        | Pipeline (`pipeline`)             | lay pipes so the flow passes enough of them before it spills                     |
