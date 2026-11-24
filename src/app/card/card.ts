@@ -2,7 +2,7 @@ import { telemetry } from '../../core/analytics';
 import { L, P } from '../../core/i18n';
 import { Rng } from '../../core/rng';
 import { getProfile, prefs, record, setLevel, stats, type Outcome } from '../../core/store';
-import { LEVEL_IDS, LEVEL_NAMES, starsFor, type Difficulty, type GameDef, type GameInstance } from '../../core/types';
+import { LEVEL_IDS, LEVEL_NAMES, starsFor, type Difficulty, type Stars, type GameDef, type GameInstance } from '../../core/types';
 import { confetti } from '../../ui/confetti';
 import { cogIcon, h, s } from '../../ui/dom';
 import { helpButton } from '../../ui/help';
@@ -30,6 +30,12 @@ export interface CardOptions {
  * `over` shows the result.
  */
 type Phase = 'ready' | 'playing' | 'paused' | 'over';
+
+/** Milliseconds between the end of a run and its result panel, so the game's last effects show. */
+const RESULT_DELAY = 650;
+
+/** Keys the browser would use to scroll the feed. */
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'PageUp', 'PageDown', 'Home', 'End']);
 
 /**
  * One arcade card: header (level, lives, score, help, settings), the game on its stage with the
@@ -67,6 +73,8 @@ export class Card {
   private leftGen = -1;
   private seed = 0;
   private advanceTimer = 0;
+  /** Pending result panel (shown a moment after the run ends); 0 once shown. */
+  private resultTimer = 0;
   private first: { level?: Difficulty | undefined; seed?: number | undefined } | null;
 
   constructor(
@@ -205,6 +213,8 @@ export class Card {
     this.first = null; // the launch options only apply to the first mount
     const gen = ++this.gen;
     clearTimeout(this.advanceTimer);
+    clearTimeout(this.resultTimer);
+    this.resultTimer = 0;
     this.pad?.releaseAll();
     this.loop.stop();
     this.clock.reset();
@@ -347,12 +357,16 @@ export class Card {
       }
       return false;
     }
+    // Between the end of a run and its result panel, keep the feed (and the finale) in place.
+    if (this.phase === 'over') return !!this.resultTimer && SCROLL_KEYS.has(e.key);
     if (this.phase !== 'playing') return false;
     if (down && (e.key === 'Escape' || e.key.toLowerCase() === 'p')) {
       this.pause();
       return true;
     }
-    return this.inst.onKey?.(e) ?? false;
+    if (this.inst.onKey?.(e)) return true;
+    // A live run owns the scroll keys: a stray arrow or Space must not scroll the feed away mid-run.
+    return SCROLL_KEYS.has(e.key);
   }
 
   /**
@@ -422,6 +436,16 @@ export class Card {
       return;
     }
 
+    // Let the game's last effects (fx.linger) play on the open field before the panel covers it.
+    const gen = this.gen;
+    this.resultTimer = window.setTimeout(() => {
+      this.resultTimer = 0;
+      if (gen === this.gen) this.showResult(o, res, stars, ms);
+    }, RESULT_DELAY);
+  }
+
+  private showResult(o: Outcome, res: ReturnType<typeof record> | null, stars: Stars, ms: number) {
+    const cleared = o === 'cleared';
     const st = stats(this.def.id);
     const advance = !this.opts.lab && cleared && getProfile().autoAdvance;
     const advanceMs = res?.best || res?.firstClear || res?.levelChange ? 3600 : 2800;
@@ -489,6 +513,7 @@ export class Card {
 
   destroy() {
     clearTimeout(this.advanceTimer);
+    clearTimeout(this.resultTimer);
     this.loop.stop();
     this.resize.disconnect();
     this.inst.destroy?.();
