@@ -79,6 +79,7 @@ export const claim: GameDef = {
   }),
   stars: (d) => starGoals(d),
   par: (d) => parFor(d),
+  pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

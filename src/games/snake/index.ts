@@ -42,6 +42,7 @@ export const snake: GameDef = {
   }),
   stars: (d) => [goalFor(d) * 20, goalFor(d) * 27],
   par: (d) => Math.round((goalFor(d) * 10) / speedFor(d) + 10),
+  pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

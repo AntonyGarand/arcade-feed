@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { aimUpDown, btn, power } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, type Point } from '../../kits/gesture/gesture';
@@ -81,6 +82,7 @@ export const sling: GameDef = {
     return [base + (spare - 1) * SHOT_BONUS, base + spare * SHOT_BONUS];
   },
   par: (d) => byLevel(d, [10, 12, 20, 28, 32]),
+  pad: () => ({ left: aimUpDown(), right: [...power('ArrowLeft', 'ArrowRight'), btn(' ', 'fire', L('Fling', 'Lancer'))] }),
   create(ctx) {
     const s: State = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

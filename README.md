@@ -68,7 +68,7 @@ src/
   main.ts          shell: tabs, routing (/, /games, /game/<id>, /play/<id> feed of one game, /stats, /settings)
   core/            types (GameDef, GameCtx), store (profile, best scores, stars, auto-levelling), i18n, rng, telemetry
   ui/              DOM helpers, sheets, help dialog, result panel, confetti
-  app/             feed, nav, update banner, card/ (card, frame loop, clock, fit, settings sheet)
+  app/             feed, nav, update banner, card/ (card, frame loop, clock, fit, on-screen pad, settings sheet)
   pages/           Games, single game, Profile, Settings
   kits/arena/      canvas playfield in world units: DPR scaling, theme colours, pointer → world, style-aware pieces
                    (box, block, ball, gem, field), fx (bursts, rings, floating text, shake, flash), easing
@@ -91,5 +91,6 @@ Create `src/games/<id>/index.ts` exporting a `GameDef` (see `src/core/types.ts` 
 - `create(ctx)`: build into `ctx.root` (usually `new Arena(ctx.root, W, H, redraw)`), report with `ctx.score()`, `ctx.lives()`, `ctx.status()`, end with `ctx.win()` / `ctx.lose()`. Return `{ frame, draw, onKey, destroy }`. `onKey` gets keydown and keyup.
 - Sound: call `sfx(name)` from `kits/sound` at each discrete event (a hit, a pop, a shot), with `pitch` or a combo `step` so repeats don’t grate, and `haptic(ms)` for big impacts only. The card already plays the start, lost-life, win and lose sounds.
 - Pointer input on the canvas (`touch-action: none` is set by the arena), so drags never scroll the feed.
+- On-screen buttons: `pad` lists buttons under the field (`left` / `right` thumb groups, or `'dpad'`), each sending a key your `onKey` already handles (helpers in `core/pad.ts`). Leave it out for games played by tapping the pieces. Players can hide them in Settings.
 - Colours only from theme tokens (`arena.colors`), scoped tone in `style.css`: `[data-puzzle='<id>'] { --accent: var(--pN); }`.
 - Keep game logic pure in `rules.ts` and test it (Bricks has an autopilot that must clear every level).

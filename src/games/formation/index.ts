@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn, leftRight } from '../../core/pad';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
@@ -94,6 +95,7 @@ export const formation: GameDef = {
     ];
   },
   par: (d) => parFor(d),
+  pad: () => ({ left: leftRight(), right: [btn(' ', 'fire', L('Fire', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

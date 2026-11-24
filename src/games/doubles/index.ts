@@ -65,6 +65,7 @@ export const doubles: GameDef = {
       [1450, 1600],
     ] as const),
   par: (d) => movesFor(d),
+  pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const n = s.n;

@@ -1,5 +1,6 @@
 import './style.css';
 import { L } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { sfx } from '../../kits/sound/sound';
@@ -67,6 +68,7 @@ export const duel: GameDef = {
       [800, 1050],
     ] as const),
   par: (d) => goalFor(d) * 12 + 10,
+  pad: () => ({ left: [btn('ArrowLeft', 'left', L('Left', 'Gauche'))], right: [btn('ArrowRight', 'right', L('Right', 'Droite'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

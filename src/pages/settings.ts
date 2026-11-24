@@ -132,6 +132,14 @@ export function renderSettings(el: HTMLElement, defs: GameDef[]) {
             )
           : null,
         setting(
+          L('On-screen buttons', 'Boutons à l’écran'),
+          L(
+            'Buttons under the field, on top of the touch controls on the field itself.',
+            'Des boutons sous le terrain, en plus des commandes tactiles sur le terrain.',
+          ),
+          onOff(p.pad !== false, (on) => update({ pad: on }), L('On-screen buttons', 'Boutons à l’écran')),
+        ),
+        setting(
           L('Auto-advance', 'Avance automatique'),
           L('Scroll to the next game after a clear.', 'Passer au jeu suivant après une réussite.'),
           onOff(p.autoAdvance, (on) => update({ autoAdvance: on }), L('Auto-advance', 'Avance automatique')),

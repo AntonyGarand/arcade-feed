@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn, leftRight } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { outBack } from '../../kits/arena/ease';
@@ -64,6 +65,7 @@ export const merge: GameDef = {
       [1450, 1650],
     ] as const),
   par: (d) => Math.round(dropBudget(d) * 1.6),
+  pad: () => ({ left: leftRight(), right: [btn(' ', 'drop', L('Drop', 'Lâcher'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

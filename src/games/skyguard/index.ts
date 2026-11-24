@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures } from '../../kits/gesture/gesture';
@@ -81,6 +82,7 @@ export const skyguard: GameDef = {
     return [Math.round(kills * 0.9) + Math.ceil(cities * 0.6) * CITY_POINTS, kills + cities * CITY_POINTS + spare * AMMO_POINTS];
   },
   par: (d) => byLevel(d, [36, 39, 42, 45, 48]),
+  pad: () => ({ left: 'dpad', right: [btn(' ', 'fire', L('Fire', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

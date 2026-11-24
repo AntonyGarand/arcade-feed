@@ -11,6 +11,7 @@ import { gameArt } from '../art';
 import { Clock } from './clock';
 import { fitBoard } from './fit';
 import { FrameLoop } from './loop';
+import { PadView } from './pad';
 import { openGameSettings } from './settings-sheet';
 import { haptic, sfx } from '../../kits/sound/sound';
 
@@ -45,6 +46,7 @@ export class Card {
   private scoreEl!: HTMLElement;
   private scoreVal!: HTMLElement;
   private livesEl!: HTMLElement;
+  private pad: PadView | null = null;
   private inst: GameInstance = {};
   private root: HTMLElement | null = null;
   private resize = new ResizeObserver(() => {
@@ -116,6 +118,8 @@ export class Card {
     settings.addEventListener('click', () => this.openSettings());
     let resume = () => {};
     const help = helpButton(this.def, { onOpen: () => (resume = this.pauseWhile()), onClose: () => resume() });
+    const pad = this.def.pad?.();
+    this.pad = pad ? new PadView(pad, { key: (e) => this.padKey(e) }) : null;
     this.el.replaceChildren(
       h(
         'header',
@@ -124,6 +128,7 @@ export class Card {
         h('div', { class: 'meta' }, this.livesEl, this.scoreEl, help, settings),
       ),
       this.stage,
+      ...(this.pad ? [this.pad.el] : []),
       this.foot,
     );
     this.resize.observe(this.stage);
@@ -200,6 +205,7 @@ export class Card {
     this.first = null; // the launch options only apply to the first mount
     const gen = ++this.gen;
     clearTimeout(this.advanceTimer);
+    this.pad?.releaseAll();
     this.loop.stop();
     this.clock.reset();
     this.inst.destroy?.();
@@ -271,6 +277,7 @@ export class Card {
     }
     const show = this.phase === 'ready' || this.phase === 'paused';
     this.gate.hidden = !show;
+    this.pad?.el.classList.toggle('idle', !live);
     if (this.root) this.root.inert = !live;
     if (show) this.gate.replaceChildren(this.phase === 'ready' ? this.readyGate() : this.pauseGate());
   }
@@ -348,6 +355,18 @@ export class Card {
     return this.inst.onKey?.(e) ?? false;
   }
 
+  /**
+   * A key from the on-screen pad. Before the run (or while paused) a press starts it, like Space. A
+   * release always reaches a run that isn't over, so a button let go while paused doesn't stay held.
+   */
+  private padKey(e: KeyboardEvent) {
+    if (e.type === 'keydown') {
+      if (this.phase === 'ready' || this.phase === 'paused') {
+        if (!e.repeat) this.go();
+      } else if (this.phase === 'playing') this.inst.onKey?.(e);
+    } else if (this.phase !== 'over') this.inst.onKey?.(e);
+  }
+
   private trackAttrs() {
     return {
       'game.id': this.def.id,
@@ -367,6 +386,7 @@ export class Card {
   private finish(o: Outcome) {
     if (this.done) return;
     const prev = this.phase;
+    this.pad?.releaseAll();
     this.phase = 'over';
     this.syncGate();
     this.gate.hidden = true;

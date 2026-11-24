@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn, leftRight } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, type Point } from '../../kits/gesture/gesture';
@@ -112,6 +113,7 @@ export const bubbles: GameDef = {
       [2100, 2200],
     ] as const),
   par: (d) => rowsFor(d) * 8,
+  pad: () => ({ left: leftRight(), right: [btn('ArrowDown', 'swap', L('Swap', 'Échanger')), btn(' ', 'fire', L('Shoot', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

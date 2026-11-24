@@ -1,5 +1,6 @@
 import './style.css';
 import { L, P } from '../../core/i18n';
+import { btn, leftRight } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { outCubic } from '../../kits/arena/ease';
@@ -72,6 +73,7 @@ export const pegs: GameDef = {
       [3400, 4800],
     ] as const),
   par: (d) => 30 + targetsFor(d) * 5,
+  pad: () => ({ left: leftRight(), right: [btn(' ', 'fire', L('Shoot', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const max = ballsFor(ctx.difficulty);

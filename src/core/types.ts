@@ -40,6 +40,51 @@ export interface Help {
   tips?: string[];
 }
 
+/** Icon of an on-screen button. Arrows, turns and ± show only the icon; the rest also show their label. */
+export type PadIcon =
+  | 'left'
+  | 'right'
+  | 'up'
+  | 'down'
+  | 'ccw'
+  | 'cw'
+  | 'minus'
+  | 'plus'
+  | 'fire'
+  | 'launch'
+  | 'drop'
+  | 'swap'
+  | 'jump'
+  | 'duck'
+  | 'flap'
+  | 'thrust'
+  | 'undo'
+  | 'restart'
+  | 'flow';
+
+/**
+ * One on-screen button under the field. It sends `key` to the game's `onKey` like the keyboard
+ * would: keydown on press, keyup on release, so hold-to-move just works.
+ */
+export interface PadButton {
+  /** `KeyboardEvent.key` the game already handles (`'ArrowLeft'`, `' '`, `'x'`…). */
+  key: string;
+  icon: PadIcon;
+  /** Short name (localised, ≤ 10 characters): the visible label, or the tooltip for icon-only buttons. */
+  label: string;
+  /** While held, repeat the keydown (with `repeat: true`), like a held key. */
+  repeat?: boolean;
+}
+
+/**
+ * On-screen controls shown under the field, next to the touch controls on the field itself: a group
+ * for each thumb. `'dpad'` is the four arrows in an inverted T.
+ */
+export interface Pad {
+  left?: PadButton[] | 'dpad';
+  right?: PadButton[];
+}
+
 /** What a game gets from its card. @public */
 export interface GameCtx {
   difficulty: Difficulty;
@@ -93,6 +138,11 @@ export interface GameDef {
   stars: (d: Difficulty) => readonly [two: number, three: number];
   /** A typical run's length in seconds at a level (shown on the start screen). */
   par: (d: Difficulty) => number;
+  /**
+   * On-screen buttons under the field (localised via L()). Leave it out for games played by tapping
+   * the pieces themselves.
+   */
+  pad?: () => Pad;
   create(ctx: GameCtx): GameInstance | void;
 }
 

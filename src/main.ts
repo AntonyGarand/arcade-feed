@@ -78,6 +78,8 @@ function applyTheme() {
   const style = getProfile().style ?? 'neo';
   if (style === 'neo') delete document.documentElement.dataset['style'];
   else document.documentElement.dataset['style'] = style;
+  if (getProfile().pad === false) document.documentElement.dataset['pad'] = 'off';
+  else delete document.documentElement.dataset['pad'];
   // Browser / status bar colour follows the page background of the current style and mode.
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg || '#fff6e5');

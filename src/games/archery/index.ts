@@ -1,5 +1,6 @@
 import './style.css';
 import { L } from '../../core/i18n';
+import { aimUpDown, btn, power } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { gestures, type Point } from '../../kits/gesture/gesture';
@@ -88,6 +89,7 @@ export const archery: GameDef = {
       [42, 59],
     ] as const),
   par: (d) => arrowsFor(d) * 6 + 5,
+  pad: () => ({ left: aimUpDown(), right: [...power('ArrowLeft', 'ArrowRight'), btn(' ', 'fire', L('Shoot', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

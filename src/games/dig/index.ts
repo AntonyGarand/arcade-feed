@@ -85,6 +85,7 @@ export const dig: GameDef = {
   }),
   stars: (d) => [GEM_POINTS + (needFor(d) + 5) * PCT_POINTS, 3 * GEM_POINTS + cleanFor(d) * PCT_POINTS],
   par: (d) => byLevel(d, [25, 30, 35, 45, 55]),
+  pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());

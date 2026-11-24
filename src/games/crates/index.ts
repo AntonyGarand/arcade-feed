@@ -85,6 +85,7 @@ export const crates: GameDef = {
     return [base + Math.ceil(slackFor(d) / 2) * MOVE_POINTS, base + (slackFor(d) - 2) * MOVE_POINTS];
   },
   par: (d) => 20 + cratesFor(d) * 12,
+  pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const n = s.n;

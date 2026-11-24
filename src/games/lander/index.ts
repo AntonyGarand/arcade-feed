@@ -1,5 +1,6 @@
 import './style.css';
 import { L } from '../../core/i18n';
+import { btn } from '../../core/pad';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { haptic, sfx } from '../../kits/sound/sound';
@@ -83,6 +84,10 @@ export const lander: GameDef = {
     return [scoreAt(d, 2, fuel / 2, 0.3), scoreAt(d, 3, fuel, 0.4)];
   },
   par: (d) => Math.round(fuelFor(d) * 2 + 6),
+  pad: () => ({
+    left: [btn('ArrowLeft', 'ccw', L('Tilt left', 'Pencher à gauche')), btn('ArrowRight', 'cw', L('Tilt right', 'Pencher à droite'))],
+    right: [btn('ArrowUp', 'thrust', L('Engine', 'Moteur'))],
+  }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const max = s.lives;

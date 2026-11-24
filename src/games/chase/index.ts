@@ -78,6 +78,7 @@ export const chase: GameDef = {
     return [base + 2 * LIFE_BONUS, base + LIVES * LIFE_BONUS + 600];
   },
   par: (d) => byLevel(d, [40, 45, 60, 65, 70]),
+  pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const W = s.cols * CELL;

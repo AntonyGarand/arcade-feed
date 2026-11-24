@@ -54,6 +54,8 @@ export interface Profile {
   sound?: boolean;
   /** Vibration on impacts (phones); absent = on. */
   haptics?: boolean;
+  /** On-screen buttons under the field; absent = on. */
+  pad?: boolean;
   startLevel: Difficulty;
   types: Record<string, TypePrefs>;
   stats: Record<string, TypeStats>;
@@ -122,7 +124,9 @@ function save() {
 
 export const getProfile = () => profile;
 
-export function update(patch: Partial<Pick<Profile, 'name' | 'theme' | 'style' | 'autoAdvance' | 'startLevel' | 'sound' | 'haptics'>>) {
+export function update(
+  patch: Partial<Pick<Profile, 'name' | 'theme' | 'style' | 'autoAdvance' | 'startLevel' | 'sound' | 'haptics' | 'pad'>>,
+) {
   Object.assign(profile, patch);
   save();
   emit('profile');
