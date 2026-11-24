@@ -83,6 +83,8 @@ export const pegs: GameDef = {
     /** Arena time each peg lit up (-1: not lit), and which pegs have already popped. */
     const litAt = new Float32Array(n).fill(-1);
     const popped = new Uint8Array(n);
+    /** When each cleared peg pops (arena time): lit pegs pop one after another once the ball is gone. */
+    const popAt = new Float32Array(n).fill(-1);
     const TRAIL = 9;
     const trail = new Float32Array(TRAIL * 2);
     let trailN = 0;
@@ -109,7 +111,7 @@ export const pegs: GameDef = {
       // Aim guide: a dotted arc, fading out, while waiting to shoot.
       if (!s.flying && !ended) {
         g.fillStyle = c.fg;
-        const path = aimPath(s);
+        const path = aimPath(s, 0.5);
         for (let i = 0; i < path.length; i += 2) {
           g.globalAlpha = 0.65 * (1 - i / path.length);
           g.beginPath();
@@ -120,7 +122,7 @@ export const pegs: GameDef = {
       }
       for (let i = 0; i < n; i++) {
         const p = s.pegs[i];
-        if (p.gone) continue;
+        if (p.gone && (popAt[i] < 0 || arena.time >= popAt[i])) continue;
         // Targets are orange rounded squares, plain pegs blue balls; lit pegs glow and turn light.
         const base = p.target ? c.p[0] : c.p[1];
         let r = PEG_R;
@@ -185,6 +187,9 @@ export const pegs: GameDef = {
 
     /** Effects for what changed this frame: newly lit pegs, popped pegs, a rising multiplier. */
     let lits = 0;
+    const queue: number[] = [];
+    let popCombo = 0;
+    let lastCalled = false;
     function react(gain: number) {
       const c = arena.colors;
       for (let i = 0; i < n; i++) {
@@ -197,10 +202,32 @@ export const pegs: GameDef = {
           fx.burst(p.x, p.y, arena.tone(base).hi, p.target ? 6 : 3, 80, 2.2, 0.35, 'spark', 0);
           if (p.target) fx.text(p.x, p.y - 10, `+${gain}`, c.p[0], 12);
         }
-        if (p.gone && !popped[i]) {
+        if (p.gone && !popped[i] && popAt[i] < 0) queue.push(i);
+        if (p.gone && !popped[i] && popAt[i] >= 0 && arena.time >= popAt[i]) {
           popped[i] = 1;
-          sfx('pop', { vol: 0.7 });
-          fx.burst(p.x, p.y, base, p.target ? 10 : 6, 100, 3, 0.5);
+          sfx('pop', { vol: 0.6, pitch: Math.min(12, popCombo++) });
+          fx.burst(p.x, p.y, base, p.target ? 12 : 6, 100, 3, 0.5);
+          fx.ring(p.x, p.y, base, PEG_R * 0.6, PEG_R * 2.2, 0.25, arena.lw * 0.8);
+        }
+      }
+      if (queue.length) {
+        // Pop the lit pegs in the order they were hit.
+        queue.sort((a, b) => litAt[a] - litAt[b]);
+        const gap = Math.min(0.06, 0.9 / queue.length);
+        queue.forEach((i, k) => (popAt[i] = arena.time + 0.05 + k * gap));
+        queue.length = 0;
+        popCombo = 0;
+      }
+      const left = targetsLeft(s) - s.pegs.filter((p) => p.target && p.lit && !p.gone).length;
+      if (left === 0 && targetsLeft(s) > 0 && !lastCalled) {
+        // The last orange peg is lit: make it a moment.
+        lastCalled = true;
+        const p = s.pegs.find((q) => q.target && q.lit && !q.gone);
+        if (p) {
+          fx.ring(p.x, p.y, c.p[0], PEG_R, 70, 0.6, arena.lw * 1.6);
+          fx.text(p.x, p.y - 22, L('Last one!', 'La dernière!'), c.p[0], 16, 1.1);
+          fx.shake(3, 0.25);
+          sfx('power');
         }
       }
       if (multiplier(s) > lastMult) {

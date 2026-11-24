@@ -76,6 +76,10 @@ export const merge: GameDef = {
     const born = new WeakMap<Body, number>();
     for (const b of s.bodies) born.set(b, -1);
 
+    /** Centre x of each size on the ladder (set while drawing), and the biggest size made so far. */
+    const ladderX: number[] = [];
+    let biggest = s.biggest;
+
     const status = () =>
       ctx.status(
         [L(`goal: size ${s.target + 1}`, `objectif : taille ${s.target + 1}`), P(s.drops, ['drop', 'drops'], ['lâcher', 'lâchers'])].join(
@@ -174,13 +178,13 @@ export const merge: GameDef = {
       g.fillRect(s.left + 9, top + 6, 1.5, FLOOR - top - 60);
       g.globalAlpha = 1;
       // Size ladder, up to the goal.
-      let lx = 10;
+      let lx = 8;
       for (let k = 0; k <= s.target; k++) {
-        const r = 4 + k * 1.4;
+        const r = 5.5 + k * 1.5;
         if (k === s.target) {
           g.fillStyle = arena.tone(c.p[TONE[k]]).glow;
           g.beginPath();
-          g.arc(lx + r, 14, r + 3 + Math.sin(arena.time * 4), 0, Math.PI * 2);
+          g.arc(lx + r, 18, r + 3 + Math.sin(arena.time * 4), 0, Math.PI * 2);
           g.fill();
           g.strokeStyle = c.fg;
           g.lineWidth = arena.lw * 0.7;
@@ -188,22 +192,20 @@ export const merge: GameDef = {
           g.stroke();
           g.setLineDash([]);
         }
-        fruit(g, k, lx + r, 14, r, false);
-        if (k <= s.biggest) {
-          g.fillStyle = c.good;
-          g.beginPath();
-          g.arc(lx + r * 1.7, 14 + r * 0.7, 2, 0, Math.PI * 2);
-          g.fill();
-        }
-        lx += 2 * r + 6;
+        // Sizes not made yet are faded.
+        g.globalAlpha = k <= s.biggest ? 1 : 0.38;
+        fruit(g, k, lx + r, 18, r, false);
+        g.globalAlpha = 1;
+        ladderX[k] = lx + r;
+        lx += 2 * r + 5;
       }
       // Next fruit, top right.
       const nr = Math.min(12, RADII[s.next]);
-      fruit(g, s.next, W - 12 - nr, 14, nr, false);
+      fruit(g, s.next, W - 12 - nr, 18, nr, false);
       g.fillStyle = c.muted;
       g.font = `700 9px ${arena.family}`;
       g.textAlign = 'center';
-      g.fillText(L('next', 'suivant'), W - 12 - nr, 14 + nr + 11);
+      g.fillText(L('next', 'suivant'), W - 12 - nr, 18 + nr + 11);
 
       // Overflow line: dashed, red and thicker while something is above it.
       g.strokeStyle = warn ? c.bad : c.muted;
@@ -240,17 +242,33 @@ export const merge: GameDef = {
       g.lineCap = 'butt';
 
       if (!done) {
-        // Piece in hand and its drop guide.
+        // Piece in hand, its drop guide down to where it would land, and a ghost there.
         const r = RADII[s.current];
+        let land = FLOOR - r;
+        for (const b of s.bodies) {
+          const reach = RADII[b.k] + r;
+          const dx = b.x - s.aimX;
+          if (Math.abs(dx) < reach) land = Math.min(land, b.y - Math.sqrt(reach * reach - dx * dx));
+        }
+        const ready = s.cooldown <= 0;
         g.strokeStyle = c.muted;
         g.lineWidth = arena.lw * 0.5;
         g.setLineDash([2, 4]);
         g.beginPath();
         g.moveTo(s.aimX, DROP_Y + r);
-        g.lineTo(s.aimX, FLOOR);
+        g.lineTo(s.aimX, Math.max(DROP_Y + r, land - r));
         g.stroke();
+        if (ready && land - r > DROP_Y + r) {
+          g.strokeStyle = c.p[TONE[s.current]];
+          g.lineWidth = arena.lw * 0.8;
+          g.globalAlpha = 0.6;
+          g.beginPath();
+          g.arc(s.aimX, land, r, 0, Math.PI * 2);
+          g.stroke();
+          g.globalAlpha = 1;
+        }
         g.setLineDash([]);
-        g.globalAlpha = s.cooldown > 0 ? 0.5 : 1;
+        g.globalAlpha = ready ? 1 : 0.5;
         fruit(g, s.current, s.aimX, DROP_Y + Math.sin(arena.time * 4) * 1.2);
         g.globalAlpha = 1;
       }
@@ -305,6 +323,16 @@ export const merge: GameDef = {
         if (s.score !== before) ctx.score(s.score);
         if (ev.merged || s.bodies.length) react(s.score - before);
         const c = arena.colors;
+        if (s.biggest > biggest) {
+          // A new size: its ladder slot lights up.
+          biggest = s.biggest;
+          const lx = ladderX[biggest];
+          if (lx != null) {
+            const fill = c.p[TONE[biggest]];
+            fx.ring(lx, 18, fill, 6, 26, 0.5, arena.lw * 1.2);
+            fx.burst(lx, 18, fill, 8, 70, 2.5, 0.45, 'dot', 60);
+          }
+        }
         if (ev.won) {
           done = true;
           const big = s.bodies.reduce((a, b) => (b.k > a.k ? b : a), s.bodies[0]);

@@ -251,10 +251,19 @@ export const slice: GameDef = {
       }
       g.globalAlpha = 1;
       // Progress along the top: fruit thrown so far.
-      g.fillStyle = c.cellAlt;
-      g.fillRect(0, 0, W, 7);
       const f = 1 - toCome(s) / s.total;
-      if (f > 0) arena.block(g, -4, -4, W * f + 4, 11, c.accent, 4, false, 0.6);
+      arena.box(g, 10, 8, W - 20, 9, c.cellAlt, 4.5, false);
+      if (f > 0) {
+        g.fillStyle = c.accent;
+        g.beginPath();
+        g.roundRect(10, 8, Math.max(9, (W - 20) * f), 9, 4.5);
+        g.fill();
+      }
+      g.strokeStyle = c.ink;
+      g.lineWidth = arena.lw * 0.7;
+      g.beginPath();
+      g.roundRect(10, 8, W - 20, 9, 4.5);
+      g.stroke();
 
       for (const h of halves) half(g, h);
       for (const p of s.live) {
@@ -266,20 +275,21 @@ export const slice: GameDef = {
       const sharp = s.hot > 0;
       g.lineCap = 'round';
       g.lineJoin = 'round';
-      for (let i = 1; i < trail.length; i++) {
-        const a = trail[i - 1];
-        const b = trail[i];
-        const k = Math.max(0, 1 - (now - b.t) / TRAIL_S);
-        if (k <= 0) continue;
-        g.strokeStyle = sharp ? c.accent : c.muted;
-        g.lineWidth = 7 * k;
-        g.beginPath();
-        g.moveTo(a.x, a.y);
-        g.lineTo(b.x, b.y);
-        g.stroke();
-        g.strokeStyle = c.paper;
-        g.lineWidth = 2.5 * k;
-        g.stroke();
+      // Three passes (outline, colour, bright core) so the segments join into one smooth streak.
+      const col = sharp ? c.accent : c.muted;
+      for (let pass = 0; pass < 3; pass++) {
+        g.strokeStyle = pass === 0 ? arena.tone(col).edge : pass === 1 ? col : c.paper;
+        for (let i = 1; i < trail.length; i++) {
+          const a = trail[i - 1];
+          const b = trail[i];
+          const k = Math.max(0, 1 - (now - b.t) / TRAIL_S);
+          if (k <= 0) continue;
+          g.lineWidth = pass === 0 ? 8 * k + arena.lw : pass === 1 ? 8 * k : 2.5 * k;
+          g.beginPath();
+          g.moveTo(a.x, a.y);
+          g.lineTo(b.x, b.y);
+          g.stroke();
+        }
       }
       g.lineCap = 'butt';
       if (keyboard && !ended) {
@@ -398,7 +408,8 @@ export const slice: GameDef = {
         for (const p of ev.missed) {
           const x = Math.max(16, Math.min(W - 16, p.x));
           fx.burst(x, H - 4, c.bad, 10, 130, 3, 0.45, 'square', 300, -Math.PI / 2, Math.PI * 0.6);
-          fx.text(x, H - 26, '✕', c.bad, 16);
+          fx.text(x, H - 28, '✕', c.bad, 24, 1);
+          fx.ring(x, H, c.bad, 6, 34, 0.4, arena.lw * 1.4);
           fx.shake(4, 0.3);
           fx.flash(c.bad, 0.22, 0.3);
         }

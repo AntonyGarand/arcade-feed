@@ -2,6 +2,8 @@ import './style.css';
 import { L, P } from '../../core/i18n';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { mix } from '../../kits/arena/color';
+import { outBack } from '../../kits/arena/ease';
 import { DX, DY, gestures, keyDir, type Point } from '../../kits/gesture/gesture';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
@@ -30,7 +32,6 @@ const PAD = 8;
 const LONG_S = 0.35;
 /** Palette slot per count (1 blue, 2 green, 3 orange, 4 purple, 5 pink, 6 cyan, 7 yellow, 8 lime). */
 const TONE = [1, 2, 0, 4, 6, 5, 3, 7];
-const FONT = "'Space Grotesk Variable', system-ui, sans-serif";
 
 /** Seconds a quick, sure player needs for a typical board (about one tap a second). */
 const strongFor = (d: Difficulty) => byLevel(d, [15, 25, 32, 36, 46]);
@@ -111,9 +112,12 @@ export const mines: GameDef = {
     const age = new Array<number>(n).fill(1);
     /** Cells already shown open (so a later ripple leaves them be). */
     const shownOpen = new Array<boolean>(n).fill(false);
-    let flash = 0;
-    let shake = 0;
     let shown = -1;
+    const fx = arena.fx;
+    /** Arena time each cell was last struck (flag planted, mine blown or shown), for its pop. */
+    const struck = new Array<number>(n).fill(-9);
+    /** Mines already blown up on screen. */
+    const blown = new Array<boolean>(n).fill(false);
 
     const button = { x: PAD, y: H - BAR + 6, w: 118, h: BAR - 14 };
 
@@ -136,10 +140,13 @@ export const mines: GameDef = {
     const inButton = (p: Point) => p.x >= button.x && p.x <= button.x + button.w && p.y >= button.y && p.y <= button.y + button.h;
 
     function after(ev: Events, from: number) {
+      const c = arena.colors;
+      const fc = from % s.cols;
+      const fr = Math.floor(from / s.cols);
+      const cx = ox + fc * cs + cs / 2;
+      const cy = oy + fr * cs + cs / 2;
       if (ev.opened) {
         // Ripple out from the tapped cell.
-        const fc = from % s.cols;
-        const fr = Math.floor(from / s.cols);
         for (let i = 0; i < n; i++)
           if (s.open[i] && !shownOpen[i]) {
             shownOpen[i] = true;
@@ -147,15 +154,35 @@ export const mines: GameDef = {
           }
         ctx.score(s.score);
         if (!ev.boom) sfx(ev.opened > 1 ? 'pop' : 'tick', { pitch: ev.opened > 1 ? Math.min(8, ev.opened / 4) : 0 });
+        if (ev.opened > 1) fx.ring(cx, cy, c.accent, cs * 0.3, cs * (1.2 + Math.min(3, ev.opened / 8)), 0.45, arena.lw);
+        fx.text(cx, cy - cs * 0.4, `+${ev.opened * CELL_POINTS}`, ev.opened > 8 ? c.accent : c.fg, ev.opened > 8 ? 14 : 11);
       }
       if (ev.boom) {
+        // Every mine that went off this time: a blast where it sits.
+        for (let i = 0; i < n; i++)
+          if (s.boom[i] && !blown[i]) {
+            blown[i] = true;
+            struck[i] = arena.time;
+            const bx = ox + (i % s.cols) * cs + cs / 2;
+            const by = oy + Math.floor(i / s.cols) * cs + cs / 2;
+            fx.burst(bx, by, c.bad, 16, 150, 4, 0.6, 'square', 200);
+            fx.burst(bx, by, c.p[3], 10, 110, 3, 0.45, 'spark', 0);
+            fx.ring(bx, by, c.bad, cs * 0.3, cs * 1.6, 0.45, arena.lw * 1.5);
+          }
         sfx('boom');
         haptic(30);
-        flash = 1;
-        shake = 0.35;
+        fx.shake(6, 0.4);
+        fx.flash(c.bad, 0.3, 0.4);
         ctx.lives(Math.max(0, s.lives), max);
       }
       status();
+      if (ev.won) {
+        // Every hidden mine pops up a flag, then confetti.
+        for (let i = 0; i < n; i++) if (s.mine[i] && !s.flag[i]) struck[i] = arena.time;
+        for (let k = 0; k < 5; k++) fx.burst(W / 2, oy + (cs * s.rows) / 2, c.p[k], 10, 220, 4, 0.9, 'square', 220);
+        fx.flash(c.good, 0.22, 0.5);
+      }
+      if (ev.won || ev.over) end();
       draw();
       if (ev.won) {
         ctx.score(s.score);
@@ -163,37 +190,66 @@ export const mines: GameDef = {
       } else if (ev.over) ctx.lose();
     }
 
+    /** The run is over: on a lost board the hidden mines show up one after another. */
+    function end() {
+      if (s.opened < s.safe) {
+        let k = 0;
+        for (let i = 0; i < n; i++) if (s.mine[i] && !s.boom[i] && !s.flag[i]) struck[i] = arena.time + 0.05 * k++;
+      }
+      arena.linger(1.8);
+    }
+
     const open = (i: number) => after(reveal(s, i), i);
     const flag = (i: number) => {
       if (toggleFlag(s, i)) {
         sfx('hit', { pitch: s.flag[i] ? 0 : -4, vol: 0.6 });
+        struck[i] = arena.time;
+        if (s.flag[i]) {
+          const x = ox + (i % s.cols) * cs + cs / 2;
+          const y = oy + Math.floor(i / s.cols) * cs + cs / 2;
+          fx.burst(x, y - cs * 0.2, arena.colors.bad, 6, 70, 2.5, 0.35, 'dot', 120, -Math.PI / 2, Math.PI);
+        }
         status();
         draw();
       }
     };
 
-    function drawFlag(g: CanvasRenderingContext2D, x: number, y: number, size: number, fill: string) {
+    function drawFlag(g: CanvasRenderingContext2D, x: number, y: number, size: number, fill: string, k = 1) {
       const c = arena.colors;
+      if (k <= 0.01) return;
+      const foot = y + size * 0.36;
+      g.save();
+      g.translate(x, foot);
+      g.scale(k, k);
+      g.translate(-x, -foot);
       g.strokeStyle = c.ink;
       g.lineWidth = arena.lw * 0.8;
+      g.lineCap = 'round';
       g.beginPath();
-      g.moveTo(x - size * 0.22, y + size * 0.36);
+      g.moveTo(x - size * 0.22, foot);
       g.lineTo(x - size * 0.22, y - size * 0.36);
+      g.moveTo(x - size * 0.34, foot);
+      g.lineTo(x + size * 0.1, foot);
       g.stroke();
+      g.lineCap = 'butt';
+      // The cloth flutters a little.
+      const f = Math.sin(arena.time * 6 + x) * size * 0.03;
       g.fillStyle = fill;
       g.beginPath();
       g.moveTo(x - size * 0.22, y - size * 0.36);
-      g.lineTo(x + size * 0.32, y - size * 0.18);
+      g.quadraticCurveTo(x + size * 0.05, y - size * 0.3 + f, x + size * 0.32, y - size * 0.18 + f);
       g.lineTo(x - size * 0.22, y);
       g.closePath();
       g.fill();
       g.stroke();
+      g.restore();
     }
 
     function drawMine(g: CanvasRenderingContext2D, x: number, y: number, size: number, fill: string) {
       const c = arena.colors;
       g.strokeStyle = c.ink;
       g.lineWidth = arena.lw;
+      g.lineCap = 'round';
       g.beginPath();
       for (let k = 0; k < 4; k++) {
         const a = (k * Math.PI) / 4;
@@ -201,64 +257,70 @@ export const mines: GameDef = {
         g.lineTo(x + Math.cos(a) * size * 0.36, y + Math.sin(a) * size * 0.36);
       }
       g.stroke();
-      arena.disc(g, x, y, size * 0.24, fill);
+      g.lineCap = 'butt';
+      arena.ball(g, x, y, size * 0.25, fill, false);
     }
 
     function draw() {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      g.save();
-      if (shake > 0) g.translate(Math.sin(shake * 90) * shake * 8, 0);
+      // The board is a recessed tray: open cells are its floor, hidden cells raised tiles on it.
+      arena.field(g, ox - 2, oy - 2, cs * s.cols + 4, cs * s.rows + 4, cs, 6);
       g.textAlign = 'center';
       g.textBaseline = 'middle';
-      g.font = `700 ${Math.round(cs * 0.56)}px ${FONT}`;
+      g.font = `800 ${Math.round(cs * 0.6)}px ${arena.family}`;
       const lost = s.done && s.opened < s.safe;
       const won = s.done && !lost;
+      const tile = arena.dark ? mix(c.cellAlt, c.fg, 0.2) : c.cell;
       for (let i = 0; i < n; i++) {
         const x = ox + (i % s.cols) * cs;
         const y = oy + Math.floor(i / s.cols) * cs;
         const mx = x + cs / 2;
         const my = y + cs / 2;
+        const since = arena.time - struck[i];
         if (s.boom[i]) {
+          const k = since < 0.3 ? 1 + 0.25 * Math.sin((since / 0.3) * Math.PI) : 1;
           arena.box(g, x + 1.5, y + 1.5, cs - 3, cs - 3, c.bad, 4, false);
-          drawMine(g, mx, my, cs, c.ink);
+          drawMine(g, mx, my, cs * k, c.coal);
           continue;
         }
         if (!s.open[i] || age[i] < 0) {
-          arena.box(g, x + 1.5, y + 1.5, cs - 3, cs - 3, c.cellAlt, 4);
+          // A tile sinks while it's held down.
+          const down = i === press && !fired && held > 0.08 ? 1.5 : 0;
+          arena.block(g, x + 1.5, y + 1.5 + down, cs - 3, cs - 3 - down, tile, 4, !down);
+          const pop = since < 0 ? 0 : since < 0.3 ? Math.max(0.01, outBack(since / 0.3, 2.4)) : 1;
           if (s.flag[i]) {
-            drawFlag(g, mx, my, cs, won ? c.good : c.bad);
+            drawFlag(g, mx, my, cs, won ? c.good : c.bad, pop);
             if (lost && !s.mine[i]) {
               // A wrong flag: crossed out.
-              g.strokeStyle = c.fg;
-              g.lineWidth = arena.lw;
+              g.strokeStyle = c.bad;
+              g.lineWidth = arena.lw * 1.4;
+              g.lineCap = 'round';
               g.beginPath();
               g.moveTo(x + cs * 0.22, y + cs * 0.22);
               g.lineTo(x + cs * 0.78, y + cs * 0.78);
+              g.moveTo(x + cs * 0.78, y + cs * 0.22);
+              g.lineTo(x + cs * 0.22, y + cs * 0.78);
               g.stroke();
+              g.lineCap = 'butt';
             }
-          } else if (s.mine[i] && won) drawFlag(g, mx, my, cs, c.good);
-          else if (s.mine[i] && lost) drawMine(g, mx, my, cs * 0.85, c.muted);
+          } else if (s.mine[i] && won) drawFlag(g, mx, my, cs, c.good, pop);
+          else if (s.mine[i] && lost && pop > 0.01) drawMine(g, mx, my, cs * 0.85 * pop, c.muted);
           continue;
         }
-        // Open: flat, a pop of growth while it fades in.
-        const k = Math.min(1, age[i] / 0.16); // grows in over 0.16 s
-        g.fillStyle = c.cellAlt;
-        g.globalAlpha = 0.35;
-        g.fillRect(x + 0.5, y + 0.5, cs - 1, cs - 1);
-        g.globalAlpha = 1;
+        // Open: the tray shows through; the number pops in as the ripple reaches it.
         const v = s.num[i];
         if (v) {
-          const r = (cs / 2 - 3) * (0.6 + 0.4 * k);
-          g.fillStyle = c.p[TONE[v - 1]];
-          g.globalAlpha = 0.45;
-          g.beginPath();
-          g.roundRect(mx - r, my - r, 2 * r, 2 * r, r * 0.4);
-          g.fill();
-          g.globalAlpha = 1;
-          g.fillStyle = c.fg;
-          g.fillText(String(v), mx, my + 1);
+          const k = outBack(Math.min(1, age[i] / 0.22), 2);
+          if (k <= 0.01) continue;
+          const t = arena.tone(c.p[TONE[v - 1]]);
+          g.save();
+          g.translate(mx, my + 1);
+          g.scale(k, k);
+          g.fillStyle = arena.dark ? t.base : t.lo;
+          g.fillText(String(v), 0, 0);
+          g.restore();
         }
       }
       // Hold-to-flag progress around the pressed cell.
@@ -274,22 +336,18 @@ export const mines: GameDef = {
       if (cursor >= 0) {
         const x = ox + (cursor % s.cols) * cs;
         const y = oy + Math.floor(cursor / s.cols) * cs;
-        g.strokeStyle = c.ink;
-        g.lineWidth = arena.lw * 1.2;
+        g.strokeStyle = c.accent;
+        g.lineWidth = arena.lw * 1.4;
         g.setLineDash([5, 3]);
+        g.lineDashOffset = -arena.time * 12;
         g.beginPath();
         g.roundRect(x + 1, y + 1, cs - 2, cs - 2, 5);
         g.stroke();
         g.setLineDash([]);
+        g.lineDashOffset = 0;
       }
-      g.restore();
       drawBar(g);
-      if (flash > 0) {
-        g.fillStyle = c.bad;
-        g.globalAlpha = flash * 0.35;
-        g.fillRect(0, 0, W, H);
-        g.globalAlpha = 1;
-      }
+      arena.overlay(g);
     }
 
     function drawBar(g: CanvasRenderingContext2D) {
@@ -297,27 +355,37 @@ export const mines: GameDef = {
       const b = button;
       arena.box(g, b.x, b.y, b.w, b.h, flagMode ? c.accent : c.cell, 8);
       drawFlag(g, b.x + 20, b.y + b.h / 2, 26, c.bad);
-      g.fillStyle = c.fg;
+      g.fillStyle = flagMode ? c.coal : c.fg;
       g.textAlign = 'left';
       g.textBaseline = 'middle';
-      g.font = `700 13px ${FONT}`;
+      g.font = `700 13px ${arena.family}`;
       g.fillText(flagMode ? L('Flag: on', 'Drapeau : oui') : L('Flag: off', 'Drapeau : non'), b.x + 36, b.y + b.h / 2 + 1);
       // Mines left.
       const mx = b.x + b.w + 26;
       const my = b.y + b.h / 2;
       drawMine(g, mx, my, 26, c.muted);
       g.fillStyle = c.fg;
-      g.font = `700 16px ${FONT}`;
+      g.font = `700 16px ${arena.family}`;
       g.fillText(String(Math.max(0, minesLeft(s))), mx + 16, my + 1);
       // Clock: a bar that drains, red in the last 10 seconds.
       const left = Math.max(0, s.limit - s.time);
       const tx = mx + 46;
       const tw = W - PAD - tx;
-      arena.box(g, tx, my - 7, tw, 14, c.cell, 7, false);
+      arena.box(g, tx, my - 9, tw, 18, c.cell, 9, false);
       g.fillStyle = left <= 10 ? c.bad : c.accent;
+      g.globalAlpha = left <= 10 && left > 0 ? 0.75 + 0.25 * Math.sin(arena.time * 12) : 1;
       g.beginPath();
-      g.roundRect(tx + 2, my - 5, Math.max(0, (tw - 4) * (left / s.limit)), 10, 5);
+      g.roundRect(tx + 2, my - 7, Math.max(0, (tw - 4) * (left / s.limit)), 14, 7);
       g.fill();
+      g.globalAlpha = 1;
+      g.fillStyle = c.fg;
+      g.font = `800 11px ${arena.family}`;
+      g.textAlign = 'center';
+      g.strokeStyle = c.cell;
+      g.lineWidth = 3;
+      g.lineJoin = 'round';
+      g.strokeText(`${Math.ceil(left)} s`, tx + tw / 2, my + 1);
+      g.fillText(`${Math.ceil(left)} s`, tx + tw / 2, my + 1);
     }
 
     const stopGestures = gestures(arena.canvas, {
@@ -368,10 +436,20 @@ export const mines: GameDef = {
           }
         }
         for (let i = 0; i < n; i++) if (age[i] < 1) age[i] = Math.min(1, age[i] + dt);
-        flash = Math.max(0, flash - dt * 2.5);
-        shake = Math.max(0, shake - dt);
+        arena.update(dt);
         const ev = tick(s, dt);
-        if (Math.ceil(s.limit - s.time) !== shown) status();
+        const secs = Math.ceil(s.limit - s.time);
+        if (secs !== shown) {
+          if (secs <= 5 && secs > 0) sfx('tick', { pitch: 5 - secs });
+          status();
+        }
+        if (ev.over) {
+          const c = arena.colors;
+          fx.text(W / 2, oy + (cs * s.rows) / 2, L('Time’s up!', 'Temps écoulé!'), c.bad, 22, 1.4);
+          fx.flash(c.bad, 0.25, 0.4);
+          fx.shake(4, 0.3);
+          end();
+        }
         draw();
         if (ev.over) ctx.lose();
       },

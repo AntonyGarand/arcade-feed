@@ -5,15 +5,15 @@ import { byLevel, type Difficulty } from '../../core/types';
 export const W = 300;
 export const H = 420;
 /** Marble radius; touching marbles sit D apart along the track. */
-export const R = 10;
+export const R = 11;
 export const D = 2 * R;
 /** The shooter turns in place here; the track spirals in around it. */
 export const SHOOTER = { x: 150, y: 222 };
 /** Where a fired marble leaves the shooter. */
 const MUZZLE = 14;
 /** Outer and inner radius of the spiral (before its vertical stretch and wobble). */
-const R_OUT = 128;
-const R_IN = 52;
+const R_OUT = 132;
+const R_IN = 55;
 /** Track samples every STEP world units of arc length. */
 const STEP = 2;
 /** Shot speed and the centre distance under which it hits a marble (world units). */

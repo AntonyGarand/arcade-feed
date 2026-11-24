@@ -55,6 +55,7 @@ interface Faller {
   vx: number;
   vy: number;
   k: number;
+  hit?: boolean;
 }
 
 export const bubbles: GameDef = {
@@ -122,7 +123,7 @@ export const bubbles: GameDef = {
     let fallers: Faller[] = [];
     /** Ceiling drops as drawn (eases towards the real count). */
     let shownDrops = 0;
-    let flash = 0;
+    const fx = arena.fx;
     let end: '' | 'win' | 'lose' = '';
     let endT = 0;
     let over = false;
@@ -142,17 +143,12 @@ export const bubbles: GameDef = {
 
     function drawBubble(g: CanvasRenderingContext2D, k: number, x: number, y: number, r: number) {
       const c = arena.colors;
-      if (arena.sh) {
-        g.fillStyle = c.drop;
-        g.beginPath();
-        g.arc(x + arena.sh * 0.5, y + arena.sh * 0.5, r, 0, Math.PI * 2);
-        g.fill();
-      }
-      arena.disc(g, x, y, r, c.p[TONE[k]]);
-      g.fillStyle = c.cell;
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.45;
-      glyphPath(g, k, x, y, r * 0.48);
+      const fill = c.p[TONE[k]];
+      arena.ball(g, x, y, r, fill);
+      g.fillStyle = c.paper;
+      g.strokeStyle = arena.tone(fill).edge;
+      g.lineWidth = arena.lw * 0.5;
+      glyphPath(g, k, x - r * 0.04, y - r * 0.04, r * 0.46);
       g.fill();
       g.stroke();
     }
@@ -172,11 +168,19 @@ export const bubbles: GameDef = {
       if (!g) return;
       const c = arena.colors;
       const lag = (s.drops - shownDrops) * RH;
-      // Launcher zone below the line.
+      arena.field(g, 0, 0, W, LINE_Y, 2 * R, 0, false);
+      // Launcher zone below the line; the line pulses once a bubble hangs close to it.
       g.fillStyle = c.cellAlt;
       g.fillRect(0, LINE_Y, W, H - LINE_Y);
+      const near = !over && s.grid.some((k, i) => k >= 0 && cellY(s, i) + R > LINE_Y - 2 * RH);
+      if (near) {
+        g.fillStyle = c.bad;
+        g.globalAlpha = 0.1 + 0.08 * Math.sin(arena.time * 8);
+        g.fillRect(0, LINE_Y - 2 * RH, W, 2 * RH);
+        g.globalAlpha = 1;
+      }
       g.strokeStyle = c.bad;
-      g.lineWidth = arena.lw;
+      g.lineWidth = near ? arena.lw * (1.2 + 0.4 * Math.sin(arena.time * 8)) : arena.lw;
       g.setLineDash([7, 5]);
       g.beginPath();
       g.moveTo(0, LINE_Y);
@@ -184,7 +188,25 @@ export const bubbles: GameDef = {
       g.stroke();
       g.setLineDash([]);
       // Ceiling slab.
-      arena.box(g, -6, -10, W + 12, ceilingY(s) - lag + 10, c.muted, 0, true);
+      const cy = ceilingY(s) - lag;
+      arena.block(g, -6, -10, W + 12, cy + 10, c.muted, 0, true, 0.6);
+      // Rivets along its edge and arrows pointing down: it's coming.
+      g.fillStyle = arena.tone(c.muted).lo;
+      for (let x = 15; x < W; x += 30) {
+        g.beginPath();
+        g.arc(x, cy - 4, 1.8, 0, Math.PI * 2);
+        g.fill();
+      }
+      if (cy > 24)
+        for (let x = 30; x < W; x += 60) {
+          const y = cy / 2 + 2;
+          g.beginPath();
+          g.moveTo(x - 6, y - 4);
+          g.lineTo(x + 6, y - 4);
+          g.lineTo(x, y + 3);
+          g.closePath();
+          g.fill();
+        }
 
       // Aim guide: dots up to the first bounce and a little past it.
       if (!s.shot && !over) {
@@ -260,12 +282,7 @@ export const bubbles: GameDef = {
           g.stroke();
         }
       }
-      if (flash > 0) {
-        g.globalAlpha = flash * 0.5;
-        g.fillStyle = c.bad;
-        g.fillRect(0, 0, W, H);
-        g.globalAlpha = 1;
-      }
+      arena.overlay(g);
     }
 
     function landed(ev: Landing) {
@@ -285,12 +302,48 @@ export const bubbles: GameDef = {
           vy: -40 - ((i * 13) % 7) * 9,
           k: ev.droppedColours[n],
         });
+      const c = arena.colors;
+      if (ev.popped.length) {
+        let mx = 0;
+        let my = 0;
+        for (const i of ev.popped) {
+          const x = cellX(i);
+          const y = cellY(s, i) - lag;
+          mx += x / ev.popped.length;
+          my += y / ev.popped.length;
+          fx.burst(x, y, c.p[TONE[ev.colour]], 6, 120, 3, 0.45, 'dot', 160);
+        }
+        const gain = ev.popped.length * POP_POINTS + ev.dropped.length * DROP_POINTS;
+        const big = gain >= 100;
+        fx.text(Math.max(24, Math.min(W - 24, mx)), my, `+${gain}`, big ? c.accent : c.fg, big ? 17 : 13);
+        if (ev.dropped.length >= 3) {
+          fx.text(
+            Math.max(40, Math.min(W - 40, mx)),
+            my + 20,
+            L(`${ev.dropped.length} dropped!`, `${ev.dropped.length} tombées!`),
+            c.accent,
+            12,
+            1,
+          );
+          fx.shake(2 + Math.min(3, ev.dropped.length / 3), 0.25);
+        }
+      } else if (ev.cell >= 0) fx.ring(cellX(ev.cell), cellY(s, ev.cell) - lag, c.muted, R * 0.6, R * 1.3, 0.25, arena.lw * 0.8);
+      if (ev.lowered && !ev.won) {
+        fx.shake(3, 0.25);
+        for (let x = 20; x < W; x += 52) fx.burst(x, ceilingY(s), c.muted, 3, 60, 2.5, 0.4, 'square', 240, Math.PI / 2, Math.PI * 0.6);
+      }
       ctx.score(s.score);
       status();
       if (ev.won || ev.lost) {
         over = true;
         end = ev.won ? 'win' : 'lose';
-        if (ev.lost) flash = 0.6;
+        if (ev.lost) {
+          fx.flash(c.bad, 0.35, 0.5);
+          fx.shake(5, 0.4);
+        } else {
+          for (let i = 0; i < 5; i++) fx.burst(W / 2, LINE_Y / 2, c.p[TONE[i]], 10, 200, 3.5, 0.9, 'square', 220);
+          fx.flash(c.good, 0.22, 0.5);
+        }
       }
     }
 
@@ -340,7 +393,7 @@ export const bubbles: GameDef = {
         const ev = over ? null : step(s, dt);
         if (ev) landed(ev);
         shownDrops = Math.min(s.drops, shownDrops + dt * 3);
-        flash = Math.max(0, flash - dt);
+        arena.update(dt);
         for (const b of bursts) b.t += dt;
         bursts = bursts.filter((b) => b.t < 0.3);
         for (const f of fallers) {
@@ -348,11 +401,18 @@ export const bubbles: GameDef = {
           f.x += f.vx * dt;
           f.y += f.vy * dt;
         }
+        for (const f of fallers)
+          if (f.y >= LINE_Y - R && f.vy > 0 && !f.hit) {
+            f.hit = true;
+            fx.burst(f.x, LINE_Y, arena.colors.p[TONE[f.k]], 5, 80, 2.5, 0.35, 'dot', 200, -Math.PI / 2, Math.PI * 0.8);
+          }
         fallers = fallers.filter((f) => f.y < H + R);
         draw();
         if (end) {
           endT += dt;
-          if (endT >= END_S) {
+          // Let the last fallers drop out of sight first (they'd freeze in mid-air once the card stops).
+          if (endT >= END_S && (!fallers.length || endT >= END_S + 1)) {
+            arena.linger(1.2);
             if (end === 'win') ctx.win();
             else ctx.lose();
             end = '';

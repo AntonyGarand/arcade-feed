@@ -3,27 +3,14 @@ import { L } from '../../core/i18n';
 import { btn, leftRight, power } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { alpha, mix } from '../../kits/arena/color';
+import { outBack } from '../../kits/arena/ease';
 import { gestures, type Point } from '../../kits/gesture/gesture';
 import { sfx } from '../../kits/sound/sound';
-import { BALL_R, createLevel, CUP_R, H, limitFor, putt, setAim, step, STROKE_POINTS, W, WALL } from './rules';
+import { BALL_R, createLevel, CUP_R, H, limitFor, putt, setAim, type State, step, STROKE_POINTS, W, WALL } from './rules';
 
 /** Drag length (world units) for a full-power putt. */
 const PULL_MAX = 110;
-const FONT = "'Space Grotesk Variable', system-ui, sans-serif";
-
-interface Spark {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  t: number;
-}
-
-interface Ring {
-  x: number;
-  y: number;
-  t: number;
-}
 
 export const golf: GameDef = {
   id: 'golf',
@@ -76,45 +63,128 @@ export const golf: GameDef = {
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());
+    const fx = arena.fx;
     let drag: { from: Point; to: Point } | null = null;
-    let sparks: Spark[] = [];
-    let rings: Ring[] = [];
     /** Recent ball positions, for a short trail. */
     let trail: Point[] = [];
-    /** "Penalty" banner timer. */
-    let penalty = 0;
-    let time = 0;
     let ended = false;
-    /** The ball dropped: the flag comes out and the ball is gone. */
-    let sunk = false;
+    /** The hole is over: the result is reported once the sink (or the miss) has played out, at this arena time. */
+    let reportAt = -1;
+    let won = false;
+    /** When the ball dropped (arena time): it shrinks into the cup and the flag lifts out. */
+    let sunkAt = -1;
+    /** When each bumper was last hit (arena time), for its pulse. */
+    const bumped = new Map<number, number>();
+    let inSand = false;
+    /** Ball position before the frame's step (a splash puts it back, so the splash shows here). */
+    let px = s.bx;
+    let py = s.by;
+    /** Aim preview: sampled points of the first stretch of the putt, from a copy of the state. */
+    const preview: Point[] = [];
+    let previewKey = '';
 
     const status = () => ctx.status(`${L('Strokes', 'Coups')} ${s.strokes}/${s.limit} · ${L('par', 'normale')} ${s.par}`);
 
-    function drawWall(g: CanvasRenderingContext2D, i: number) {
+    /** Colours of the course, derived from the theme. */
+    const course = () => {
+      const c = arena.colors;
+      const grass = mix(c.p[2], c.cell, arena.dark ? 0.52 : 0.18);
+      return {
+        grass,
+        stripe: mix(grass, c.paper, arena.dark ? 0.07 : 0.16),
+        rail: mix(c.p[0], c.coal, arena.dark ? 0.42 : 0.3),
+        frame: mix(c.p[0], c.coal, arena.dark ? 0.6 : 0.5),
+      };
+    };
+
+    const inZone = (z: { x: number; y: number; w: number; h: number }, x: number, y: number) =>
+      x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h;
+
+    /** Roll a copy of the ball with the current aim and power: its path up to a little past the first bounce. */
+    function plan() {
+      const key = `${s.aim.toFixed(4)}|${s.power.toFixed(3)}|${s.bx}|${s.by}`;
+      if (key === previewKey) return;
+      previewKey = key;
+      preview.length = 0;
+      const sim: State = { ...s, turn: 0, pump: 0 };
+      if (!putt(sim)) return;
+      const reach = 40 + s.power * 150;
+      let run = 0;
+      let after = -1;
+      let lx = sim.bx;
+      let ly = sim.by;
+      preview.push({ x: lx, y: ly });
+      for (let i = 0; i < 240 && run < reach && (after < 0 || run < after); i++) {
+        const ev = step(sim, 1 / 120);
+        if (ev.splash || ev.cleared) break;
+        run += Math.hypot(sim.bx - lx, sim.by - ly);
+        lx = sim.bx;
+        ly = sim.by;
+        preview.push({ x: lx, y: ly });
+        if (ev.bump > 0 && after < 0) after = run + 22;
+        if (ev.stopped) break;
+      }
+    }
+
+    function drawWall(g: CanvasRenderingContext2D, i: number, rail: string) {
       const c = arena.colors;
       const w = s.walls[i];
       switch (w.kind) {
         case 'rect':
           // The border walls are drawn as one frame.
-          if (i >= 4) arena.box(g, w.x, w.y, w.w, w.h, c.cellAlt, 2);
+          if (i >= 4) arena.block(g, w.x, w.y, w.w, w.h, rail, 2);
           break;
-        case 'disc':
-          arena.disc(g, w.x, w.y, w.r, c.p[6]);
-          arena.disc(g, w.x, w.y, w.r * 0.45, c.cell);
+        case 'disc': {
+          const hit = bumped.get(i);
+          const k = hit == null ? 0 : Math.max(0, 1 - (arena.time - hit) / 0.25);
+          const r = w.r * (1 + 0.22 * k * k);
+          arena.ball(g, w.x, w.y, r, c.p[6]);
+          g.strokeStyle = arena.tone(c.p[6]).edge;
+          g.lineWidth = arena.lw * 0.6;
+          g.beginPath();
+          g.arc(w.x, w.y, r * 0.5, 0, Math.PI * 2);
+          g.stroke();
+          if (k > 0) {
+            g.globalAlpha = k * 0.8;
+            g.fillStyle = c.paper;
+            g.beginPath();
+            g.arc(w.x, w.y, r, 0, Math.PI * 2);
+            g.fill();
+            g.globalAlpha = 1;
+          }
           break;
-        case 'seg':
+        }
+        case 'seg': {
+          const t = arena.tone(rail);
           g.lineCap = 'round';
-          g.strokeStyle = c.ink;
+          if (arena.sh) {
+            g.strokeStyle = c.drop;
+            g.lineWidth = w.r * 2;
+            g.beginPath();
+            g.moveTo(w.x1 + arena.sh * 0.6, w.y1 + arena.sh * 0.6);
+            g.lineTo(w.x2 + arena.sh * 0.6, w.y2 + arena.sh * 0.6);
+            g.stroke();
+          }
+          g.strokeStyle = t.edge;
           g.lineWidth = w.r * 2;
           g.beginPath();
           g.moveTo(w.x1, w.y1);
           g.lineTo(w.x2, w.y2);
           g.stroke();
-          g.strokeStyle = c.cellAlt;
-          g.lineWidth = w.r * 2 - arena.lw * 1.6;
+          g.strokeStyle = rail;
+          g.lineWidth = w.r * 2 - arena.lw * 1.4;
           g.stroke();
+          g.strokeStyle = t.hi;
+          g.globalAlpha = 0.6;
+          g.lineWidth = Math.max(0.8, w.r * 0.5);
+          g.beginPath();
+          g.moveTo(w.x1, w.y1 - w.r * 0.35);
+          g.lineTo(w.x2, w.y2 - w.r * 0.35);
+          g.stroke();
+          g.globalAlpha = 1;
           g.lineCap = 'butt';
           break;
+        }
       }
     }
 
@@ -122,29 +192,35 @@ export const golf: GameDef = {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      // Fairway: a tint of the accent inside the frame.
-      g.globalAlpha = 0.28;
-      g.fillStyle = c.accent;
-      g.fillRect(WALL, WALL, W - 2 * WALL, H - 2 * WALL);
+      const k = course();
+      const iw = W - 2 * WALL;
+      const ih = H - 2 * WALL;
+      // Fairway: mowed stripes, shaded under the top and left rails.
+      g.fillStyle = k.grass;
+      g.fillRect(WALL, WALL, iw, ih);
+      g.fillStyle = k.stripe;
+      for (let y = WALL; y < H - WALL; y += 48) g.fillRect(WALL, y, iw, Math.min(24, H - WALL - y));
+      g.fillStyle = c.coal;
+      g.globalAlpha = arena.dark ? 0.25 : 0.12;
+      g.fillRect(WALL, WALL, iw, 5);
+      g.fillRect(WALL, WALL + 5, 4, ih - 5);
       g.globalAlpha = 1;
       // Sand: yellow with a stipple; water: blue with ripples.
       for (const z of s.sand) {
         arena.box(g, z.x, z.y, z.w, z.h, c.p[3], 10, false);
-        g.fillStyle = c.ink;
-        g.globalAlpha = 0.35;
+        g.fillStyle = arena.tone(c.p[3]).lo;
         for (let y = z.y + 6; y < z.y + z.h - 3; y += 7)
-          for (let x = z.x + 6 + ((y / 7) % 2) * 3; x < z.x + z.w - 3; x += 8) g.fillRect(x, y, 1.4, 1.4);
-        g.globalAlpha = 1;
+          for (let x = z.x + 6 + ((y / 7) % 2) * 3; x < z.x + z.w - 3; x += 8) g.fillRect(x, y, 1.6, 1.6);
       }
       for (const z of s.water) {
         arena.box(g, z.x, z.y, z.w, z.h, c.p[1], 8, false);
-        g.strokeStyle = c.cell;
+        g.strokeStyle = c.paper;
         g.lineWidth = 1.2;
-        g.globalAlpha = 0.7;
+        g.globalAlpha = 0.6;
         for (let y = z.y + 8; y < z.y + z.h - 4; y += 8) {
           g.beginPath();
           for (let x = z.x + 6; x < z.x + z.w - 6; x += 2) {
-            const yy = y + Math.sin(x / 5 + time * 2) * 1.5;
+            const yy = y + Math.sin(x / 5 + arena.time * 2) * 1.5;
             if (x === z.x + 6) g.moveTo(x, yy);
             else g.lineTo(x, yy);
           }
@@ -152,111 +228,139 @@ export const golf: GameDef = {
         }
         g.globalAlpha = 1;
       }
-      // Frame.
-      g.fillStyle = c.muted;
+      // Frame: a wooden border with the stroke pips (filled: strokes left) set into the top rail.
+      g.fillStyle = k.frame;
       g.fillRect(0, 0, W, WALL);
       g.fillRect(0, H - WALL, W, WALL);
-      g.fillRect(0, 0, WALL, H);
-      g.fillRect(W - WALL, 0, WALL, H);
+      g.fillRect(0, WALL, WALL, ih);
+      g.fillRect(W - WALL, WALL, WALL, ih);
+      g.fillStyle = arena.tone(k.frame).hi;
+      g.globalAlpha = 0.35;
+      g.fillRect(0, 0, W, 2);
+      g.globalAlpha = 1;
       g.strokeStyle = c.ink;
       g.lineWidth = arena.lw * 0.8;
-      g.strokeRect(WALL, WALL, W - 2 * WALL, H - 2 * WALL);
-      // Power gauge along the bottom of the frame.
-      if (!s.rolling && !s.done) {
-        g.fillStyle = c.accent;
-        g.fillRect(WALL, H - WALL + 2, (W - 2 * WALL) * s.power, WALL - 4);
-      }
-      // Tee mark.
-      g.fillStyle = c.cell;
-      g.globalAlpha = 0.6;
-      g.fillRect(s.tee.x - 9, s.tee.y - 2, 18, 4);
-      g.globalAlpha = 1;
-      for (let i = 0; i < s.walls.length; i++) drawWall(g, i);
-      // Cup and flag.
-      arena.disc(g, s.cup.x, s.cup.y, CUP_R, c.ink);
-      if (!sunk) {
-        g.strokeStyle = c.ink;
-        g.lineWidth = 1.6;
+      g.strokeRect(WALL, WALL, iw, ih);
+      for (let i = 0; i < s.limit; i++) {
+        const x = W / 2 + (i - (s.limit - 1) / 2) * 13;
+        const left = i >= s.strokes;
         g.beginPath();
-        g.moveTo(s.cup.x, s.cup.y);
-        g.lineTo(s.cup.x, s.cup.y - 30);
-        g.stroke();
-        g.fillStyle = c.p[0];
-        g.lineWidth = arena.lw * 0.6;
-        g.beginPath();
-        g.moveTo(s.cup.x, s.cup.y - 30);
-        g.lineTo(s.cup.x + 16, s.cup.y - 25 + Math.sin(time * 3) * 1.5);
-        g.lineTo(s.cup.x, s.cup.y - 20);
-        g.closePath();
+        g.arc(x, WALL / 2, 3, 0, Math.PI * 2);
+        g.fillStyle = left ? c.paper : alpha(c.coal, 0.5);
         g.fill();
+        g.strokeStyle = c.coal;
+        g.lineWidth = 0.8;
         g.stroke();
       }
-      // Aim guide: dots along the aim, longer with more power, and an arrowhead.
-      if (!s.rolling && !s.done) {
-        const len = 18 + s.power * 110;
-        const ca = Math.cos(s.aim);
-        const sa = Math.sin(s.aim);
-        g.fillStyle = c.ink;
-        for (let d = BALL_R + 6; d < len; d += 7) {
-          g.beginPath();
-          g.arc(s.bx + ca * d, s.by + sa * d, 1.7, 0, Math.PI * 2);
-          g.fill();
+      const waiting = !s.rolling && !s.done && !ended;
+      // Power gauge along the bottom rail.
+      if (waiting) {
+        g.fillStyle = mix(c.paper, c.bad, s.power);
+        g.beginPath();
+        g.roundRect(WALL, H - WALL + 2.5, Math.max(3, iw * s.power), WALL - 5, 2);
+        g.fill();
+      }
+      // Tee mat.
+      g.fillStyle = k.stripe;
+      g.strokeStyle = alpha(c.paper, 0.5);
+      g.lineWidth = 1;
+      g.beginPath();
+      g.roundRect(s.tee.x - 11, s.tee.y - 7, 22, 14, arena.r(3));
+      g.fill();
+      g.stroke();
+      for (let i = 0; i < s.walls.length; i++) drawWall(g, i, k.rail);
+      // Cup: a dark hole with a lit lip, and the flag (it lifts out once the ball drops).
+      g.fillStyle = alpha(c.paper, 0.35);
+      g.beginPath();
+      g.arc(s.cup.x, s.cup.y + 1, CUP_R + 2, 0, Math.PI * 2);
+      g.fill();
+      arena.disc(g, s.cup.x, s.cup.y, CUP_R, c.coal);
+      const lift = sunkAt < 0 ? 0 : outBack(Math.min(1, (arena.time - sunkAt) / 0.5));
+      const top = s.cup.y - 34 - lift * 14;
+      g.strokeStyle = c.coal;
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(s.cup.x, s.cup.y - lift * 14);
+      g.lineTo(s.cup.x, top);
+      g.stroke();
+      g.fillStyle = c.p[0];
+      g.strokeStyle = c.coal;
+      g.lineWidth = arena.lw * 0.6;
+      g.beginPath();
+      g.moveTo(s.cup.x, top);
+      g.lineTo(s.cup.x + 19, top + 6 + Math.sin(arena.time * 3) * 1.8);
+      g.lineTo(s.cup.x, top + 12);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      // Aim preview: dots along the start of the putt's real path (past the first bounce), then an arrowhead.
+      if (waiting) {
+        plan();
+        let next = BALL_R + 5;
+        let run = 0;
+        let last: Point | null = null;
+        let dir = 0;
+        const total = preview.reduce((n, p, i) => (i ? n + Math.hypot(p.x - preview[i - 1].x, p.y - preview[i - 1].y) : 0), 0);
+        // Light dots on the dark fairway, dark ones on the light fairway.
+        g.fillStyle = arena.dark ? c.paper : mix(k.grass, c.coal, 0.6);
+        for (let i = 1; i < preview.length; i++) {
+          const a = preview[i - 1];
+          const b = preview[i];
+          const seg = Math.hypot(b.x - a.x, b.y - a.y);
+          if (seg > 0) dir = Math.atan2(b.y - a.y, b.x - a.x);
+          for (const end = seg > 0 ? run + seg : -1; next <= end; next += 8) {
+            const f = (next - run) / seg;
+            const x = a.x + (b.x - a.x) * f;
+            const y = a.y + (b.y - a.y) * f;
+            g.globalAlpha = 0.95 - 0.55 * (next / Math.max(1, total));
+            g.beginPath();
+            g.arc(x, y, 2, 0, Math.PI * 2);
+            g.fill();
+          }
+          run += seg;
+          last = b;
         }
-        const tx = s.bx + ca * len;
-        const ty = s.by + sa * len;
-        g.beginPath();
-        g.moveTo(tx + ca * 6, ty + sa * 6);
-        g.lineTo(tx - sa * 4, ty + ca * 4);
-        g.lineTo(tx + sa * 4, ty - ca * 4);
-        g.closePath();
-        g.fill();
-      }
-      // Trail and ball.
-      g.fillStyle = c.cell;
-      for (const [i, p] of trail.entries()) {
-        g.globalAlpha = (i / trail.length) * 0.5;
-        g.beginPath();
-        g.arc(p.x, p.y, BALL_R * (0.5 + (i / trail.length) * 0.4), 0, Math.PI * 2);
-        g.fill();
-      }
-      g.globalAlpha = 1;
-      if (!sunk) {
-        if (arena.sh) {
-          g.fillStyle = c.drop;
-          g.beginPath();
-          g.arc(s.bx + arena.sh * 0.5, s.by + arena.sh * 0.5, BALL_R, 0, Math.PI * 2);
-          g.fill();
-        }
-        arena.disc(g, s.bx, s.by, BALL_R, c.cell);
-      }
-      // Effects: rings (splash, sink) and sparks.
-      for (const r of rings) {
-        g.globalAlpha = r.t;
-        g.strokeStyle = c.cell;
-        g.lineWidth = 2;
-        g.beginPath();
-        g.arc(r.x, r.y, 4 + (1 - r.t) * 24, 0, Math.PI * 2);
-        g.stroke();
-      }
-      for (const p of sparks) {
-        g.globalAlpha = Math.min(1, p.t * 2);
-        g.fillStyle = c.p[3];
-        g.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
-      }
-      g.globalAlpha = 1;
-      if (penalty > 0) {
-        g.globalAlpha = Math.min(1, penalty * 2);
-        g.font = `700 14px ${FONT}`;
-        g.textAlign = 'center';
-        g.textBaseline = 'middle';
-        arena.box(g, W / 2 - 70, H / 2 - 14, 140, 28, c.bad, 4);
-        g.fillStyle = c.ink;
-        g.fillText(L('Water! +1 stroke', 'À l’eau! +1 coup'), W / 2, H / 2 + 1);
         g.globalAlpha = 1;
+        if (last && total > BALL_R + 12) {
+          const ca = Math.cos(dir);
+          const sa = Math.sin(dir);
+          g.strokeStyle = c.coal;
+          g.lineWidth = 1;
+          g.beginPath();
+          g.moveTo(last.x + ca * 6, last.y + sa * 6);
+          g.lineTo(last.x - sa * 4.5, last.y + ca * 4.5);
+          g.lineTo(last.x + sa * 4.5, last.y - ca * 4.5);
+          g.closePath();
+          g.fill();
+          g.stroke();
+        }
+        // Power ring around the ball.
+        g.lineCap = 'round';
+        g.strokeStyle = alpha(c.coal, 0.35);
+        g.lineWidth = 2.5;
+        g.beginPath();
+        g.arc(s.bx, s.by, BALL_R + 5, 0, Math.PI * 2);
+        g.stroke();
+        g.strokeStyle = mix(c.paper, c.bad, s.power);
+        g.beginPath();
+        g.arc(s.bx, s.by, BALL_R + 5, -Math.PI / 2, -Math.PI / 2 + Math.max(0.05, s.power) * Math.PI * 2);
+        g.stroke();
+        g.lineCap = 'butt';
       }
+      // Trail and ball (shrinking into the cup once it drops).
+      g.fillStyle = c.paper;
+      for (const [i, p] of trail.entries()) {
+        g.globalAlpha = (i / trail.length) * 0.45;
+        g.beginPath();
+        g.arc(p.x, p.y, BALL_R * (0.4 + (i / trail.length) * 0.45), 0, Math.PI * 2);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+      const shrink = sunkAt < 0 ? 1 : 1 - Math.min(1, (arena.time - sunkAt) / 0.22);
+      if (shrink > 0) arena.ball(g, s.bx, s.by, BALL_R * shrink, c.paper, sunkAt < 0);
       // Pointer drag band.
       if (drag) {
-        g.strokeStyle = c.muted;
+        g.strokeStyle = alpha(c.paper, 0.7);
         g.lineWidth = 1.5;
         g.setLineDash([4, 4]);
         g.beginPath();
@@ -264,17 +368,11 @@ export const golf: GameDef = {
         g.lineTo(drag.to.x, drag.to.y);
         g.stroke();
         g.setLineDash([]);
-        arena.disc(g, drag.from.x, drag.from.y, 3, c.cell);
+        arena.disc(g, drag.from.x, drag.from.y, 3.5, c.paper);
+        arena.disc(g, drag.to.x, drag.to.y, 5, mix(c.paper, c.bad, s.power));
       }
+      arena.overlay(g);
     }
-
-    const burst = (x: number, y: number, n: number) => {
-      for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 2;
-        const v = 60 + (i % 3) * 30;
-        sparks.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 1 });
-      }
-    };
 
     const aim = (from: Point, to: Point) => {
       drag = { from, to };
@@ -284,8 +382,11 @@ export const golf: GameDef = {
     };
     const fire = () => {
       if (ended || !putt(s)) return;
+      const c = arena.colors;
       trail = [];
-      sfx('hit', { pitch: 5 });
+      sfx('hit', { pitch: 6 - s.power * 6 });
+      fx.burst(s.bx, s.by, course().stripe, 7, 50 + s.power * 60, 2.5, 0.35, 'dot', 0, s.aim + Math.PI, 1.4);
+      fx.ring(s.bx, s.by, c.paper, BALL_R, BALL_R + 10 + s.power * 8, 0.25, arena.lw * 0.8);
       status();
     };
     const stopGestures = gestures(arena.canvas, {
@@ -306,53 +407,89 @@ export const golf: GameDef = {
       },
     });
 
+    /** The name of a finish against par. */
+    const finishName = () => {
+      const d = s.strokes - s.par;
+      if (s.strokes === 1) return L('Hole in one!', 'Trou d’un coup!');
+      if (d <= -2) return L('Eagle!', 'Aigle!');
+      if (d === -1) return L('Birdie!', 'Oiselet!');
+      if (d === 0) return L('Par', 'Normale');
+      return L(`+${d} over par`, `+${d} sur la normale`);
+    };
+
     ctx.score(0);
     status();
     return {
       draw,
       frame(dt) {
-        time += dt;
+        px = s.bx;
+        py = s.by;
         const ev = step(s, dt);
+        arena.update(dt);
+        const c = arena.colors;
         if (s.rolling) {
           trail.push({ x: s.bx, y: s.by });
-          if (trail.length > 8) trail.shift();
+          if (trail.length > 9) trail.shift();
         } else trail = [];
-        if (ev.bump > 60) {
-          burst(s.bx, s.by, 4);
-          sfx('hit', { pitch: -3, vol: Math.min(1, ev.bump / 200) });
+        if (ev.bump > 40) {
+          const bi = s.walls.findIndex((w) => w.kind === 'disc' && Math.hypot(s.bx - w.x, s.by - w.y) < w.r + BALL_R + 2);
+          if (bi >= 0) {
+            const w = s.walls[bi];
+            bumped.set(bi, arena.time);
+            if (w.kind === 'disc') fx.ring(w.x, w.y, c.p[6], w.r, w.r + 14, 0.3, arena.lw);
+            fx.burst(s.bx, s.by, arena.tone(c.p[6]).hi, 6, 110, 2.5, 0.3, 'spark', 0);
+            sfx('hit', { pitch: 7, vol: Math.min(1, ev.bump / 160) });
+          } else {
+            fx.burst(s.bx, s.by, c.paper, 4, 50 + ev.bump * 0.3, 2, 0.25, 'spark', 0);
+            sfx('hit', { pitch: -3, vol: Math.min(1, ev.bump / 200) });
+          }
+          if (ev.bump > 260) fx.shake(1.5, 0.12);
         }
+        const sand = s.rolling && s.sand.some((z) => inZone(z, s.bx, s.by));
+        if (sand && !inSand) {
+          fx.burst(s.bx, s.by, arena.tone(c.p[3]).lo, 10, 70, 2.5, 0.4, 'dot', 160, -Math.PI / 2, Math.PI);
+          sfx('tick', { pitch: -8 });
+        }
+        inSand = sand;
         if (ev.splash) {
           sfx('splash');
-          penalty = 1.2;
-          rings.push({ x: s.bx, y: s.by, t: 1 });
+          fx.ring(px, py, c.paper, 3, 20, 0.45, arena.lw);
+          fx.ring(px, py, c.p[1], 6, 30, 0.6, arena.lw * 0.8);
+          fx.burst(px, py, arena.tone(c.p[1]).hi, 12, 100, 2.5, 0.5, 'dot', 280, -Math.PI / 2, Math.PI * 0.8);
+          fx.text(Math.max(70, Math.min(W - 70, px)), py - 16, L('Splash! +1 stroke', 'Plouf! +1 coup'), c.bad, 13, 1.2);
+          fx.ring(s.bx, s.by, c.paper, BALL_R, BALL_R + 12, 0.4, arena.lw);
           status();
         }
-        if (ev.stopped) status();
+        if (ev.stopped) {
+          status();
+          const miss = Math.hypot(s.bx - s.cup.x, s.by - s.cup.y);
+          if (!ev.over && !ev.splash && miss < CUP_R + 18) fx.text(s.bx, s.by - 14, L('So close!', 'Presque!'), c.fg, 11);
+        }
         if (ev.cleared) {
-          sunk = true;
+          ended = true;
+          sunkAt = arena.time;
           sfx('power');
-          rings.push({ x: s.cup.x, y: s.cup.y, t: 1 });
-          burst(s.cup.x, s.cup.y, 14);
+          fx.ring(s.cup.x, s.cup.y, c.paper, CUP_R, CUP_R + 30, 0.5, arena.lw * 1.3);
+          for (let i = 0; i < 5; i++) fx.burst(s.cup.x, s.cup.y, c.p[i], 8, 170, 3.5, 0.9, 'square', 240);
+          fx.text(s.cup.x < W / 2 ? s.cup.x + 30 : s.cup.x - 30, s.cup.y + 34, finishName(), c.p[3], 16, 1.5);
+          fx.flash(c.good, 0.2, 0.45);
           ctx.score(s.score);
           status();
-        }
-        penalty = Math.max(0, penalty - dt);
-        for (const r of rings) r.t -= dt * 1.5;
-        rings = rings.filter((r) => r.t > 0);
-        for (const p of sparks) {
-          p.x += p.vx * dt;
-          p.y += p.vy * dt;
-          p.t -= dt * 1.8;
-        }
-        sparks = sparks.filter((p) => p.t > 0);
-        draw();
-        if (ended) return;
-        if (ev.cleared) {
-          ended = true;
-          ctx.win();
+          won = true;
+          reportAt = arena.time + 0.3;
         } else if (ev.over) {
           ended = true;
-          ctx.lose();
+          fx.flash(c.bad, 0.25, 0.4);
+          fx.shake(3, 0.3);
+          fx.text(W / 2, H / 2, L('Out of strokes', 'Plus de coups'), c.bad, 15, 1.4);
+          reportAt = arena.time + 0.25;
+        }
+        draw();
+        if (reportAt >= 0 && arena.time >= reportAt) {
+          reportAt = -1;
+          arena.linger(0.9);
+          if (won) ctx.win();
+          else ctx.lose();
         }
       },
       onKey(e) {

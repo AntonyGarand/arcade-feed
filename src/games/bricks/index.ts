@@ -66,6 +66,8 @@ export const bricks: GameDef = {
     /** Paddle squash after a bounce, 1 → 0. */
     let squash = 0;
     let ended = false;
+    /** Broken bricks tumbling away: where they were, their colour and age (seconds). */
+    let debris: { x: number; y: number; w: number; h: number; c: number; vx: number; t: number }[] = [];
 
     const status = () =>
       ctx.status(
@@ -123,6 +125,44 @@ export const bricks: GameDef = {
         }
       }
 
+      // Broken bricks drop, tip over and fade.
+      for (const d of debris) {
+        const k = d.t / 0.45;
+        g.save();
+        g.globalAlpha = 1 - k;
+        g.translate(d.x + d.w / 2 + d.vx * d.t, d.y + d.h / 2 + 260 * d.t * d.t);
+        g.rotate(d.vx * d.t * 0.04);
+        g.scale(1 - 0.4 * k, 1 - 0.4 * k);
+        arena.block(g, -d.w / 2, -d.h / 2, d.w, d.h, c.p[d.c], 3, false);
+        g.restore();
+      }
+      g.globalAlpha = 1;
+
+      // The last few bricks glow, so they're easy to find.
+      if (s.bricks.length <= 3 && !ended) {
+        const pulse = 0.5 + 0.5 * Math.sin(arena.time * 6);
+        for (const b of s.bricks) {
+          g.strokeStyle = arena.tone(c.p[b.c]).glow;
+          g.lineWidth = 3 + pulse * 3;
+          g.beginPath();
+          g.roundRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4, arena.r(4));
+          g.stroke();
+        }
+      }
+
+      // Launch guide while the ball rests on the paddle.
+      if (s.held && !ended) {
+        g.fillStyle = c.fg;
+        for (let i = 1; i <= 6; i++) {
+          const d = 6 + i * 13 + ((arena.time * 40) % 13);
+          g.globalAlpha = 0.7 * (1 - i / 7);
+          g.beginPath();
+          g.arc(s.bx + Math.sin(s.aim) * d, s.by - Math.cos(s.aim) * d, 1.8, 0, Math.PI * 2);
+          g.fill();
+        }
+        g.globalAlpha = 1;
+      }
+
       // Paddle: squashes a little on every bounce.
       const sq = squash * squash;
       const ph = PADDLE_H * (1 - 0.28 * sq);
@@ -157,6 +197,7 @@ export const bricks: GameDef = {
         const cy = b.y + b.h / 2;
         if (!s.bricks.includes(b)) {
           broke = true;
+          debris.push({ x: b.x, y: b.y, w: b.w, h: b.h, c: b.c, vx: (cx - s.bx) * 3 || 20, t: 0 });
           const fill = c.p[b.c];
           fx.burst(cx, cy, fill, 14, 130, 4, 0.6);
           fx.burst(cx, cy, arena.tone(fill).hi, 6, 90, 2.5, 0.45, 'dot');
@@ -168,7 +209,14 @@ export const bricks: GameDef = {
       }
       if (broke) sfx('pop', { pitch: Math.min(12, s.combo * 2) });
       else sfx('hit', { pitch: 4 });
-      if (gain > 0) fx.text(s.bx, s.by - 8, `+${gain}`, s.combo >= 3 ? c.accent : c.fg, s.combo >= 3 ? 14 : 11);
+      if (gain > 0)
+        fx.text(
+          Math.min(W - 16, Math.max(16, s.bx)),
+          s.by - 8,
+          `+${gain}`,
+          s.combo >= 3 ? c.accent : c.fg,
+          s.combo >= 3 ? 15 + Math.min(4, s.combo - 3) : 12,
+        );
       if (s.combo >= 4 && s.combo % 2 === 0) fx.shake(1.5, 0.15);
       before = s.bricks.slice();
       beforeHp = s.bricks.map((b) => b.hp);
@@ -196,9 +244,12 @@ export const bricks: GameDef = {
         const score = s.score;
         const vy = s.vy;
         const held = s.held;
+        const bx = s.bx;
         const ev = step(s, dt);
         arena.update(dt);
         squash = Math.max(0, squash - dt * 5);
+        for (const d of debris) d.t += dt;
+        debris = debris.filter((d) => d.t < 0.45);
         const c = arena.colors;
         if (held && !s.held) fx.burst(s.bx, s.by + BALL_R, c.muted, 6, 60, 2, 0.3, 'dot', 0, -Math.PI / 2, Math.PI);
         // Paddle bounce: the ball turned upwards at paddle height.
@@ -215,7 +266,8 @@ export const bricks: GameDef = {
           ctx.lives(s.lives, LIVES);
           fx.shake(5, 0.35);
           fx.flash(c.bad, 0.3, 0.35);
-          fx.burst(Math.min(W - 10, Math.max(10, s.bx)), H - 4, c.bad, 12, 140, 3.5, 0.5, 'square', 300, -Math.PI / 2, Math.PI * 0.7);
+          fx.text(Math.min(W - 30, Math.max(30, bx)), H - 30, s.lives > 0 ? L('−1 life', '−1 vie') : L('Out!', 'Perdu!'), c.bad, 14);
+          fx.burst(Math.min(W - 10, Math.max(10, bx)), H - 4, c.bad, 12, 140, 3.5, 0.5, 'square', 300, -Math.PI / 2, Math.PI * 0.7);
           trailN = 0;
         }
         if (ev.hit || ev.lostLife || combo !== s.combo) status();

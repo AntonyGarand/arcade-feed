@@ -26,6 +26,8 @@ import {
   W,
 } from './rules';
 
+/** The sweet is drawn a little larger than its hit radius, to read on a phone. */
+const SWEET_DRAW = 1.25;
 const star: Trace = (g, r) => glyphPath(g, 4, 0, 0, r);
 const spiky: Trace = (g, r) => {
   g.beginPath();
@@ -143,11 +145,11 @@ export const snip: GameDef = {
         for (const [a, b] of parts) {
           chain(g, r, a, b);
           g.strokeStyle = c.ink;
-          g.lineWidth = 3.6;
+          g.lineWidth = 4.6;
           g.stroke();
           g.strokeStyle = twist.hi;
-          g.lineWidth = 1.8;
-          g.setLineDash([3, 3]);
+          g.lineWidth = 2.4;
+          g.setLineDash([3.5, 3]);
           g.stroke();
           g.setLineDash([]);
         }
@@ -161,6 +163,7 @@ export const snip: GameDef = {
       g.save();
       g.translate(x, y);
       g.rotate(spin);
+      g.scale(SWEET_DRAW, SWEET_DRAW);
       // Wrapper twists on both sides.
       g.fillStyle = t.hi;
       g.strokeStyle = t.edge;
@@ -269,23 +272,28 @@ export const snip: GameDef = {
       const c = arena.colors;
       arena.field(g, 0, 0, W, H, 20, 0, false);
       drawRopes(g);
-      // Anchors, numbered for the keyboard.
-      g.font = `700 9px ${arena.family}`;
+      // Anchors (a pin in a ring), each with a numbered badge for the keyboard.
+      g.font = `800 10px ${arena.family}`;
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       for (const [i, r] of s.ropes.entries()) {
-        arena.disc(g, r.ax, r.ay, 5, r.cut ? c.cellAlt : c.cell);
+        arena.ball(g, r.ax, r.ay, 6.5, r.cut ? c.cellAlt : c.muted, !r.cut);
         g.fillStyle = c.ink;
         g.beginPath();
-        g.arc(r.ax, r.ay, 1.6, 0, Math.PI * 2);
+        g.arc(r.ax, r.ay, 2, 0, Math.PI * 2);
         g.fill();
-        g.fillStyle = r.cut ? c.muted : c.fg;
-        g.fillText(String(i + 1), r.ax + (r.ax < W - 20 ? 11 : -11), r.ay - 7);
+        const bx = r.ax + (r.ax < W - 24 ? 15 : -15);
+        const by = r.ay - 9;
+        if (!r.cut) {
+          arena.disc(g, bx, by, 7, c.cell);
+          g.fillStyle = c.fg;
+        } else g.fillStyle = c.muted;
+        g.fillText(String(i + 1), bx, by + 0.5);
       }
       for (const st of s.stars) {
         if (st.got) continue;
         const k = 1 + Math.sin(arena.time * 4 + st.x) * 0.08;
-        arena.gem(g, st.x, st.y, STAR_R + 1, c.p[3], star, true, k, Math.sin(arena.time * 2 + st.y) * 0.2);
+        arena.gem(g, st.x, st.y, STAR_R + 3, c.p[3], star, true, k, Math.sin(arena.time * 2 + st.y) * 0.2);
       }
       for (const sp of s.spikes) arena.gem(g, sp.x, sp.y, SPIKE_R + 2, c.bad, spiky, true, 1, arena.time * 0.8);
       const b = s.bubble;
@@ -293,7 +301,7 @@ export const snip: GameDef = {
       drawCritter(g);
       if (s.phase !== 'won' && s.why !== 'spike') drawSweet(g, s.x, s.y);
       if (b && !b.popped && b.held) drawBubble(g, s.x, s.y);
-      // Swipe trail.
+      // Swipe trail: a bright blade with an outline.
       if (trail.length > 1) {
         g.strokeStyle = c.fg;
         g.lineCap = 'round';

@@ -119,6 +119,21 @@ describe('runner rules', () => {
     }
   });
 
+  it('cancels the hop a swipe starts with, so a swipe down under a bar never lifts you into it', () => {
+    const s = createLevel(5, new Rng(3));
+    const bar = s.obstacles.find((o) => o.kind === 'bar')!;
+    s.x = bar.x - 30;
+    press(s); // the press that starts the swipe jumps…
+    step(s, DT);
+    step(s, DT);
+    duck(s); // …and the swipe down undoes it
+    expect(s.grounded).toBe(true);
+    expect(s.y).toBe(0);
+    let hurt = false;
+    for (let i = 0; i < 20; i++) hurt ||= step(s, DT).hurt;
+    expect(hurt).toBe(false);
+  });
+
   it('ducks under a bar with a swipe', () => {
     const s = createLevel(5, new Rng(3));
     const bar = s.obstacles.find((o) => o.kind === 'bar')!;

@@ -28,6 +28,9 @@ import {
 /** Drag length (world units) for a full pull, and how far the pouch stretches back on screen. */
 const PULL_MAX = 110;
 const PULL_SHOW = 30;
+/** The view leaves out the empty sky above this world height (high lobs get an arrow at the top edge). */
+const VIEW_TOP = 70;
+const VH = H - VIEW_TOP;
 /** Stones a clean run needs, per level (the rest earn the bonus): sets the star goals. */
 const NEED = [1, 1, 2, 3, 3] as const;
 
@@ -85,7 +88,14 @@ export const sling: GameDef = {
   pad: () => ({ left: aimUpDown(), right: [...power('ArrowLeft', 'ArrowRight'), btn(' ', 'fire', L('Fling', 'Lancer'))] }),
   create(ctx) {
     const s: State = createLevel(ctx.difficulty, ctx.rng);
-    const arena = new Arena(ctx.root, W, H, () => draw());
+    const arena = new Arena(ctx.root, W, VH, () => {
+      if (ended) wash.a = Math.max(0, wash.a - (arena.time - washAt) * 0.7);
+      washAt = arena.time;
+      draw();
+    });
+    /** A wash over the whole view (fx's own flash would be shifted with the view). */
+    let wash = { color: '', a: 0 };
+    let washAt = 0;
     const fx = arena.fx;
     let drag: { from: Point; to: Point } | null = null;
     /** Pouch spring after a shot, 1 → 0. */
@@ -273,7 +283,9 @@ export const sling: GameDef = {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      arena.field(g, 0, 0, W, H, 20, 0, false);
+      arena.field(g, 0, 0, W, VH, 20, 0, false);
+      g.save();
+      g.translate(0, -VIEW_TOP);
       // Far hills.
       g.fillStyle = arena.tone(c.p[7]).glow;
       g.beginPath();
@@ -304,12 +316,12 @@ export const sling: GameDef = {
 
       // Aim guide.
       if (s.phase === 'aim' && !ended) {
-        g.fillStyle = c.muted;
+        g.fillStyle = c.fg;
         const pts = aimPath(s);
         for (const [i, p] of pts.entries()) {
-          g.globalAlpha = 1 - (i / pts.length) * 0.7;
+          g.globalAlpha = 0.8 - (i / pts.length) * 0.6;
           g.beginPath();
-          g.arc(p.x, p.y, 2 - (i / pts.length) * 0.8, 0, Math.PI * 2);
+          g.arc(p.x, p.y, 2.6 - (i / pts.length) * 1.2, 0, Math.PI * 2);
           g.fill();
         }
         g.globalAlpha = 1;
@@ -336,7 +348,22 @@ export const sling: GameDef = {
       drawBand(g, 1, p);
       if (stone) drawStone(g, stone.x, stone.y, true, stone.spin);
 
-      // Stones left, top left.
+      // A stone above the view: an arrow at the top edge, following it.
+      if (stone && stone.y < VIEW_TOP - STONE_R) {
+        g.fillStyle = c.accent;
+        g.strokeStyle = c.ink;
+        g.lineWidth = arena.lw * 0.6;
+        const ax = Math.max(8, Math.min(W - 8, stone.x));
+        g.beginPath();
+        g.moveTo(ax, VIEW_TOP + 3);
+        g.lineTo(ax - 6, VIEW_TOP + 12);
+        g.lineTo(ax + 6, VIEW_TOP + 12);
+        g.closePath();
+        g.fill();
+        g.stroke();
+      }
+      // Stones left, top left (in view space).
+      g.translate(0, VIEW_TOP);
       for (let i = 0; i < s.shots; i++) {
         const left = i < s.shots - s.used;
         if (left) arena.ball(g, 14 + i * 17, 16, 6, c.accent, false);
@@ -361,7 +388,15 @@ export const sling: GameDef = {
         g.setLineDash([]);
         arena.disc(g, drag.from.x, drag.from.y, 3, c.cell);
       }
+      g.translate(0, -VIEW_TOP);
       arena.overlay(g);
+      g.restore();
+      if (wash.a > 0) {
+        g.globalAlpha = wash.a;
+        g.fillStyle = wash.color;
+        g.fillRect(-10, -10, W + 20, VH + 20);
+        g.globalAlpha = 1;
+      }
     }
 
     const inField = (x: number, y: number): [number, number] => [Math.max(12, Math.min(W - 12, x)), Math.max(12, Math.min(H - 12, y))];
@@ -426,7 +461,10 @@ export const sling: GameDef = {
       status();
     };
     const stopGestures = gestures(arena.canvas, {
-      toWorld: (e) => arena.toWorld(e),
+      toWorld: (e) => {
+        const p = arena.toWorld(e);
+        return { x: p.x, y: p.y + VIEW_TOP };
+      },
       slop: 6,
       onMove: (p, from) => {
         if (from && s.phase === 'aim' && !ended) aim(from, p);
@@ -452,6 +490,7 @@ export const sling: GameDef = {
         const ev = step(s, dt);
         arena.update(dt);
         twang = Math.max(0, twang - dt * 2.5);
+        wash.a = Math.max(0, wash.a - dt * 0.7);
         bumpWait -= dt;
         const stone = stoneOf(s);
         if (stone && s.phase === 'flight') {
@@ -466,11 +505,13 @@ export const sling: GameDef = {
           ended = true;
           for (let i = 0; i < 4; i++) fx.burst(W * (0.55 + i * 0.1), GROUND - 60, c.p[i + 1], 10, 170, 4, 0.9, 'square', 220);
           if (ev.bonus) fx.text(W / 2, H / 2 - 40, `+${ev.bonus}`, c.accent, 18, 1.2);
-          fx.flash(c.good, 0.25, 0.5);
+          wash = { color: c.good, a: 0.25 };
+          washAt = arena.time;
           arena.linger(1.4);
         } else if (ev.over && !ended) {
           ended = true;
-          fx.flash(c.bad, 0.3, 0.4);
+          wash = { color: c.bad, a: 0.28 };
+          washAt = arena.time;
           fx.shake(4, 0.3);
           arena.linger();
         }

@@ -2,31 +2,24 @@ import './style.css';
 import { L } from '../../core/i18n';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { mix } from '../../kits/arena/color';
+import { outBack } from '../../kits/arena/ease';
 import { DX, DY, gestures, keyDir } from '../../kits/gesture/gesture';
 import { sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
-import {
-  bop,
-  createLevel,
-  durationFor,
-  GOLD_POINTS,
-  HIT_POINTS,
-  isUp,
-  LIFE_BONUS,
-  LIVES,
-  type Pop,
-  step,
-  TIME_POINTS,
-  WHIFF_S,
-} from './rules';
+import { bop, createLevel, durationFor, GOLD_POINTS, HIT_POINTS, isUp, LIFE_BONUS, LIVES, type Pop, step, TIME_POINTS } from './rules';
 
 const SIZE = 300;
 const PAD = 10;
-const BAR = 6;
-/** Seconds a critter takes to rise out of its hole (and to sink back). */
-const RISE_S = 0.1;
+/** Height of the timer strip under the holes. */
+const BAR = 12;
+/** Seconds a critter takes to spring out of its hole (and to sink back). */
+const RISE_S = 0.14;
 /** Seconds a whacked critter stays squashed on screen. */
 const BONK_S = 0.3;
+/** The mallet's swing down, and how long it stays before fading. */
+const SWING_S = 0.08;
+const MALLET_S = 0.24;
 /** Glyphs: a four-point spike for decoys, a star above golden critters. */
 const SPIKE = 7;
 const STAR = 4;
@@ -37,14 +30,6 @@ const KEYS: Record<number, string[]> = {
 };
 /** Letter keys for 3×3 too, for keyboards without a keypad. */
 const KEYS3 = ['q', 'w', 'e', 'a', 's', 'd', 'z', 'x', 'c'];
-
-interface Float {
-  x: number;
-  y: number;
-  text: string;
-  life: number;
-  good: boolean;
-}
 
 export const whack: GameDef = {
   id: 'whack',
@@ -101,13 +86,13 @@ export const whack: GameDef = {
     const n = s.n;
     const cell = (SIZE - 2 * PAD) / n;
     const arena = new Arena(ctx.root, SIZE, SIZE + BAR, () => draw());
+    const fx = arena.fx;
     const keys = KEYS[n];
     let cursor = -1;
     let keyboard = false;
-    let floats: Float[] = [];
-    /** Seconds left of the red flash after hitting a decoy, and of the dust puff after a whiff. */
-    let ouch = 0;
-    let puff = { hole: -1, t: 0 };
+    /** The last swing: which hole, when (arena time) and whether it hit a critter. */
+    let swing = { hole: -1, at: -9, hit: false };
+    let ended = false;
     let shown = '';
 
     const status = () => {
@@ -122,65 +107,88 @@ export const whack: GameDef = {
     };
 
     const centre = (h: number) => ({ x: PAD + (h % n) * cell + cell / 2, y: PAD + Math.floor(h / n) * cell + cell / 2 });
-    /** The hole's mouth sits a bit below the cell's centre; critters rise above it. */
-    const mouthY = (h: number) => centre(h).y + cell * 0.2;
+    /** The hole's mouth sits below the cell's centre; critters rise above it. */
+    const mouthY = (h: number) => centre(h).y + cell * 0.24;
+    const holeW = cell * 0.36;
+    const holeH = cell * 0.12;
 
     function drawCritter(g: CanvasRenderingContext2D, p: Pop) {
       const c = arena.colors;
       const { x } = centre(p.hole);
       const my = mouthY(p.hole);
-      const r = cell * 0.26;
-      // How far out of the hole: rising, up, sinking; squashed for a moment once hit.
+      const r = cell * 0.3;
+      // How far out of the hole: springing up, up, sinking; squashed for a moment once hit.
       const since = s.time - p.t;
       const left = p.t + p.dur - s.time;
       const bonk = p.hit >= 0 ? Math.min(1, (s.time - p.hit) / BONK_S) : 0;
-      const out = p.hit >= 0 ? 1 - bonk : Math.min(1, since / RISE_S, left / RISE_S);
+      const out = p.hit >= 0 ? 1 - bonk * bonk : Math.min(outBack(Math.min(1, since / RISE_S), 2.2), left / RISE_S);
       if (out <= 0) return;
-      const y = my - out * r * 0.95;
-      const squash = p.hit >= 0 ? 1 - bonk * 0.5 : 1;
+      const y = my - out * r * 1.25;
+      const squash = p.hit >= 0 ? 1 - Math.min(1, bonk * 3) * 0.45 : 1;
       g.save();
       g.beginPath();
-      g.rect(x - cell / 2, my - cell, cell, cell);
+      g.rect(x - cell / 2, my - cell * 1.2, cell, cell * 1.2);
       g.clip();
-      g.translate(x, y);
-      g.scale(1 + (1 - squash) * 0.6, squash);
+      g.translate(x, y + r * (1 - squash));
+      g.scale(1 + (1 - squash) * 0.7, squash);
       if (p.kind === 'decoy') {
-        g.fillStyle = c.fg;
-        g.strokeStyle = c.ink;
+        // A spiky dark ball that quivers, with angry red eyes.
+        const body = arena.dark ? mix(c.coal, c.muted, 0.3) : c.coal;
+        g.rotate(Math.sin(s.time * 18 + p.hole) * 0.08);
+        g.fillStyle = body;
+        g.strokeStyle = arena.dark ? c.ink : arena.tone(body).edge;
         g.lineWidth = arena.lw * 0.8;
-        glyphPath(g, SPIKE, 0, 0, r * 1.25);
+        glyphPath(g, SPIKE, 0, 0, r * 1.3);
         g.fill();
         g.stroke();
-        // Angry slanted eyes.
-        g.strokeStyle = c.bad;
-        g.lineWidth = arena.lw * 1.1;
+        arena.ball(g, 0, 0, r * 0.66, body, false);
         for (const k of [-1, 1]) {
+          g.fillStyle = c.bad;
           g.beginPath();
-          g.moveTo(k * r * 0.5, -r * 0.2);
-          g.lineTo(k * r * 0.12, -r * 0.02);
+          g.arc(k * r * 0.24, 0, r * 0.1, 0, Math.PI * 2);
+          g.fill();
+          g.strokeStyle = c.bad;
+          g.lineWidth = arena.lw * 1.1;
+          g.beginPath();
+          g.moveTo(k * r * 0.48, -r * 0.3);
+          g.lineTo(k * r * 0.1, -r * 0.14);
           g.stroke();
         }
       } else {
         const body = p.kind === 'gold' ? c.p[3] : c.accent;
-        for (const k of [-1, 1]) arena.disc(g, k * r * 0.62, -r * 0.78, r * 0.3, body);
-        arena.disc(g, 0, 0, r, body);
-        for (const k of [-1, 1]) {
-          arena.disc(g, k * r * 0.36, -r * 0.18, r * 0.24, c.cell);
-          g.fillStyle = c.ink;
-          g.beginPath();
-          if (p.hit >= 0) g.rect(k * r * 0.36 - r * 0.16, -r * 0.2, r * 0.32, r * 0.06);
-          else g.arc(k * r * 0.36, -r * 0.14, r * 0.11, 0, Math.PI * 2);
-          g.fill();
-        }
-        g.fillStyle = c.ink;
+        for (const k of [-1, 1]) arena.ball(g, k * r * 0.64, -r * 0.76, r * 0.3, body, false);
+        arena.ball(g, 0, 0, r, body);
+        // Muzzle, eyes (squeezed shut once hit) and nose.
+        g.fillStyle = arena.tone(body).hi;
         g.beginPath();
-        g.arc(0, r * 0.2, r * 0.1, 0, Math.PI * 2);
+        g.ellipse(0, r * 0.32, r * 0.42, r * 0.28, 0, 0, Math.PI * 2);
+        g.fill();
+        for (const k of [-1, 1]) {
+          if (p.hit >= 0) {
+            g.strokeStyle = c.coal;
+            g.lineWidth = arena.lw * 0.8;
+            g.beginPath();
+            g.moveTo(k * r * 0.5, -r * 0.26);
+            g.lineTo(k * r * 0.26, -r * 0.13);
+            g.lineTo(k * r * 0.5, 0);
+            g.stroke();
+          } else {
+            arena.disc(g, k * r * 0.36, -r * 0.14, r * 0.2, c.paper);
+            g.fillStyle = c.coal;
+            g.beginPath();
+            g.arc(k * r * 0.36, -r * 0.1, r * 0.1, 0, Math.PI * 2);
+            g.fill();
+          }
+        }
+        g.fillStyle = c.coal;
+        g.beginPath();
+        g.ellipse(0, r * 0.2, r * 0.12, r * 0.08, 0, 0, Math.PI * 2);
         g.fill();
         if (p.kind === 'gold') {
           g.fillStyle = c.p[3];
           g.strokeStyle = c.ink;
           g.lineWidth = arena.lw * 0.7;
-          glyphPath(g, STAR, 0, -r * 1.35, r * 0.42);
+          glyphPath(g, STAR, 0, -r * 1.42, r * 0.42 * (1 + 0.12 * Math.sin(s.time * 12)));
           g.fill();
           g.stroke();
         }
@@ -188,20 +196,46 @@ export const whack: GameDef = {
       g.restore();
     }
 
+    /** The mallet: swings down onto the tapped hole, then fades away. */
+    function drawMallet(g: CanvasRenderingContext2D) {
+      const age = arena.time - swing.at;
+      if (swing.hole < 0 || age > MALLET_S) return;
+      const c = arena.colors;
+      const { x } = centre(swing.hole);
+      const top = mouthY(swing.hole) - cell * 0.38;
+      g.save();
+      g.globalAlpha = age < SWING_S ? 1 : Math.max(0, 1 - (age - SWING_S) / (MALLET_S - SWING_S));
+      g.translate(x + cell * 0.4, top);
+      g.rotate((age < SWING_S ? -0.9 * (1 - age / SWING_S) : 0) - 0.12);
+      arena.box(g, -cell * 0.36, -cell * 0.03, cell * 0.42, cell * 0.06, c.p[0], 2, false);
+      arena.block(g, -cell * 0.52, -cell * 0.13, cell * 0.2, cell * 0.26, swing.hit ? c.p[1] : c.muted, 3, false);
+      g.restore();
+    }
+
     function draw() {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
+      arena.field(g, 0, 0, SIZE, SIZE + BAR, 20, 0, false);
+      /** Inside of a hole: dark in both themes; a mound of earth around it. */
+      const pit = mix(c.coal, c.cellAlt, arena.dark ? 0.15 : 0.3);
+      const mound = arena.tone(c.cellAlt).lo;
+      /** Where the mound outline meets the mouth line: the front lip runs below it. */
+      const lipA = Math.asin(0.3 / 1.9);
       for (let h = 0; h < n * n; h++) {
         const { x, y } = centre(h);
-        arena.box(g, x - cell / 2 + 3, y - cell / 2 + 3, cell - 6, cell - 6, c.cellAlt, 8, false);
-        // The hole: dark mouth, back rim.
+        arena.box(g, x - cell / 2 + 3, y - cell / 2 + 3, cell - 6, cell - 6, c.cell, 8, false);
         const my = mouthY(h);
-        g.fillStyle = c.muted;
+        g.fillStyle = mound;
         g.strokeStyle = c.ink;
-        g.lineWidth = arena.lw * 0.8;
+        g.lineWidth = arena.lw * 0.7;
         g.beginPath();
-        g.ellipse(x, my, cell * 0.34, cell * 0.11, 0, 0, Math.PI * 2);
+        g.ellipse(x, my + holeH * 0.3, holeW * 1.18, holeH * 1.9, 0, 0, Math.PI * 2);
+        g.fill();
+        g.stroke();
+        g.fillStyle = pit;
+        g.beginPath();
+        g.ellipse(x, my, holeW, holeH, 0, 0, Math.PI * 2);
         g.fill();
         g.stroke();
       }
@@ -209,91 +243,109 @@ export const whack: GameDef = {
         const visible = isUp(p, s.time) || (p.hit >= 0 && s.time - p.hit < BONK_S);
         if (visible) drawCritter(g, p);
       }
-      // Front rim over the critters' bottoms, so they come out of the hole.
+      // Front of the mound over the critters' bottoms, so they come out of the hole.
       for (let h = 0; h < n * n; h++) {
         const { x } = centre(h);
         const my = mouthY(h);
-        g.fillStyle = c.cellAlt;
+        g.fillStyle = mound;
         g.strokeStyle = c.ink;
-        g.lineWidth = arena.lw * 0.8;
+        g.lineWidth = arena.lw * 0.7;
         g.beginPath();
-        g.ellipse(x, my, cell * 0.34, cell * 0.11, 0, 0, Math.PI);
-        g.lineTo(x - cell * 0.4, my + cell * 0.18);
-        g.lineTo(x + cell * 0.4, my + cell * 0.18);
+        g.ellipse(x, my, holeW, holeH, 0, 0, Math.PI);
+        g.ellipse(x, my + holeH * 0.3, holeW * 1.18, holeH * 1.9, 0, Math.PI + lipA, -lipA, true);
         g.closePath();
         g.fill();
         g.beginPath();
-        g.ellipse(x, my, cell * 0.34, cell * 0.11, 0, 0, Math.PI);
+        g.ellipse(x, my, holeW, holeH, 0, 0, Math.PI);
+        g.stroke();
+        g.beginPath();
+        g.ellipse(x, my + holeH * 0.3, holeW * 1.18, holeH * 1.9, 0, Math.PI + lipA, -lipA, true);
         g.stroke();
         if (keyboard) {
-          g.fillStyle = c.muted;
-          g.font = `600 ${Math.round(cell * 0.12)}px system-ui, sans-serif`;
+          g.fillStyle = c.fg;
+          g.font = `700 ${Math.round(cell * 0.13)}px ${arena.family}`;
           g.textAlign = 'center';
           g.textBaseline = 'middle';
-          g.fillText(keys[h].toUpperCase(), x, my + cell * 0.235);
+          g.fillText(keys[h].toUpperCase(), x, my + cell * 0.2);
         }
       }
-      if (puff.t > 0) {
-        const { x } = centre(puff.hole);
-        const my = mouthY(puff.hole);
-        g.globalAlpha = puff.t / WHIFF_S;
-        for (const k of [-1, 0, 1]) arena.disc(g, x + k * cell * 0.16, my - cell * 0.08 - (1 - puff.t / WHIFF_S) * 8, cell * 0.07, c.cell);
-        g.globalAlpha = 1;
-      }
+      drawMallet(g);
       if (cursor >= 0) {
         const { x, y } = centre(cursor);
-        g.strokeStyle = c.ink;
-        g.lineWidth = arena.lw * 1.2;
+        g.strokeStyle = c.accent;
+        g.lineWidth = arena.lw * 1.4;
         g.setLineDash([6, 4]);
         g.beginPath();
         g.roundRect(x - cell / 2 + 3, y - cell / 2 + 3, cell - 6, cell - 6, 8);
         g.stroke();
         g.setLineDash([]);
       }
-      g.textAlign = 'center';
-      g.textBaseline = 'middle';
-      for (const f of floats) {
-        g.globalAlpha = Math.min(1, f.life * 2);
-        g.font = `800 ${Math.round(cell * 0.22)}px system-ui, sans-serif`;
-        g.lineWidth = 3;
-        g.strokeStyle = c.cell;
-        g.strokeText(f.text, f.x, f.y);
-        g.fillStyle = f.good ? c.fg : c.bad;
-        g.fillText(f.text, f.x, f.y);
-      }
-      g.globalAlpha = 1;
-      if (ouch > 0) {
-        g.globalAlpha = ouch;
-        g.fillStyle = c.bad;
-        g.fillRect(0, 0, SIZE, SIZE);
+      // Time left along the bottom, red and pulsing for the last seconds.
+      const left = Math.max(0, 1 - s.time / s.duration);
+      const late = s.duration - s.time < 6 && !ended;
+      const bw = SIZE - 2 * PAD;
+      arena.box(g, PAD, SIZE - 2, bw, BAR - 4, c.cellAlt, 4, false);
+      if (left > 0) {
+        g.fillStyle = late ? c.bad : c.accent;
+        g.globalAlpha = late ? 0.75 + 0.25 * Math.sin(s.time * 14) : 1;
+        g.beginPath();
+        g.roundRect(PAD, SIZE - 2, Math.max(BAR - 4, bw * left), BAR - 4, 4);
+        g.fill();
         g.globalAlpha = 1;
       }
-      // Time left along the bottom.
-      g.fillStyle = c.cellAlt;
-      g.fillRect(0, SIZE, SIZE, BAR);
-      g.fillStyle = s.duration - s.time < 6 ? c.bad : c.accent;
-      g.fillRect(0, SIZE, SIZE * Math.max(0, 1 - s.time / s.duration), BAR);
+      g.strokeStyle = c.ink;
+      g.lineWidth = arena.lw * 0.7;
+      g.beginPath();
+      g.roundRect(PAD, SIZE - 2, bw, BAR - 4, 4);
+      g.stroke();
+      arena.overlay(g);
+    }
+
+    function end(won: boolean) {
+      ended = true;
+      const c = arena.colors;
+      if (won) {
+        for (let i = 0; i < 5; i++) fx.burst(SIZE / 2, SIZE / 2, c.p[i], 10, 200, 4, 0.9, 'square', 220);
+        fx.ring(SIZE / 2, SIZE / 2, c.good, 10, 130, 0.6, arena.lw * 1.5);
+        fx.flash(c.good, 0.22, 0.5);
+      } else fx.flash(c.bad, 0.2, 0.4);
+      arena.linger();
     }
 
     function hit(h: number) {
       const r = bop(s, h);
       if (!r.out) return;
-      const { x, y } = centre(h);
+      const c = arena.colors;
+      const { x } = centre(h);
+      const my = mouthY(h) - cell * 0.3;
+      swing = { hole: h, at: arena.time, hit: r.out !== 'whiff' };
       if (r.out === 'whiff') {
-        puff = { hole: h, t: WHIFF_S };
         sfx('tick');
+        fx.burst(x, mouthY(h), c.muted, 6, 50, 3, 0.35, 'dot', -40, -Math.PI / 2, Math.PI);
       } else if (r.out === 'decoy' || r.out === 'lose') {
-        ouch = 0.35;
-        floats.push({ x, y: y - cell * 0.3, text: '✕', life: 0.7, good: false });
         ctx.lives(s.lives, LIVES);
+        fx.burst(x, my, c.bad, 12, 150, 3.5, 0.5, 'spark', 0);
+        fx.ring(x, my, c.bad, cell * 0.2, cell * 0.6, 0.35, arena.lw * 1.5);
+        fx.text(x, my - cell * 0.2, '✕', c.bad, 24);
+        fx.shake(5, 0.35);
+        fx.flash(c.bad, 0.25, 0.35);
         if (r.out === 'decoy') sfx('error');
       } else {
-        floats.push({ x, y: y - cell * 0.3, text: `+${r.points}`, life: 0.7, good: true });
-        if (r.out === 'gold') sfx('power');
-        else sfx('pop', { pitch: s.score % 5 });
+        const gold = r.pop?.kind === 'gold';
+        const col = gold ? c.p[3] : c.accent;
+        fx.burst(x, my, col, gold ? 16 : 10, 140, 3.5, 0.5, 'square', 200);
+        fx.burst(x, my, c.paper, 5, 110, 2.5, 0.3, 'spark', 0);
+        fx.ring(x, my, col, cell * 0.15, cell * (gold ? 0.7 : 0.5), 0.3, arena.lw * 1.2);
+        fx.text(x, my - cell * 0.15, `+${r.points}`, gold ? c.p[3] : c.fg, gold ? 18 : 14);
+        if (s.streak >= 3 && r.out !== 'win') fx.text(x, my - cell * 0.4, `×${s.streak}`, c.accent, 12, 0.7);
+        if (gold) {
+          fx.shake(2.5, 0.2);
+          sfx('power');
+        } else sfx('pop', { pitch: Math.min(10, s.streak) });
       }
       ctx.score(s.score);
       status();
+      if (r.out === 'win' || r.out === 'lose') end(r.out === 'win');
       draw();
       if (r.out === 'win') ctx.win();
       else if (r.out === 'lose') ctx.lose();
@@ -315,15 +367,20 @@ export const whack: GameDef = {
     return {
       draw,
       frame(dt) {
+        const before = s.time;
         const ev = step(s, dt);
-        ouch = Math.max(0, ouch - dt * 1.5);
-        puff.t = Math.max(0, puff.t - dt);
-        for (const f of floats) {
-          f.life -= dt;
-          f.y -= dt * 30;
+        arena.update(dt);
+        if (ev.missed) {
+          // A critter got away: a puff of dust as it ducks back down.
+          const c = arena.colors;
+          for (const p of s.pops) {
+            const gone = p.t + p.dur;
+            if (p.hit >= 0 || p.kind === 'decoy' || gone <= before || gone > s.time) continue;
+            fx.burst(centre(p.hole).x, mouthY(p.hole) - 4, c.muted, 6, 60, 3, 0.4, 'dot', -30, -Math.PI / 2, Math.PI * 0.8);
+          }
         }
-        floats = floats.filter((f) => f.life > 0);
         status();
+        if (ev.over) end(false);
         draw();
         if (ev.over) ctx.lose();
       },
@@ -332,8 +389,8 @@ export const whack: GameDef = {
         let h = keys.indexOf(k);
         if (h < 0 && n === 3) h = KEYS3.indexOf(k);
         const dir = h < 0 ? keyDir(e.key) : -1;
-        const swing = e.key === ' ' || e.key === 'Enter';
-        if (h < 0 && dir === -1 && !swing) return false;
+        const swingKey = e.key === ' ' || e.key === 'Enter';
+        if (h < 0 && dir === -1 && !swingKey) return false;
         if (e.type !== 'keydown' || e.repeat) return true;
         keyboard = true;
         if (h >= 0) hit(h);

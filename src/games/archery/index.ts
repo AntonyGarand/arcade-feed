@@ -3,6 +3,7 @@ import { L } from '../../core/i18n';
 import { aimUpDown, btn, power } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { mix } from '../../kits/arena/color';
 import { gestures, type Point } from '../../kits/gesture/gesture';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
@@ -27,14 +28,6 @@ import {
 /** Drag length (world units) for a full draw. */
 const PULL_MAX = 120;
 const FONT = "'Space Grotesk Variable', system-ui, sans-serif";
-
-interface Pop {
-  x: number;
-  y: number;
-  t: number;
-  text: string;
-  good: boolean;
-}
 
 export const archery: GameDef = {
   id: 'archery',
@@ -93,7 +86,11 @@ export const archery: GameDef = {
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());
-    let pops: Pop[] = [];
+    const fx = arena.fx;
+    /** When each arrow stuck (arena time), for its quiver. */
+    const stuckAt = new WeakMap<object, number>();
+    /** Recent positions of the arrow in flight. */
+    let trail: Point[] = [];
     /** Pointer drag in progress: where it started and where it is. */
     let drag: { from: Point; to: Point } | null = null;
     /** Impact wobble of the last target hit. */
@@ -109,19 +106,29 @@ export const archery: GameDef = {
       const tx = x - Math.cos(a) * ARROW_LEN;
       const ty = y - Math.sin(a) * ARROW_LEN;
       g.strokeStyle = c.ink;
-      g.lineWidth = 2;
+      g.lineWidth = 2.2;
+      g.lineCap = 'round';
       g.beginPath();
       g.moveTo(tx, ty);
-      g.lineTo(x, y);
+      g.lineTo(x - Math.cos(a) * 3, y - Math.sin(a) * 3);
       g.stroke();
+      g.lineCap = 'butt';
+      // Head.
+      g.fillStyle = c.ink;
+      g.beginPath();
+      g.moveTo(x + Math.cos(a) * 1.5, y + Math.sin(a) * 1.5);
+      g.lineTo(x - Math.cos(a) * 5 - Math.sin(a) * 3, y - Math.sin(a) * 5 + Math.cos(a) * 3);
+      g.lineTo(x - Math.cos(a) * 5 + Math.sin(a) * 3, y - Math.sin(a) * 5 - Math.cos(a) * 3);
+      g.closePath();
+      g.fill();
       // Fletching.
       g.fillStyle = c.accent;
       g.strokeStyle = c.ink;
       g.lineWidth = arena.lw * 0.4;
       for (const k of [-1, 1]) {
         g.beginPath();
-        g.moveTo(tx + Math.cos(a) * 7, ty + Math.sin(a) * 7);
-        g.lineTo(tx - Math.sin(a) * 4 * k, ty + Math.cos(a) * 4 * k);
+        g.moveTo(tx + Math.cos(a) * 8, ty + Math.sin(a) * 8);
+        g.lineTo(tx - Math.sin(a) * 4.5 * k, ty + Math.cos(a) * 4.5 * k);
         g.lineTo(tx, ty);
         g.closePath();
         g.fill();
@@ -129,13 +136,42 @@ export const archery: GameDef = {
       }
     }
 
+    /** Wind streaks drifting across the sky: their speed and side show the wind at a glance. */
+    function drawWind(g: CanvasRenderingContext2D, w: number) {
+      if (!w) return;
+      const c = arena.colors;
+      const speed = 40 + Math.abs(w) * 1.6;
+      const len = 10 + Math.min(30, Math.abs(w) / 4);
+      g.strokeStyle = c.muted;
+      g.lineWidth = 1.2;
+      g.lineCap = 'round';
+      for (let i = 0; i < 9; i++) {
+        const span = W + 80;
+        const off = (i * 97.3 + arena.time * speed * (0.75 + (i % 3) * 0.15)) % span;
+        const x = w > 0 ? off - 40 : W + 40 - off;
+        const y = 70 + ((i * 53) % 230);
+        g.globalAlpha = 0.18 + (i % 3) * 0.07;
+        g.beginPath();
+        g.moveTo(x, y);
+        g.lineTo(x - Math.sign(w) * len, y);
+        g.stroke();
+      }
+      g.globalAlpha = 1;
+      g.lineCap = 'butt';
+    }
+
     function draw() {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      // Ground.
-      g.fillStyle = c.cellAlt;
+      // Sky and ground: a grass strip over the earth.
+      arena.field(g, 0, 0, W, GROUND, 25, 0, false);
+      const w = s.phase === 'done' ? 0 : wind(s);
+      drawWind(g, w);
+      g.fillStyle = mix(c.p[7], c.cellAlt, 0.55);
       g.fillRect(0, GROUND, W, H - GROUND);
+      g.fillStyle = mix(c.p[7], c.cellAlt, 0.2);
+      g.fillRect(0, GROUND, W, 7);
       g.strokeStyle = c.ink;
       g.lineWidth = arena.lw * 0.8;
       g.beginPath();
@@ -145,148 +181,219 @@ export const archery: GameDef = {
 
       // Targets: a face seen at an angle (rings as ellipses) on a stand; the current one is marked.
       const cur = current(s);
-      const ringFill = [c.cell, c.p[5], c.p[1], c.bad, c.p[3]];
+      const ringFill = ringFills();
       for (const [i, t] of s.targets.entries()) {
         const y = targetY(s, t) + (i === shaken ? Math.sin(shake * 40) * shake * 3 : 0);
-        g.globalAlpha = i === cur || s.phase === 'done' ? 1 : 0.4;
+        const live = i === cur && s.phase !== 'done';
+        g.globalAlpha = live || s.phase === 'done' ? 1 : 0.35;
         if (t.amp) {
           g.strokeStyle = c.muted;
           g.lineWidth = 1;
           g.setLineDash([3, 4]);
           g.beginPath();
-          g.moveTo(t.x + t.r * 0.6, t.y - t.amp);
-          g.lineTo(t.x + t.r * 0.6, t.y + t.amp);
+          g.moveTo(t.x + t.r * 0.7, t.y - t.amp);
+          g.lineTo(t.x + t.r * 0.7, t.y + t.amp);
           g.stroke();
           g.setLineDash([]);
         }
+        // Easel legs (a moving target slides on a pole instead), then the straw back and the face.
         g.strokeStyle = c.ink;
-        g.lineWidth = arena.lw;
+        g.lineCap = 'round';
+        if (t.amp) {
+          g.lineWidth = arena.lw;
+          g.beginPath();
+          g.moveTo(t.x + 3, y);
+          g.lineTo(t.x + 3, GROUND);
+          g.moveTo(t.x - 7, GROUND);
+          g.lineTo(t.x + 13, GROUND);
+          g.stroke();
+        } else {
+          g.lineWidth = arena.lw * 1.2;
+          g.beginPath();
+          g.moveTo(t.x + 3, y + t.r * 0.5);
+          g.lineTo(t.x - 10, GROUND);
+          g.moveTo(t.x + 3, y + t.r * 0.5);
+          g.lineTo(t.x + 14, GROUND);
+          g.stroke();
+        }
+        g.lineCap = 'butt';
+        const face = 0.46;
+        g.fillStyle = arena.tone(c.p[3]).lo;
+        g.strokeStyle = c.ink;
+        g.lineWidth = arena.lw * 0.8;
         g.beginPath();
-        g.moveTo(t.x + 2, y + t.r * 0.5);
-        g.lineTo(t.x - 9, GROUND);
-        g.moveTo(t.x + 2, y + t.r * 0.5);
-        g.lineTo(t.x + 12, GROUND);
+        g.ellipse(t.x + 4, y, t.r * face, t.r, 0, 0, Math.PI * 2);
+        g.fill();
         g.stroke();
         for (let k = RINGS.length; k >= 1; k--) {
           const ry = (t.r * k) / RINGS.length;
           g.fillStyle = ringFill[k - 1];
-          g.strokeStyle = c.ink;
+          g.strokeStyle = k === RINGS.length ? c.ink : mix(c.coal, c.paper, 0.45);
           g.lineWidth = k === RINGS.length ? arena.lw * 0.8 : arena.lw * 0.35;
           g.beginPath();
-          g.ellipse(t.x, y, Math.max(2, ry * 0.32), ry, 0, 0, Math.PI * 2);
+          g.ellipse(t.x, y, Math.max(2, ry * face), ry, 0, 0, Math.PI * 2);
           g.fill();
           g.stroke();
         }
-        for (const a of s.stuck) if (a.t === i) drawArrow(g, t.x, y + a.y, a.a);
-        if (i === cur && s.phase !== 'done') {
+        for (const a of s.stuck) if (a.t === i) drawArrow(g, t.x, y + a.y, a.a + wobble(a));
+        if (live) {
+          const bob = Math.sin(arena.time * 5) * 2;
           g.fillStyle = c.accent;
           g.strokeStyle = c.ink;
           g.lineWidth = arena.lw * 0.6;
           g.beginPath();
-          g.moveTo(t.x - 7, y - t.r - 16);
-          g.lineTo(t.x + 7, y - t.r - 16);
-          g.lineTo(t.x, y - t.r - 7);
+          g.moveTo(t.x - 8, y - t.r - 19 + bob);
+          g.lineTo(t.x + 8, y - t.r - 19 + bob);
+          g.lineTo(t.x, y - t.r - 8 + bob);
           g.closePath();
           g.fill();
           g.stroke();
         }
       }
       g.globalAlpha = 1;
-      for (const a of s.stuck) if (a.t < 0) drawArrow(g, a.x, a.y, a.a);
+      for (const a of s.stuck) if (a.t < 0) drawArrow(g, a.x, a.y, a.a + wobble(a));
 
-      // Aim guide.
+      // Aim guide: dots fading out along the first stretch of the flight.
       if (s.phase === 'aim') {
-        g.fillStyle = c.muted;
-        for (const [i, p] of aimPath(s).entries())
+        const path = aimPath(s);
+        g.fillStyle = c.fg;
+        for (const [i, p] of path.entries())
           if (i % 2 === 0) {
+            g.globalAlpha = 0.85 * (1 - i / (path.length + 2));
             g.beginPath();
-            g.arc(p.x, p.y, 1.8, 0, Math.PI * 2);
+            g.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
             g.fill();
           }
+        g.globalAlpha = 1;
       }
 
-      // The archer: legs, body, head, and the bow turned to the aim with the string drawn back.
+      // The arrow's trail in flight.
+      if (s.phase === 'flight' && trail.length > 1) {
+        g.strokeStyle = arena.tone(c.accent).glow;
+        g.lineWidth = 3;
+        g.lineCap = 'round';
+        g.beginPath();
+        g.moveTo(trail[0].x, trail[0].y);
+        for (const p of trail) g.lineTo(p.x, p.y);
+        g.stroke();
+        g.lineCap = 'butt';
+      }
+
+      // The archer: legs, body, head, arms, and the bow turned to the aim with the string drawn back.
       const ca = Math.cos(s.angle);
       const sa = -Math.sin(s.angle);
       const hip = { x: BOW.x - 14, y: GROUND - 30 };
-      g.strokeStyle = c.ink;
-      g.lineCap = 'round';
-      g.lineWidth = 4;
-      g.beginPath();
-      g.moveTo(hip.x - 6, GROUND);
-      g.lineTo(hip.x, hip.y);
-      g.lineTo(hip.x + 7, GROUND);
-      g.moveTo(hip.x, hip.y);
-      g.lineTo(hip.x, BOW.y - 4);
-      g.lineTo(BOW.x, BOW.y);
-      g.stroke();
-      arena.disc(g, hip.x, BOW.y - 16, 7, c.accent);
+      const shoulder = { x: hip.x, y: BOW.y - 4 };
       const drawn = s.phase === 'aim' ? s.power : 0;
       const nock = { x: BOW.x - ca * (4 + drawn * 14), y: BOW.y - sa * (4 + drawn * 14) };
+      g.strokeStyle = c.ink;
+      g.lineCap = 'round';
+      g.lineJoin = 'round';
+      g.lineWidth = 4.5;
+      g.beginPath();
+      g.moveTo(hip.x - 7, GROUND);
+      g.lineTo(hip.x, hip.y);
+      g.lineTo(hip.x + 8, GROUND);
+      g.moveTo(hip.x, hip.y);
+      g.lineTo(shoulder.x, shoulder.y);
+      g.stroke();
+      g.lineWidth = 3;
+      g.beginPath();
+      g.moveTo(shoulder.x, shoulder.y);
+      g.lineTo(BOW.x, BOW.y);
+      g.moveTo(shoulder.x, shoulder.y);
+      g.lineTo(nock.x, nock.y);
+      g.stroke();
+      arena.ball(g, hip.x, BOW.y - 17, 7.5, c.accent);
       const tipA = { x: BOW.x + ca * 3 - sa * 22, y: BOW.y + sa * 3 + ca * 22 };
       const tipB = { x: BOW.x + ca * 3 + sa * 22, y: BOW.y + sa * 3 - ca * 22 };
+      g.strokeStyle = c.ink;
       g.lineWidth = 1;
       g.beginPath();
       g.moveTo(tipA.x, tipA.y);
       g.lineTo(nock.x, nock.y);
       g.lineTo(tipB.x, tipB.y);
       g.stroke();
-      g.lineWidth = 3.5;
-      g.strokeStyle = c.ink;
       g.beginPath();
       g.moveTo(tipA.x, tipA.y);
       g.quadraticCurveTo(BOW.x + ca * 16, BOW.y + sa * 16, tipB.x, tipB.y);
+      g.lineWidth = 5;
+      g.stroke();
+      g.lineWidth = 2.6;
+      g.strokeStyle = c.p[3];
       g.stroke();
       g.lineCap = 'butt';
       if (s.phase === 'aim') drawArrow(g, nock.x + ca * ARROW_LEN, nock.y + sa * ARROW_LEN, -s.angle);
       if (s.phase === 'flight') drawArrow(g, s.ax, s.ay, Math.atan2(s.vy, s.vx));
 
-      // Power gauge by the archer.
-      arena.box(g, 8, BOW.y - 70, 9, 70, c.cellAlt, 2, false);
-      const ph = 66 * (s.phase === 'aim' ? s.power : 0);
-      g.fillStyle = c.accent;
-      g.fillRect(10, BOW.y - 2 - ph, 5, ph);
+      // Power gauge by the archer: fills as the bow is drawn, red near full draw.
+      const gh = 84;
+      const gy = BOW.y - gh + 6;
+      arena.box(g, 6, gy, 11, gh, c.cell, 3, false);
+      const pw = s.phase === 'aim' ? s.power : 0;
+      const ph = (gh - 4) * pw;
+      if (ph > 0) {
+        g.fillStyle = pw > 0.85 ? c.bad : c.accent;
+        g.beginPath();
+        g.roundRect(8, gy + gh - 2 - ph, 7, ph, 2);
+        g.fill();
+      }
 
-      // Tally: one box per arrow with its points.
-      g.font = `700 10px ${FONT}`;
+      // Tally: one box per arrow with its points, and a bar towards the goal under it.
+      g.font = `700 11px ${FONT}`;
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       for (let i = 0; i < s.arrows; i++) {
-        const x = 8 + i * 22;
+        const x = 8 + i * 25;
         const pts = s.hits[i];
-        arena.box(g, x, 8, 18, 18, i === s.shot && s.phase !== 'done' ? c.accent : pts ? c.cell : c.cellAlt, 3, false);
+        const now = i === s.shot && s.phase !== 'done';
+        arena.box(g, x, 8, 21, 21, now ? c.accent : pts ? c.cell : c.cellAlt, 3, now);
         if (pts != null) {
           g.fillStyle = pts ? c.fg : c.muted;
-          g.fillText(pts ? String(pts) : '×', x + 9, 17.5);
+          g.fillText(pts ? String(pts) : '×', x + 10.5, 19);
         }
       }
+      const bw = s.arrows * 25 - 4;
+      const done = Math.min(1, s.score / s.goal);
+      arena.box(g, 8, 34, bw, 8, c.cellAlt, 4, false);
+      if (done > 0) {
+        g.fillStyle = done >= 1 ? c.good : c.accent;
+        g.beginPath();
+        g.roundRect(9.5, 35.5, (bw - 3) * done, 5, 2.5);
+        g.fill();
+      }
+      g.fillStyle = c.fg;
+      g.font = `700 11px ${FONT}`;
+      g.textAlign = 'left';
+      g.fillText(`${s.score}/${s.goal}`, 13 + bw, 38.5);
 
       // Wind flag: side and strength (in steps), fresh for every arrow.
-      const w = s.phase === 'done' ? 0 : wind(s);
-      const fx = W - 54;
+      const fx0 = W - 40;
       g.strokeStyle = c.ink;
-      g.lineWidth = 2;
+      g.lineWidth = 2.5;
       g.beginPath();
-      g.moveTo(fx, 8);
-      g.lineTo(fx, 46);
+      g.moveTo(fx0, 8);
+      g.lineTo(fx0, 46);
       g.stroke();
-      const len = 6 + Math.min(34, Math.abs(w) / 4);
+      const len = 8 + Math.min(28, Math.abs(w) / 4);
       const dir = w >= 0 ? 1 : -1;
-      const wave = Math.sin(s.time * (4 + Math.abs(w) / 20)) * 2;
+      const wave = Math.sin(arena.time * (4 + Math.abs(w) / 20)) * 2.5;
       g.fillStyle = c.accent;
       g.lineWidth = arena.lw * 0.6;
       g.beginPath();
-      g.moveTo(fx, 9);
-      g.lineTo(fx + dir * len, 14 + wave);
-      g.lineTo(fx, 22);
+      g.moveTo(fx0, 9);
+      g.quadraticCurveTo(fx0 + (dir * len) / 2, 9 + wave, fx0 + dir * len, 15 + wave);
+      g.quadraticCurveTo(fx0 + (dir * len) / 2, 22 + wave, fx0, 23);
       g.closePath();
       g.fill();
       g.stroke();
-      g.fillStyle = c.fg;
-      g.font = `700 11px ${FONT}`;
-      g.textAlign = 'center';
       const steps = Math.round(Math.abs(w) / WIND_STEP);
-      g.fillText(steps ? `${dir > 0 ? '→' : '←'} ${steps}` : '0', fx, 56);
+      arena.box(g, fx0 - 24, 50, 48, 18, c.cell, 4, false);
+      g.fillStyle = c.fg;
+      g.font = `800 12px ${FONT}`;
+      g.textAlign = 'center';
+      g.fillText(steps ? `${dir > 0 ? '→' : '←'} ${steps}` : L('calm', 'calme'), fx0, 59.5);
+      g.textBaseline = 'alphabetic';
 
       // Drag band while drawing with the pointer.
       if (drag) {
@@ -298,17 +405,23 @@ export const archery: GameDef = {
         g.lineTo(drag.to.x, drag.to.y);
         g.stroke();
         g.setLineDash([]);
-        arena.disc(g, drag.from.x, drag.from.y, 3, c.cell);
+        arena.disc(g, drag.from.x, drag.from.y, 3.5, c.cell);
+        arena.disc(g, drag.to.x, drag.to.y, 5, c.accent);
       }
+      arena.overlay(g);
+    }
 
-      // Points popping up where the arrow landed.
-      g.font = `700 14px ${FONT}`;
-      for (const p of pops) {
-        g.globalAlpha = Math.min(1, p.t * 2);
-        g.fillStyle = p.good ? c.fg : c.muted;
-        g.fillText(p.text, p.x, p.y - (1 - p.t) * 20);
-      }
-      g.globalAlpha = 1;
+    /** Ring colours, centre first: gold, red, blue, black, white. */
+    const ringFills = () => {
+      const c = arena.colors;
+      return [c.p[3], c.bad, c.p[1], c.coal, c.paper];
+    };
+
+    /** A freshly stuck arrow quivers for a moment. */
+    function wobble(a: object) {
+      const at = stuckAt.get(a);
+      const age = at == null ? 9 : arena.time - at;
+      return age < 0.5 ? Math.sin(age * 55) * 0.12 * (1 - age / 0.5) : 0;
     }
 
     const aim = (from: Point, to: Point) => {
@@ -348,23 +461,51 @@ export const archery: GameDef = {
       draw,
       frame(dt) {
         const ev = step(s, dt);
+        arena.update(dt);
         shake = Math.max(0, shake - dt * 2.5);
+        if (s.phase === 'flight') {
+          trail.push({ x: s.ax, y: s.ay });
+          if (trail.length > 14) trail.shift();
+        } else trail = [];
         if (ev.landed) {
+          const c = arena.colors;
+          const last = s.stuck.at(-1);
+          if (last) stuckAt.set(last, arena.time);
           if (ev.points) {
             shake = 1;
-            shaken = s.stuck.at(-1)?.t ?? -1;
+            shaken = last?.t ?? -1;
+            const fill = ringFills()[RINGS.findIndex((r) => r === ev.points)] ?? c.accent;
+            fx.burst(ev.x, ev.y, fill, 8 + ev.points, 90 + ev.points * 8, 3, 0.5, 'square', 160, Math.PI, Math.PI * 0.9);
+            fx.ring(ev.x, ev.y, fill, 3, 14 + ev.points * 2, 0.35, arena.lw);
             if (ev.points >= 10) {
               sfx('power');
               haptic(20);
-            } else sfx('hit', { pitch: ev.points / 2 });
-          } else sfx('error');
-          pops.push({ x: ev.x - 6, y: ev.y - 14, t: 1, text: ev.points ? `+${ev.points}` : L('Miss', 'Raté'), good: ev.points > 0 });
+              fx.text(ev.x - 10, ev.y - 30, L('Bullseye!', 'En plein dans le mille!'), c.accent, 15, 1.2);
+              fx.text(ev.x - 10, ev.y - 10, '+10', c.accent, 17, 1.1);
+              fx.flash(c.accent, 0.18, 0.3);
+              fx.shake(2.5, 0.2);
+            } else {
+              sfx('hit', { pitch: ev.points / 2 });
+              fx.text(ev.x - 10, ev.y - 16, `+${ev.points}`, ev.points >= 6 ? c.accent : c.fg, 13 + ev.points * 0.3);
+            }
+          } else {
+            sfx('error');
+            fx.burst(ev.x, ev.y, c.muted, 10, 70, 2.5, 0.45, 'dot', 220, -Math.PI / 2, Math.PI * 0.8);
+            fx.text(ev.x, ev.y - 16, L('Miss', 'Raté'), c.fg, 12);
+          }
           ctx.score(s.score);
           status();
         }
         if (ev.next) status();
-        for (const p of pops) p.t -= dt * 0.9;
-        pops = pops.filter((p) => p.t > 0);
+        if (!ended && (ev.cleared || ev.over)) {
+          const c = arena.colors;
+          if (ev.cleared) {
+            const t = s.targets[s.stuck.at(-1)?.t ?? current(s)] ?? s.targets[0];
+            for (let i = 0; i < 4; i++) fx.burst(t.x, targetY(s, t), c.p[i], 10, 170, 3.5, 0.9, 'square', 200);
+            fx.flash(c.good, 0.22, 0.5);
+          }
+          arena.linger(1.4);
+        }
         draw();
         if (ended) return;
         if (ev.cleared) {

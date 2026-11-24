@@ -2,12 +2,12 @@ import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
 
 /** Playfield in world units (the canvas scales it to the card). */
-export const W = 300;
-export const H = 400;
+export const W = 260;
+export const H = 310;
 /** Screen height of the running surface. */
-export const GROUND = 290;
+export const GROUND = 250;
 /** The runner stays at this screen x; the track scrolls past. */
-export const RX = 70;
+export const RX = 58;
 /** Runner box: width, standing and ducking heights. */
 export const PW = 18;
 const PH = 30;
@@ -23,6 +23,8 @@ const CUT = 240;
 const SLAM = 700;
 /** A swipe down keeps you ducked this long (a held ↓ for as long as it's held). */
 const SWIPE_DUCK_S = 0.6;
+/** A fresh hop lower than this is undone by a duck. */
+const HOP_UNDO = 40;
 const INVULNERABLE_S = 1.3;
 /** Falling this far into a pit costs a heart. */
 const PIT_DEPTH = 46;
@@ -86,6 +88,8 @@ export interface State {
   grounded: boolean;
   /** Jump button held (a release cuts the jump short). */
   holding: boolean;
+  /** Feet height at the last take-off (a duck right after it cancels the hop). */
+  jumpY: number;
   /** ↓ held, or seconds left of a swiped duck. */
   duckKey: boolean;
   duckTime: number;
@@ -174,6 +178,7 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     vy: 0,
     grounded: true,
     holding: false,
+    jumpY: 0,
     duckKey: false,
     duckTime: 0,
     falling: false,
@@ -191,6 +196,7 @@ export function press(s: State) {
   s.holding = true;
   if (s.grounded && !s.falling) {
     s.vy = JUMP;
+    s.jumpY = s.y;
     s.grounded = false;
     s.duckTime = 0;
   }
@@ -202,9 +208,17 @@ export function release(s: State) {
   if (!s.grounded && s.vy > CUT) s.vy = CUT;
 }
 
-/** Swipe down: duck for a moment (and drop at once if in the air). */
+/**
+ * Swipe down: duck for a moment (and drop at once if in the air). A swipe starts with a press, which
+ * jumps: ducking while that hop is still low cancels it, so a swipe never lifts you into a bar.
+ */
 export function duck(s: State) {
   s.duckTime = SWIPE_DUCK_S;
+  if (!s.grounded && !s.falling && s.vy > 0 && s.y - s.jumpY < HOP_UNDO) {
+    s.y = s.jumpY;
+    s.vy = 0;
+    s.grounded = true;
+  }
 }
 
 export const ducking = (s: State) => !s.falling && (s.duckKey || s.duckTime > 0);

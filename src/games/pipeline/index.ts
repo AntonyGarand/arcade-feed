@@ -2,6 +2,7 @@ import './style.css';
 import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { mix } from '../../kits/arena/color';
 import { DX, DY, gestures, keyDir, type Dir, type Point } from '../../kits/gesture/gesture';
 import { sfx } from '../../kits/sound/sound';
 import {
@@ -34,7 +35,6 @@ const BOARD = PAD + ROWS * CS;
 const BAR_Y = BOARD + 6;
 const BAR_H = 60;
 const H = Math.round(BAR_Y + BAR_H + PAD);
-const FONT = "'Space Grotesk Variable', system-ui, sans-serif";
 /** Seconds a freshly laid piece takes to pop in. */
 const POP_S = 0.18;
 
@@ -157,27 +157,65 @@ export const pipeline: GameDef = {
       return { x: ox + Math.cos(a0 + dl * f) * h, y: oy + Math.sin(a0 + dl * f) * h };
     }
 
-    /** One channel: ink casing, bore, then liquid over `wet` of it (from side `a`). */
+    /** Pipe metal: a neutral between the text and the board, so pipes stand out in every theme. */
+    const metal = () => mix(arena.colors.fg, arena.colors.cellAlt, arena.dark ? 0.5 : 0.62);
+
+    /** A flange where a pipe meets the edge of its cell on side `d`. */
+    function flange(g: CanvasRenderingContext2D, x: number, y: number, d: Dir) {
+      const c = arena.colors;
+      const h = CS / 2;
+      const along = CS * 0.12;
+      const across = CS * 0.6;
+      const fx0 = x + DX[d] * (h - along / 2 - 1);
+      const fy0 = y + DY[d] * (h - along / 2 - 1);
+      const w = DX[d] ? along : across;
+      const hh = DX[d] ? across : along;
+      g.fillStyle = metal();
+      g.strokeStyle = c.ink;
+      g.lineWidth = arena.lw * 0.7;
+      g.beginPath();
+      g.roundRect(fx0 - w / 2, fy0 - hh / 2, w, hh, 1.5);
+      g.fill();
+      g.stroke();
+    }
+
+    /** One channel: ink casing, metal body, flanges, a dark bore, then liquid over `wet` of it (from side `a`). */
     function channel(g: CanvasRenderingContext2D, x: number, y: number, a: Dir, b: Dir, wet: number) {
       const c = arena.colors;
+      const m = metal();
       g.lineCap = 'butt';
       trace(g, x, y, a, b, 1);
       g.strokeStyle = c.ink;
-      g.lineWidth = CS * 0.42;
+      g.lineWidth = CS * 0.48;
       g.stroke();
-      g.strokeStyle = c.cellAlt;
-      g.lineWidth = CS * 0.42 - arena.lw * 1.6;
+      g.strokeStyle = m;
+      g.lineWidth = CS * 0.48 - arena.lw * 1.6;
+      g.stroke();
+      flange(g, x, y, a);
+      flange(g, x, y, b);
+      trace(g, x, y, a, b, 1);
+      g.strokeStyle = arena.tone(m).lo;
+      g.lineWidth = CS * 0.24;
       g.stroke();
       if (wet <= 0) return;
       const front = trace(g, x, y, a, b, Math.min(1, wet));
       g.strokeStyle = c.accent;
-      g.lineWidth = CS * 0.22;
+      g.lineWidth = CS * 0.24;
       g.stroke();
+      // A light glint running along the liquid.
+      trace(g, x, y, a, b, Math.min(1, wet));
+      g.strokeStyle = arena.tone(c.accent).hi;
+      g.lineWidth = CS * 0.06;
+      g.setLineDash([CS * 0.12, CS * 0.2]);
+      g.lineDashOffset = -arena.time * CS * 0.8;
+      g.stroke();
+      g.setLineDash([]);
+      g.lineDashOffset = 0;
       if (wet < 1) {
         // A bubbling front.
         g.fillStyle = arena.tone(c.accent).hi;
         g.beginPath();
-        g.arc(front.x, front.y, CS * (0.12 + 0.02 * Math.sin(arena.time * 18)), 0, Math.PI * 2);
+        g.arc(front.x, front.y, CS * (0.13 + 0.02 * Math.sin(arena.time * 18)), 0, Math.PI * 2);
         g.fill();
       }
     }
@@ -213,17 +251,24 @@ export const pipeline: GameDef = {
       g.moveTo(x, y);
       g.lineTo(x + DX[d] * (CS / 2), y + DY[d] * (CS / 2));
       g.strokeStyle = c.ink;
-      g.lineWidth = CS * 0.42;
+      g.lineWidth = CS * 0.48;
       g.stroke();
-      g.strokeStyle = c.cellAlt;
-      g.lineWidth = CS * 0.42 - arena.lw * 1.6;
+      g.strokeStyle = metal();
+      g.lineWidth = CS * 0.48 - arena.lw * 1.6;
+      g.stroke();
+      flange(g, x, y, d);
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + DX[d] * (CS / 2), y + DY[d] * (CS / 2));
+      g.strokeStyle = arena.tone(metal()).lo;
+      g.lineWidth = CS * 0.24;
       g.stroke();
       if (wet > 0) {
         g.beginPath();
         g.moveTo(x, y);
         g.lineTo(x + DX[d] * (CS / 2) * wet, y + DY[d] * (CS / 2) * wet);
         g.strokeStyle = c.accent;
-        g.lineWidth = CS * 0.22;
+        g.lineWidth = CS * 0.24;
         g.stroke();
       }
     }
@@ -233,6 +278,7 @@ export const pipeline: GameDef = {
       if (!g) return;
       const c = arena.colors;
       arena.field(g, PAD, PAD, W - 2 * PAD, ROWS * CS, CS, 4);
+      const tile = arena.dark ? mix(c.cellAlt, c.fg, 0.1) : c.cell;
       for (let i = 0; i < COLS * ROWS; i++) {
         const x = cx(i) - CS / 2;
         const y = cy(i) - CS / 2;
@@ -280,7 +326,13 @@ export const pipeline: GameDef = {
           g.save();
           g.translate(cx(i) + wob, cy(i));
           g.scale(scale, scale);
-          arena.box(g, -CS / 2 + 2, -CS / 2 + 2, CS - 4, CS - 4, s.wet[i] ? arena.tone(c.accent).glow : c.cell, 5, false);
+          arena.block(g, -CS / 2 + 1.5, -CS / 2 + 1.5, CS - 3, CS - 3, tile, 5, true, 0.6);
+          if (s.wet[i]) {
+            g.fillStyle = arena.tone(c.accent).glow;
+            g.beginPath();
+            g.roundRect(-CS / 2 + 1.5, -CS / 2 + 1.5, CS - 3, CS - 3, arena.r(5));
+            g.fill();
+          }
           piece(g, 0, 0, s.pipe[i], i);
           g.restore();
         }
@@ -359,18 +411,18 @@ export const pipeline: GameDef = {
         const left = Math.ceil(s.countdown);
         // On the accent fill: physical black reads in every theme; the last seconds throb.
         g.fillStyle = c.coal;
-        g.font = `700 ${left <= 3 ? 24 + 3 * Math.max(0, Math.sin(arena.time * 12)) : 24}px ${FONT}`;
+        g.font = `700 ${left <= 3 ? 24 + 3 * Math.max(0, Math.sin(arena.time * 12)) : 24}px ${arena.family}`;
         g.fillText(`${left} s`, mx, btn.y + 22);
-        g.font = `600 11px ${FONT}`;
+        g.font = `600 11px ${arena.family}`;
         g.fillText(L('Flow now', 'Ouvrir'), mx, btn.y + 45);
         g.globalAlpha = 0.5;
         g.fillRect(btn.x + 8, btn.y + btn.h - 7, (btn.w - 16) * (s.countdown / countdownFor(s.d)), 2.5);
         g.globalAlpha = 1;
       } else {
         g.fillStyle = live ? c.fg : c.muted;
-        g.font = `700 22px ${FONT}`;
+        g.font = `700 22px ${arena.family}`;
         g.fillText(`${Math.min(s.count, 99)}/${s.goal}`, mx, btn.y + 22);
-        g.font = `600 11px ${FONT}`;
+        g.font = `600 11px ${arena.family}`;
         g.fillText(s.fast || s.done ? L('pipes', 'tuyaux') : L('Faster »', 'Accélérer »'), mx, btn.y + 45);
       }
     }

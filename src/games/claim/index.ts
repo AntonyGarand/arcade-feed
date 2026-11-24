@@ -105,6 +105,10 @@ export const claim: GameDef = {
     let ghost: number[] = [];
     let ghostAt = -10;
     let sparkPuff = 0;
+    /** Recent spark positions (world units), newest last: a comet tail shows where each is heading. */
+    const sparkTrail: { x: number; y: number }[][] = [];
+    let tailAt = -1;
+    let moved = false;
     let ended = false;
 
     const status = () => {
@@ -284,16 +288,26 @@ export const claim: GameDef = {
         g.restore();
       });
 
-      // Sparks: spinning stars with a pulsing glow.
-      for (const k of s.sparks) {
+      // Sparks: spinning stars with a pulsing glow and a comet tail.
+      s.sparks.forEach((k, n) => {
         const x = k.x * CELL;
         const y = k.y * CELL;
+        const tail = sparkTrail[n] ?? [];
+        g.fillStyle = c.bad;
+        for (let j = 0; j < tail.length; j++) {
+          const f = (j + 1) / (tail.length + 1);
+          g.globalAlpha = 0.5 * f;
+          g.beginPath();
+          g.arc(tail[j].x, tail[j].y, 2 + 4.5 * f, 0, Math.PI * 2);
+          g.fill();
+        }
+        g.globalAlpha = 1;
         g.fillStyle = arena.tone(c.bad).glow;
         g.beginPath();
-        g.arc(x, y, 10 + Math.sin(now * 9) * 1.6, 0, Math.PI * 2);
+        g.arc(x, y, 12 + Math.sin(now * 9) * 1.8, 0, Math.PI * 2);
         g.fill();
-        arena.gem(g, x, y, 7, c.bad, (gg, r) => glyphPath(gg, 4, 0, 0, r), true, 1, now * 5);
-      }
+        arena.gem(g, x, y, 8.5, c.bad, (gg, r) => glyphPath(gg, 4, 0, 0, r), true, 1, now * 5);
+      });
 
       // Marker: a diamond, with a pulse while drawing; it blinks while safe after a hit.
       if (!(s.safe > 0 && Math.floor(now * 10) % 2)) {
@@ -306,7 +320,27 @@ export const claim: GameDef = {
           g.stroke();
           g.globalAlpha = 1;
         }
-        arena.gem(g, mx, my, 6.5, c.paper, (gg, r) => glyphPath(gg, 1, 0, 0, r));
+        // Paper on dark ground, ink on light ground: the marker never fades into the field.
+        arena.gem(g, mx, my, 7, arena.dark ? c.paper : c.fg, (gg, r) => glyphPath(gg, 1, 0, 0, r));
+      }
+      if (!moved && !ended) {
+        // Waiting for the first move: a pulse and an arrow up into the field.
+        const f = (now * 0.8) % 1;
+        g.strokeStyle = c.fg;
+        g.globalAlpha = 1 - f;
+        g.lineWidth = arena.lw;
+        g.beginPath();
+        g.arc(mx, my, 8 + f * 14, 0, Math.PI * 2);
+        g.stroke();
+        g.globalAlpha = 1;
+        const ay = my - 20 - Math.abs(Math.sin(now * 4)) * 5;
+        g.fillStyle = c.fg;
+        g.beginPath();
+        g.moveTo(mx, ay - 7);
+        g.lineTo(mx + 6, ay);
+        g.lineTo(mx - 6, ay);
+        g.closePath();
+        g.fill();
       }
       arena.overlay(g);
     }
@@ -333,7 +367,16 @@ export const claim: GameDef = {
         const ev = step(s, dt);
         arena.update(dt);
         const now = arena.time;
+        if (now - tailAt >= 0.04) {
+          tailAt = now;
+          s.sparks.forEach((k, n) => {
+            const tail = (sparkTrail[n] ??= []);
+            tail.push({ x: k.x * CELL, y: k.y * CELL });
+            if (tail.length > 6) tail.shift();
+          });
+        }
         if (s.pos !== pos) {
+          moved = true;
           const near = Math.abs((s.pos % COLS) - (pos % COLS)) + Math.abs(Math.floor(s.pos / COLS) - Math.floor(pos / COLS)) === 1;
           prevPos = near ? pos : s.pos;
           moveAt = now;

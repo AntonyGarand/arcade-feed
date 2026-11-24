@@ -3,6 +3,7 @@ import { L } from '../../core/i18n';
 import { btn } from '../../core/pad';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { outBack } from '../../kits/arena/ease';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
   createLevel,
@@ -10,6 +11,7 @@ import {
   FOOT_X,
   FOOT_Y,
   fuelFor,
+  groundAt,
   H,
   LIFE_BONUS,
   livesFor,
@@ -23,9 +25,6 @@ import {
   W,
   windNow,
 } from './rules';
-
-const FONT = "700 9px 'Space Grotesk Variable', system-ui, sans-serif";
-const BIG = "700 13px 'Space Grotesk Variable', system-ui, sans-serif";
 
 /** Landing score at a level for a pad multiplier, the fuel share left and softness (0–1). */
 const scoreAt = (d: Difficulty, mult: number, fuel: number, soft: number) =>
@@ -96,10 +95,11 @@ export const lander: GameDef = {
     let thrustOn = false;
     let pointer = -1;
     let pressX = 0;
-    /** Seconds since the last crash or landing (for the effects). */
-    let fx = 99;
-    let crashAt = { x: 0, y: 0 };
+    const fx = arena.fx;
+    /** Seconds since the ship (re)appeared at the start: it pops in. */
+    let spawn = 0;
     let shown = '';
+    const font = (px: number) => `700 ${px}px ${arena.family}`;
 
     const padColor = (mult: number) => arena.colors.p[[5, 3, 6][mult - 1]];
 
@@ -117,7 +117,7 @@ export const lander: GameDef = {
 
     function gauge(g: CanvasRenderingContext2D, x: number, label: string, share: number, fill: string, tick?: number) {
       const c = arena.colors;
-      g.font = FONT;
+      g.font = font(9);
       g.textAlign = 'left';
       g.fillStyle = c.muted;
       g.fillText(label, x, 13);
@@ -141,28 +141,30 @@ export const lander: GameDef = {
 
     function drawShip(g: CanvasRenderingContext2D) {
       const c = arena.colors;
+      const pop = spawn < 0.45 ? Math.max(0.02, outBack(spawn / 0.45)) : 1;
       g.save();
       g.translate(s.x, s.y);
       g.rotate(s.angle);
+      if (pop !== 1) g.scale(pop, pop);
       if (s.thrust && s.fuel > 0 && s.phase === 'fly') {
-        const len = 12 + Math.sin(s.time * 60) * 3;
+        const len = 13 + Math.sin(s.time * 60) * 3;
         g.strokeStyle = c.ink;
         g.lineWidth = arena.lw * 0.6;
         for (const [w, l, col] of [
-          [6, len, c.p[0]],
+          [5.5, len, c.p[0]],
           [3, len * 0.6, c.p[3]],
         ] as const) {
           g.fillStyle = col;
           g.beginPath();
-          g.moveTo(-w, SHIP_R - 1);
-          g.lineTo(0, SHIP_R + l);
-          g.lineTo(w, SHIP_R - 1);
+          g.moveTo(-w, SHIP_R + 1);
+          g.quadraticCurveTo(-w * 0.6, SHIP_R + l * 0.6, 0, SHIP_R + 1 + l);
+          g.quadraticCurveTo(w * 0.6, SHIP_R + l * 0.6, w, SHIP_R + 1);
           g.closePath();
           g.fill();
           if (w > 4) g.stroke();
         }
       }
-      // Legs and feet, then the hull and its window.
+      // Legs and feet, the nozzle, then the hull and its window.
       g.strokeStyle = c.ink;
       g.lineWidth = arena.lw;
       g.lineCap = 'round';
@@ -174,14 +176,16 @@ export const lander: GameDef = {
         g.lineTo(k * FOOT_X + 3, FOOT_Y);
         g.stroke();
       }
-      if (arena.sh) {
-        g.fillStyle = c.drop;
-        g.beginPath();
-        g.arc(arena.sh * 0.5, arena.sh * 0.5, SHIP_R, 0, Math.PI * 2);
-        g.fill();
-      }
-      arena.disc(g, 0, 0, SHIP_R, c.accent);
-      arena.disc(g, 0, -2, 3.6, c.cell);
+      g.lineCap = 'butt';
+      arena.box(g, -4, SHIP_R - 3, 8, 5, c.muted, 1.5, false);
+      arena.ball(g, 0, 0, SHIP_R, c.accent);
+      arena.disc(g, 0, -1.5, 3.8, c.coal);
+      g.fillStyle = c.paper;
+      g.globalAlpha = 0.85;
+      g.beginPath();
+      g.arc(-1.2, -2.8, 1.3, 0, Math.PI * 2);
+      g.fill();
+      g.globalAlpha = 1;
       g.restore();
     }
 
@@ -189,50 +193,72 @@ export const lander: GameDef = {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      // A few fixed stars.
+      // A few fixed stars, twinkling.
       g.fillStyle = c.muted;
-      for (let i = 0; i < 24; i++) g.fillRect((i * 97 + i * i * 31) % W, 40 + ((i * 61 + i * i * 17) % 190), 1.5, 1.5);
-      // Ground.
-      g.fillStyle = c.cellAlt;
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.8;
+      for (let i = 0; i < 28; i++) {
+        g.globalAlpha = 0.5 + 0.4 * Math.sin(arena.time * (0.8 + (i % 5) * 0.35) + i * 1.7);
+        g.beginPath();
+        g.arc((i * 97 + i * i * 31) % W, 40 + ((i * 61 + i * i * 17) % 190), i % 4 ? 0.8 : 1.3, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.globalAlpha = 1;
+      // Ground: the textured field inside the terrain's outline.
+      const ridge = () => s.ground.forEach((y, i) => g.lineTo((i * W) / (s.ground.length - 1), y));
+      g.save();
       g.beginPath();
       g.moveTo(0, H + 2);
-      s.ground.forEach((y, i) => g.lineTo((i * W) / (s.ground.length - 1), y));
+      ridge();
       g.lineTo(W, H + 2);
       g.closePath();
-      g.fill();
+      g.clip();
+      arena.field(g, 0, 0, W, H, 14, 0, false);
+      g.restore();
+      g.strokeStyle = c.ink;
+      g.lineWidth = arena.lw;
+      g.lineJoin = 'round';
+      g.beginPath();
+      g.moveTo(0, s.ground[0]);
+      ridge();
       g.stroke();
+      // Where the ship would come down: a dashed drop line, in the pad's colour while over a pad.
+      const under = s.phase === 'fly' ? s.pads.find((p) => s.x - FOOT_X >= p.x0 && s.x + FOOT_X <= p.x1) : undefined;
+      if (s.phase === 'fly' && spawn > 0.3) {
+        const gy = groundAt(s, s.x);
+        const top = s.y + FOOT_Y + 3;
+        if (gy - top > 6) {
+          g.strokeStyle = under ? padColor(under.mult) : c.muted;
+          g.globalAlpha = under ? 0.85 : 0.45;
+          g.lineWidth = arena.lw * 0.6;
+          g.setLineDash([2, 4]);
+          g.beginPath();
+          g.moveTo(s.x, top);
+          g.lineTo(s.x, gy - 3);
+          g.stroke();
+          g.setLineDash([]);
+          g.globalAlpha = 1;
+        }
+      }
       for (const p of s.pads) {
-        arena.box(g, p.x0, p.y - 3, p.x1 - p.x0, 7, padColor(p.mult), 2);
-        g.font = BIG;
+        const fill = padColor(p.mult);
+        const mid = (p.x0 + p.x1) / 2;
+        arena.block(g, p.x0, p.y - 3, p.x1 - p.x0, 7, fill, 2);
+        // Landing lights at both ends: they blink fast while the ship is over this pad.
+        const on = Math.sin(arena.time * (under === p ? 16 : 3) + p.x0) > 0;
+        for (const x of [p.x0 + 3, p.x1 - 3]) arena.disc(g, x, p.y - 5.5, 2, on ? c.paper : arena.tone(fill).lo);
+        g.font = font(12);
         g.textAlign = 'center';
-        g.fillStyle = c.fg;
-        g.fillText(`×${p.mult}`, (p.x0 + p.x1) / 2, p.y + 20);
+        g.textBaseline = 'middle';
+        const lw = g.measureText(`×${p.mult}`).width + 10;
+        arena.box(g, mid - lw / 2, p.y + 9, lw, 15, fill, 7, false);
+        g.fillStyle = c.coal;
+        g.fillText(`×${p.mult}`, mid, p.y + 17);
+        g.textBaseline = 'alphabetic';
       }
-      if (s.phase !== 'boom' && s.phase !== 'over') drawShip(g);
-      // Crash: a ring and flying debris; landing: a green ring.
-      if (fx < 1.2) {
-        const k = fx / 1.2;
-        g.globalAlpha = 1 - k;
-        const at = s.phase === 'landed' ? { x: s.x, y: s.y + FOOT_Y } : crashAt;
-        g.strokeStyle = s.phase === 'landed' ? c.good : c.bad;
-        g.lineWidth = arena.lw * 1.5;
-        g.beginPath();
-        g.arc(at.x, at.y, 8 + k * 40, 0, Math.PI * 2);
-        g.stroke();
-        if (s.phase !== 'landed')
-          for (let i = 0; i < 9; i++) {
-            const a = (i / 9) * Math.PI * 2 + 0.3;
-            const r = 6 + k * (30 + (i % 3) * 12);
-            arena.box(g, at.x + Math.cos(a) * r - 2.5, at.y + Math.sin(a) * r - 2.5 - k * 10, 5, 5, i % 2 ? c.accent : c.p[0], 1, false);
-          }
-        g.globalAlpha = 1;
-      }
+      if (s.phase === 'fly' || s.phase === 'landed') drawShip(g);
       // The touch zones, for the first seconds of the run.
       if (s.time < 5) {
         g.globalAlpha = Math.min(1, 5 - s.time) * 0.8;
-        g.font = FONT;
+        g.font = font(9);
         g.fillStyle = c.muted;
         g.textAlign = 'left';
         g.fillText(L('◀ tilt', '◀ pencher'), 10, 48);
@@ -259,15 +285,31 @@ export const lander: GameDef = {
       const safe = slowEnough(s) && Math.abs(s.angle) <= SAFE_TILT;
       gauge(g, 10, L('FUEL', 'CARBURANT'), s.fuel / s.fuelMax, s.fuel / s.fuelMax > 0.25 ? c.accent : c.bad);
       gauge(g, 104, L('SPEED', 'VITESSE'), speed / 2, slowEnough(s) ? c.good : c.bad, 0.5);
-      // Touchdown light: speed and tilt both fine.
-      arena.disc(g, 200, 21, 6, safe ? c.good : c.bad);
+      // Touchdown light: speed and tilt both fine (a tick or a cross, not just its colour).
+      arena.disc(g, 200, 21, 7, safe ? c.good : c.bad);
+      g.strokeStyle = c.coal;
+      g.lineWidth = 1.8;
+      g.lineCap = 'round';
+      g.beginPath();
+      if (safe) {
+        g.moveTo(196.8, 21.2);
+        g.lineTo(199, 23.6);
+        g.lineTo(203.4, 18.4);
+      } else {
+        g.moveTo(197.4, 18.4);
+        g.lineTo(202.6, 23.6);
+        g.moveTo(202.6, 18.4);
+        g.lineTo(197.4, 23.6);
+      }
+      g.stroke();
+      g.lineCap = 'butt';
       // Wind: an arrow showing which way and how hard.
       const wind = windNow(s);
       if (wind) {
         const x = 254;
         const len = 8 + Math.abs(wind) * 2;
         const k = Math.sign(wind);
-        g.font = FONT;
+        g.font = font(9);
         g.textAlign = 'center';
         g.fillStyle = c.muted;
         g.fillText(L('WIND', 'VENT'), x, 13);
@@ -281,6 +323,7 @@ export const lander: GameDef = {
         g.lineTo(x + (k * len) / 2 - k * 5, 26);
         g.stroke();
       }
+      arena.overlay(g);
     }
 
     const syncKeys = () => {
@@ -340,24 +383,54 @@ export const lander: GameDef = {
     return {
       draw,
       frame(dt) {
-        fx += dt;
+        spawn += dt;
+        arena.update(dt);
         const ev = step(s, dt);
+        const c = arena.colors;
         if (s.thrust !== thrustOn) {
           thrustOn = s.thrust;
-          if (thrustOn) sfx('tick', { vol: 0.5 });
+          if (thrustOn && s.fuel > 0) sfx('tick', { vol: 0.5 });
+        }
+        if (s.phase === 'fly' && s.thrust && s.fuel > 0) {
+          // Exhaust out of the nozzle, and dust kicked up when the flame nears the ground.
+          const a = s.angle + Math.PI / 2;
+          const nx = s.x - Math.sin(s.angle) * (SHIP_R + 4);
+          const ny = s.y + Math.cos(s.angle) * (SHIP_R + 4);
+          fx.burst(nx, ny, Math.random() < 0.5 ? c.p[0] : c.p[3], 1, 90, 2.6, 0.3, 'dot', 0, a, 0.5);
+          const gy = groundAt(s, nx);
+          if (gy - ny < 50 && Math.random() < 0.5) {
+            const right = Math.random() < 0.5;
+            fx.burst(nx, gy - 1, c.muted, 1, 90 * (1 - (gy - ny) / 60), 2.4, 0.5, 'dot', -20, right ? -0.25 : Math.PI + 0.25, 0.5);
+          }
         }
         if (ev.crashed) {
-          fx = 0;
-          crashAt = { x: s.x, y: s.y };
+          fx.burst(s.x, s.y, c.accent, 16, 150, 4, 0.8, 'square', 240, -Math.PI / 2, Math.PI * 1.4);
+          fx.burst(s.x, s.y, c.p[0], 12, 120, 3, 0.55, 'dot', 60);
+          fx.burst(s.x, s.y, c.p[3], 8, 90, 2.5, 0.4, 'spark', 0);
+          fx.ring(s.x, s.y, c.bad, 6, 46, 0.5, arena.lw * 1.5);
+          fx.shake(6, 0.4);
+          fx.flash(c.bad, 0.3, 0.35);
           sfx('boom');
           haptic(30);
           ctx.lives(s.lives, max);
         }
-        if (ev.landed) {
-          fx = 0;
-          ctx.score(s.score);
-          sfx('hit', { vol: 0.7 });
+        if (ev.retry) {
+          spawn = 0;
+          fx.ring(s.x, s.y, c.accent, 2, 26, 0.4, arena.lw);
         }
+        if (ev.landed) {
+          const fy = s.y + FOOT_Y;
+          fx.burst(s.x - 6, fy, c.muted, 8, 80, 2.6, 0.6, 'dot', -10, Math.PI, 0.5);
+          fx.burst(s.x + 6, fy, c.muted, 8, 80, 2.6, 0.6, 'dot', -10, 0, 0.5);
+          fx.ring(s.x, fy, c.good, 6, 60, 0.6, arena.lw * 1.5);
+          for (const k of [2, 3, 4, 5]) fx.burst(s.x, s.y - 10, c.p[k], 6, 150, 3.5, 0.9, 'square', 200, -Math.PI / 2, Math.PI);
+          fx.text(s.x, s.y - 28, `+${s.score}`, padColor(s.pad?.mult ?? 1), 18, 1.4);
+          fx.flash(c.good, 0.22, 0.5);
+          ctx.score(s.score);
+          sfx('coin');
+          arena.linger(1.6);
+        }
+        if (ev.over) arena.linger();
         status();
         draw();
         if (ev.landed) ctx.win();

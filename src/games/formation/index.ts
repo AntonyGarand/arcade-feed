@@ -2,7 +2,8 @@ import './style.css';
 import { L, P } from '../../core/i18n';
 import { btn, leftRight } from '../../core/pad';
 import type { GameDef } from '../../core/types';
-import { Arena } from '../../kits/arena/arena';
+import { Arena, type Trace } from '../../kits/arena/arena';
+import { mix } from '../../kits/arena/color';
 import { gestures } from '../../kits/gesture/gesture';
 import { sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
@@ -21,22 +22,14 @@ import {
   LIVES,
   parFor,
   shieldCell,
+  SHIELD_COLS,
+  SHIELD_Y,
   SHOT_HL,
   SHOT_HW,
   step,
   TIME_POINTS,
   W,
 } from './rules';
-
-/** A spark from a popped critter (k = palette index, −1 for the cannon). */
-interface Spark {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-  k: number;
-}
 
 export const formation: GameDef = {
   id: 'formation',
@@ -99,47 +92,102 @@ export const formation: GameDef = {
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
     const arena = new Arena(ctx.root, W, H, () => draw());
-    const sparks: Spark[] = [];
-    let flash = 0;
+    const fx = arena.fx;
     let offset = 0;
+    /** Cannon recoil after a shot, 1 → 0. */
+    let recoil = 0;
+    /** Marches so far (for the four-note marching beat). */
+    let beat = 0;
+    /** How the run ended: the formation landed, the cannon fell, or it was cleared. */
+    let ended: 'landed' | 'shot' | 'won' | null = null;
+    /** Shield cells standing at the last frame, to chip the ones that just broke. */
+    let standing = s.shields.map((sh) => sh.cells.slice());
+    /** Critter trace for the gem helper. */
+    const traces = [0, 1, 2, 3, 4, 5, 6, 7].map(
+      (k): Trace =>
+        (g, r) =>
+          glyphPath(g, k, 0, 0, r),
+    );
 
     const status = () => ctx.status(P(aliveCount(s), ['critter left', 'critters left'], ['bestiole restante', 'bestioles restantes']));
 
-    /** A critter: its glyph as the body, two eyes, and legs that swap with each march tick. */
-    function critter(g: CanvasRenderingContext2D, x: number, y: number, k: number) {
+    /** A critter: its glyph as a faceted body, antennae and legs that swap with each march tick, two eyes. */
+    function critter(g: CanvasRenderingContext2D, x: number, y0: number, k: number) {
       const c = arena.colors;
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.7;
+      const fill = c.p[k];
+      const t = arena.tone(fill);
+      const hop = s.pose ? -1 : 0;
+      const y = y0 + hop;
+      g.strokeStyle = t.edge;
+      g.lineWidth = arena.lw * 0.75;
       g.lineCap = 'round';
-      const spread = s.pose ? 7 : 4;
+      const spread = s.pose ? 8 : 4.5;
       g.beginPath();
       for (const side of [-1, 1]) {
         g.moveTo(x + side * 4, y + 4);
-        g.lineTo(x + side * spread, y + CRITTER_R + 1);
-        g.moveTo(x + side * 6, y - 4);
-        g.lineTo(x + side * (s.pose ? 9 : 11), y - CRITTER_R);
+        g.lineTo(x + side * spread, y + CRITTER_R + 2 - hop);
+        g.moveTo(x + side * 5, y - 5);
+        g.lineTo(x + side * (s.pose ? 9 : 11), y - CRITTER_R - 1);
       }
       g.stroke();
-      g.lineCap = 'butt';
-      if (arena.sh) {
-        g.fillStyle = c.drop;
-        glyphPath(g, k, x + arena.sh * 0.5, y + arena.sh * 0.5, CRITTER_R - 1);
-        g.fill();
-      }
-      g.fillStyle = c.p[k];
-      g.lineWidth = arena.lw * 0.8;
-      glyphPath(g, k, x, y, CRITTER_R - 1);
-      g.fill();
-      g.stroke();
+      g.fillStyle = t.hi;
       for (const side of [-1, 1]) {
-        g.fillStyle = c.cell;
         g.beginPath();
-        g.arc(x + side * 3, y - 1, 2, 0, Math.PI * 2);
+        g.arc(x + side * (s.pose ? 9 : 11), y - CRITTER_R - 1, 1.6, 0, Math.PI * 2);
         g.fill();
-        g.fillStyle = c.ink;
+      }
+      g.lineCap = 'butt';
+      arena.gem(g, x, y, CRITTER_R, fill, traces[k]);
+      // Eyes follow the cannon.
+      const look = Math.max(-1, Math.min(1, (s.px - x) / 60));
+      for (const side of [-1, 1]) {
+        g.fillStyle = c.paper;
+        g.strokeStyle = c.coal;
+        g.lineWidth = arena.lw * 0.4;
         g.beginPath();
-        g.arc(x + side * 3 + s.dir * 0.8, y - 0.6, 1, 0, Math.PI * 2);
+        g.arc(x + side * 3.3, y - 0.5, 2.6, 0, Math.PI * 2);
         g.fill();
+        g.stroke();
+        g.fillStyle = c.coal;
+        g.beginPath();
+        g.arc(x + side * 3.3 + look * 1.1, y + 0.2, 1.2, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+
+    function drawShields(g: CanvasRenderingContext2D) {
+      const c = arena.colors;
+      const t = arena.tone(c.good);
+      for (const sh of s.shields) {
+        const on = (i: number) => i >= 0 && i < sh.cells.length && sh.cells[i];
+        sh.cells.forEach((v, i) => {
+          if (!v) return;
+          const p = shieldCell(sh, i);
+          const col = i % SHIELD_COLS;
+          // Lit top on exposed cells, shaded base: reads as one solid bunker that crumbles.
+          g.fillStyle = !on(i - SHIELD_COLS) ? t.hi : !on(i + SHIELD_COLS) ? t.lo : t.base;
+          g.fillRect(p.x, p.y, BLOCK + 0.2, BLOCK + 0.2);
+          g.strokeStyle = t.edge;
+          g.lineWidth = arena.lw * 0.6;
+          g.beginPath();
+          if (!on(i - SHIELD_COLS)) {
+            g.moveTo(p.x, p.y);
+            g.lineTo(p.x + BLOCK, p.y);
+          }
+          if (!on(i + SHIELD_COLS)) {
+            g.moveTo(p.x, p.y + BLOCK);
+            g.lineTo(p.x + BLOCK, p.y + BLOCK);
+          }
+          if (col === 0 || !on(i - 1)) {
+            g.moveTo(p.x, p.y);
+            g.lineTo(p.x, p.y + BLOCK);
+          }
+          if (col === SHIELD_COLS - 1 || !on(i + 1)) {
+            g.moveTo(p.x + BLOCK, p.y);
+            g.lineTo(p.x + BLOCK, p.y + BLOCK);
+          }
+          g.stroke();
+        });
       }
     }
 
@@ -147,23 +195,22 @@ export const formation: GameDef = {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      if (flash > 0) {
-        g.globalAlpha = Math.min(1, flash) * 0.25;
-        g.fillStyle = c.bad;
-        g.fillRect(0, 0, W, H);
-        g.globalAlpha = 1;
-      }
-      // The landing line and the ground.
-      g.strokeStyle = c.muted;
-      g.lineWidth = arena.lw * 0.5;
+      arena.field(g, 0, 0, W, H, 25, 0, false);
+      // The landing line warms up as the formation gets close to it.
+      const live = s.critters.filter((k) => k.alive);
+      const low = live.length ? Math.max(...live.map((k) => critterAt(s, k).y)) + CRITTER_R : 0;
+      const near = Math.max(0, Math.min(1, 1 - (LAND_Y - low) / 90));
+      g.strokeStyle = near > 0 ? mix(c.muted, c.bad, near) : c.muted;
+      g.globalAlpha = 0.6 + 0.4 * near * (0.6 + 0.4 * Math.sin(arena.time * 10));
+      g.lineWidth = arena.lw * (0.5 + near * 0.5);
       g.setLineDash([4, 6]);
       g.beginPath();
       g.moveTo(0, LAND_Y);
       g.lineTo(W, LAND_Y);
       g.stroke();
       g.setLineDash([]);
-      g.fillStyle = c.cellAlt;
-      g.fillRect(0, CANNON_Y + 12, W, H - CANNON_Y - 12);
+      g.globalAlpha = 1;
+      arena.block(g, -4, CANNON_Y + 12, W + 8, H - CANNON_Y, c.cellAlt, 0, false, 0);
       g.strokeStyle = c.ink;
       g.lineWidth = arena.lw * 0.8;
       g.beginPath();
@@ -171,28 +218,33 @@ export const formation: GameDef = {
       g.lineTo(W, CANNON_Y + 12);
       g.stroke();
 
-      for (const sh of s.shields)
-        sh.cells.forEach((on, i) => {
-          if (!on) return;
-          const p = shieldCell(sh, i);
-          g.fillStyle = c.muted;
-          g.fillRect(p.x, p.y, BLOCK, BLOCK);
-          g.strokeStyle = c.ink;
-          g.lineWidth = arena.lw * 0.35;
-          g.strokeRect(p.x, p.y, BLOCK, BLOCK);
-        });
+      drawShields(g);
 
-      for (const k of s.critters) {
-        if (!k.alive) continue;
+      for (const k of live) {
         const p = critterAt(s, k);
         critter(g, p.x, p.y, k.k);
       }
 
-      for (const b of s.shots) arena.box(g, b.x - SHOT_HW, b.y - SHOT_HL, SHOT_HW * 2, SHOT_HL * 2, c.accent, 1, false);
-      // Enemy shots: a zigzag bolt.
-      g.strokeStyle = c.bad;
-      g.lineWidth = 2.4;
+      // Your shots: a bright slug with a short fading tail.
+      const at = arena.tone(c.accent);
+      for (const b of s.shots) {
+        g.fillStyle = at.glow;
+        g.beginPath();
+        g.roundRect(b.x - SHOT_HW * 2, b.y - SHOT_HL, SHOT_HW * 4, SHOT_HL * 3.4, SHOT_HW * 2);
+        g.fill();
+        arena.box(g, b.x - SHOT_HW - 0.5, b.y - SHOT_HL, SHOT_HW * 2 + 1, SHOT_HL * 2, c.accent, 1.5, false);
+      }
+      // Enemy shots: a zigzag bolt over a soft glow.
+      const bt = arena.tone(c.bad);
+      g.lineCap = 'round';
+      g.lineJoin = 'round';
       for (const m of s.bombs) {
+        g.fillStyle = bt.glow;
+        g.beginPath();
+        g.ellipse(m.x, m.y, 5, SHOT_HL + 3, 0, 0, Math.PI * 2);
+        g.fill();
+        g.strokeStyle = c.bad;
+        g.lineWidth = 2.6;
         g.beginPath();
         for (let i = 0; i <= 4; i++) {
           const x = m.x + (i % 2 ? 2.5 : -2.5) * (Math.floor(m.y / 6) % 2 ? 1 : -1);
@@ -202,19 +254,19 @@ export const formation: GameDef = {
         }
         g.stroke();
       }
+      g.lineCap = 'butt';
 
-      for (const p of sparks) {
-        g.globalAlpha = Math.min(1, p.life * 2.5);
-        g.fillStyle = p.k < 0 ? c.bad : c.p[p.k];
-        g.fillRect(p.x - 2, p.y - 2, 4, 4);
+      // The cannon (blinking while safe after a hit; gone once shot down).
+      if (ended !== 'shot' && (s.safe <= 0 || Math.floor(s.safe * 10) % 2 === 0)) {
+        const kick = recoil * recoil * 3;
+        arena.block(g, s.px - 3.5, CANNON_Y - 12 + kick, 7, 12, c.accent, 2);
+        arena.block(g, s.px - CANNON_HW, CANNON_Y - 3, CANNON_HW * 2, 13, c.accent, 4);
+        g.fillStyle = arena.tone(c.accent).edge;
+        g.beginPath();
+        g.arc(s.px, CANNON_Y + 3, 2, 0, Math.PI * 2);
+        g.fill();
       }
-      g.globalAlpha = 1;
-
-      // The cannon (blinking while safe after a hit).
-      if (s.safe <= 0 || Math.floor(s.safe * 10) % 2 === 0) {
-        arena.box(g, s.px - CANNON_HW, CANNON_Y - 2, CANNON_HW * 2, 12, c.accent, 3);
-        arena.box(g, s.px - 3.5, CANNON_Y - 11, 7, 10, c.accent, 2, false);
-      }
+      arena.overlay(g);
     }
 
     const release = () => {
@@ -225,12 +277,13 @@ export const formation: GameDef = {
       toWorld: (e) => arena.toWorld(e),
       slop: 4,
       onDown(p) {
+        if (ended) return;
         offset = s.px - p.x;
         s.target = s.px;
         s.fire = true;
       },
       onMove(p, from) {
-        if (from) s.target = p.x + offset;
+        if (from && !ended) s.target = p.x + offset;
       },
       onTap: () => release(),
       onRelease: () => release(),
@@ -242,31 +295,75 @@ export const formation: GameDef = {
     return {
       draw,
       frame(dt) {
+        const c = arena.colors;
+        const pose = s.pose;
+        const bombs = s.bombs.slice();
         const ev = step(s, dt);
-        if (ev.fired) sfx('shoot', { vol: 0.4 });
+        arena.update(dt);
+        recoil = Math.max(0, recoil - dt * 6);
+        if (ev.fired) {
+          sfx('shoot', { vol: 0.4 });
+          recoil = 1;
+          fx.burst(s.px, CANNON_Y - 13, arena.tone(c.accent).hi, 4, 70, 2, 0.2, 'spark', 0, -Math.PI / 2, 0.9);
+        }
+        if (pose !== s.pose) {
+          // The march: a low four-note beat that quickens with the formation.
+          sfx('tick', { vol: 0.28, pitch: [-12, -14, -16, -14][beat++ % 4] });
+        }
         for (const p of ev.pops) {
-          if (p.k >= 0) sfx('pop', { pitch: p.k % 5 });
-          for (let i = 0; i < 10; i++) {
-            const a = (i / 10) * Math.PI * 2 + p.x;
-            const sp = 50 + ((i * 29) % 60);
-            sparks.push({ x: p.x, y: p.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.5, k: p.k });
+          if (p.k < 0) {
+            fx.burst(p.x, p.y, c.accent, 14, 150, 3.5, 0.6, 'square', 280, -Math.PI / 2, Math.PI * 1.2);
+            fx.burst(p.x, p.y, c.bad, 8, 110, 3, 0.5, 'spark', 0);
+            fx.ring(p.x, p.y, c.bad, 6, 40, 0.4, arena.lw * 1.4);
+            continue;
           }
+          const fill = c.p[p.k];
+          sfx('pop', { pitch: p.k % 5 });
+          fx.burst(p.x, p.y, fill, 14, 130, 3.5, 0.55, 'square', 120);
+          fx.burst(p.x, p.y, arena.tone(fill).hi, 6, 90, 2.5, 0.4, 'dot', 0);
+          fx.ring(p.x, p.y, fill, 4, CRITTER_R * 2.4, 0.3, arena.lw);
+          fx.text(p.x, p.y - 6, `+${p.pts}`, p.pts >= 30 ? c.accent : c.fg, p.pts >= 30 ? 13 : 11);
         }
-        for (let i = sparks.length - 1; i >= 0; i--) {
-          const p = sparks[i];
-          p.x += p.vx * dt;
-          p.y += p.vy * dt;
-          p.life -= dt;
-          if (p.life <= 0) sparks.splice(i, 1);
-        }
-        flash = Math.max(0, flash - dt * 2);
+        // Shots that vanished mid-air were cancelled by yours: a spark where they met.
+        for (const m of bombs)
+          if (!s.bombs.includes(m) && m.y < SHIELD_Y - 4 && !ev.hurt) {
+            fx.burst(m.x, m.y, c.paper, 6, 80, 2, 0.3, 'spark', 0);
+            fx.ring(m.x, m.y, c.accent, 2, 12, 0.25, arena.lw * 0.8);
+            sfx('hit', { vol: 0.5, pitch: 5 });
+          }
+        // Chips off the bunkers.
+        s.shields.forEach((sh, n) =>
+          sh.cells.forEach((on, i) => {
+            if (on || !standing[n][i]) return;
+            const p = shieldCell(sh, i);
+            fx.burst(p.x + BLOCK / 2, p.y + BLOCK / 2, c.good, 3, 60, 2.2, 0.35, 'square', 200);
+          }),
+        );
+        standing = s.shields.map((sh) => sh.cells.slice());
         if (ev.hurt) {
-          flash = 1;
           ctx.lives(s.lives, LIVES);
+          fx.shake(5, 0.35);
+          fx.flash(c.bad, 0.3, 0.35);
         }
         if (ev.hit || ev.cleared) {
           ctx.score(s.score);
           status();
+        }
+        if (ev.cleared) {
+          ended = 'won';
+          for (let i = 0; i < 5; i++) fx.burst(s.px, CANNON_Y - 20, c.p[i], 10, 190, 4, 0.9, 'square', 220, -Math.PI / 2, Math.PI);
+          fx.ring(s.px, CANNON_Y, c.accent, 8, 90, 0.6, arena.lw * 1.5);
+          fx.flash(c.good, 0.25, 0.5);
+          arena.linger();
+        } else if (ev.over) {
+          ended = s.lives <= 0 ? 'shot' : 'landed';
+          if (ended === 'landed') {
+            fx.shake(6, 0.45);
+            fx.flash(c.bad, 0.35, 0.5);
+            fx.burst(s.px, CANNON_Y, c.accent, 14, 150, 3.5, 0.6, 'square', 280, -Math.PI / 2, Math.PI * 1.2);
+          }
+          s.fire = false;
+          arena.linger(1.4);
         }
         draw();
         if (ev.cleared) ctx.win();

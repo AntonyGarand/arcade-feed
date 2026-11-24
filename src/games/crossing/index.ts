@@ -2,6 +2,7 @@ import './style.css';
 import { L } from '../../core/i18n';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { mix } from '../../kits/arena/color';
 import { gestures, keyDir, type Dir } from '../../kits/gesture/gesture';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
@@ -33,15 +34,6 @@ const H = ROWS * CELL;
 const fastPerHome = (d: Difficulty) => byLevel(d, [4.5, 4.5, 5.5, 6.5, 6.5]);
 const okPerHome = (d: Difficulty) => byLevel(d, [8, 9, 10, 11, 11]);
 const base = (d: Difficulty) => homesFor(d) * ((START_ROW - GOAL_ROW) * ROW_POINTS + HOME_POINTS) + LIVES * LIFE_BONUS;
-
-interface Spark {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-  good: boolean;
-}
 
 export const crossing: GameDef = {
   id: 'crossing',
@@ -105,7 +97,8 @@ export const crossing: GameDef = {
     /** Last hop: where it started, for the jump animation, and its direction (the eyes look that way). */
     let from = { x: s.x, row: s.row };
     let facing: Dir = 0;
-    let sparks: Spark[] = [];
+    const fx = arena.fx;
+    let ended = false;
     /** Where the hopper went down, for the splash/squash mark. */
     let wreck: { x: number; row: number; water: boolean } | null = null;
     /** Seconds left of the flash on a freshly filled slot. */
@@ -119,37 +112,22 @@ export const crossing: GameDef = {
       ctx.status(`${L('Home', 'Abris')} ${s.homes}/${s.need} · ${shown} s`);
     };
 
-    const burst = (x: number, row: number, good: boolean) => {
-      const cx = (x + 0.5) * CELL;
-      const cy = (row + 0.5) * CELL;
-      for (let i = 0; i < 14; i++) {
-        const a = (i / 14) * Math.PI * 2;
-        const v = 50 + (i % 3) * 30;
-        sparks.push({ x: cx, y: cy, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.5, good });
-      }
-    };
-
     function drawHopper(g: CanvasRenderingContext2D, cx: number, cy: number, scale: number, dir: Dir) {
       const c = arena.colors;
       const r = CELL * 0.34 * scale;
-      if (arena.sh) {
-        g.fillStyle = c.drop;
-        g.beginPath();
-        g.arc(cx + arena.sh * 0.6, cy + arena.sh * 0.6, r, 0, Math.PI * 2);
-        g.fill();
-      }
       // Feet, then body, then eyes looking where it hops.
-      const fx = dir === 1 || dir === 3 ? 0 : 1;
-      const fy = 1 - fx;
-      for (const k of [-1, 1]) arena.disc(g, cx + k * r * 0.75 * fx, cy + k * r * 0.75 * fy, r * 0.35, c.accent);
-      arena.disc(g, cx, cy, r, c.accent);
+      const lx = dir === 1 || dir === 3 ? 0 : 1;
+      const fy = 1 - lx;
+      const t = arena.tone(c.accent);
+      for (const k of [-1, 1]) arena.disc(g, cx + k * r * 0.78 * lx, cy + k * r * 0.78 * fy, r * 0.36, t.lo);
+      arena.ball(g, cx, cy, r, c.accent);
       const ex = dir === 1 ? 1 : dir === 3 ? -1 : 0;
       const ey = dir === 0 ? -1 : dir === 2 ? 1 : 0;
       for (const k of [-1, 1]) {
         const px = cx + ex * r * 0.35 + k * r * 0.42 * (ey ? 1 : 0);
         const py = cy + ey * r * 0.35 + k * r * 0.42 * (ex ? 1 : 0);
-        arena.disc(g, px, py, r * 0.28, c.cell);
-        g.fillStyle = c.ink;
+        arena.disc(g, px, py, r * 0.28, c.paper);
+        g.fillStyle = c.coal;
         g.beginPath();
         g.arc(px + ex * r * 0.1, py + ey * r * 0.1, r * 0.12, 0, Math.PI * 2);
         g.fill();
@@ -216,28 +194,46 @@ export const crossing: GameDef = {
           const x = itemX(lane, it, s.time) * CELL;
           const w = it.len * CELL;
           if (lane.kind === 'river') {
-            arena.box(g, x + 1, y + 5, w - 2, CELL - 10, c.p[0], 8);
-            // Wood grain.
-            g.strokeStyle = c.ink;
+            const wood = arena.tone(c.p[0]).lo;
+            arena.block(g, x + 1, y + 5, w - 2, CELL - 10, wood, 8);
+            // Wood grain, and the cut rings at both ends.
+            const wt = arena.tone(wood);
+            g.strokeStyle = wt.edge;
             g.lineWidth = 1;
-            g.globalAlpha = 0.35;
+            g.globalAlpha = 0.4;
             for (let k = 1; k < it.len; k++) {
               g.beginPath();
-              g.moveTo(x + k * CELL - 6, y + CELL * 0.42);
-              g.lineTo(x + k * CELL + 6, y + CELL * 0.42);
+              g.moveTo(x + k * CELL - 7 + (k % 2) * 4, y + CELL * 0.4);
+              g.lineTo(x + k * CELL + 5 + (k % 2) * 4, y + CELL * 0.4);
               g.stroke();
             }
             g.globalAlpha = 1;
+            g.fillStyle = wt.hi;
+            for (const ex of [x + 7, x + w - 7]) {
+              g.beginPath();
+              g.ellipse(ex, y + CELL / 2 - 1, 3, CELL / 2 - 8, 0, 0, Math.PI * 2);
+              g.fill();
+              g.stroke();
+            }
             continue;
           }
-          arena.box(g, x + 3, y + 5, w - 6, CELL - 10, c.p[it.tone], 5);
-          // Windscreen at the front, wheels on the sides.
-          const front = lane.speed > 0 ? x + w - 13 : x + 6;
-          arena.box(g, front, y + 9, 7, CELL - 18, c.cell, 2, false);
-          g.fillStyle = c.ink;
+          // Wheels on the sides, the body, then the windscreen and headlights at the front.
+          g.fillStyle = c.coal;
+          g.beginPath();
           for (const wx of [x + 8, x + w - 14]) {
-            g.fillRect(wx, y + 3, 6, 3);
-            g.fillRect(wx, y + CELL - 6, 6, 3);
+            g.roundRect(wx, y + 2.5, 6, 4, 1.5);
+            g.roundRect(wx, y + CELL - 6.5, 6, 4, 1.5);
+          }
+          g.fill();
+          arena.block(g, x + 3, y + 5, w - 6, CELL - 10, c.p[it.tone], 5);
+          const ahead = lane.speed > 0;
+          const front = ahead ? x + w - 14 : x + 7;
+          arena.box(g, front, y + 9, 7, CELL - 18, mix(c.p[1], c.paper, 0.55), 2, false);
+          g.fillStyle = c.p[3];
+          for (const ly of [y + 9, y + CELL - 9]) {
+            g.beginPath();
+            g.arc(ahead ? x + w - 4.5 : x + 4.5, ly, 1.6, 0, Math.PI * 2);
+            g.fill();
           }
         }
       }
@@ -270,20 +266,18 @@ export const crossing: GameDef = {
       if (!s.dead) {
         // Hop animation: slide from the last cell with a little bounce.
         const k = s.cool > 0 ? 1 - s.cool / HOP_S : 1;
-        const fx = from.x + (s.x - from.x) * k;
+        const hx1 = from.x + (s.x - from.x) * k;
         const fy = from.row + (s.row - from.row) * k;
-        drawHopper(g, (fx + 0.5) * CELL, (fy + 0.5) * CELL, 1 + Math.sin(Math.PI * k) * 0.25, facing);
+        drawHopper(g, (hx1 + 0.5) * CELL, (fy + 0.5) * CELL, 1 + Math.sin(Math.PI * k) * 0.25, facing);
       }
-      for (const p of sparks) {
-        g.globalAlpha = Math.min(1, p.life * 2.5);
-        arena.disc(g, p.x, p.y, 2.5 + p.life * 4, p.good ? c.good : c.bad);
-      }
-      g.globalAlpha = 1;
-      // Time left along the bottom.
+      // Time left along the bottom: red and pulsing over the last ten seconds.
+      const low = s.limit - s.time < 10 && !ended;
+      const bh = low ? 6 + Math.abs(Math.sin(arena.time * 6)) * 2 : 6;
       g.fillStyle = c.cellAlt;
-      g.fillRect(0, H - 4, W, 4);
-      g.fillStyle = s.limit - s.time < 10 ? c.bad : c.accent;
-      g.fillRect(0, H - 4, W * Math.max(0, 1 - s.time / s.limit), 4);
+      g.fillRect(0, H - bh, W, bh);
+      g.fillStyle = low ? c.bad : c.accent;
+      g.fillRect(0, H - bh, W * Math.max(0, 1 - s.time / s.limit), bh);
+      arena.overlay(g);
     }
 
     function go(dir: Dir) {
@@ -298,14 +292,27 @@ export const crossing: GameDef = {
         if (out === 'home') sfx('power');
         const col = Math.round(before.x);
         lastSlot = SLOTS.indexOf(col);
-        burst(col, GOAL_ROW, true);
+        const c = arena.colors;
+        const hx0 = (col + 0.5) * CELL;
+        const hy0 = (GOAL_ROW + 0.5) * CELL;
+        fx.burst(hx0, hy0, c.good, 14, 130, 3.5, 0.55, 'square', 200, Math.PI / 2, Math.PI * 1.2);
+        fx.burst(hx0, hy0, c.accent, 8, 90, 2.5, 0.45, 'dot', 120);
+        fx.ring(hx0, hy0, c.good, 6, CELL * 1.2, 0.4, arena.lw * 1.2);
+        fx.text(Math.max(28, Math.min(W - 28, hx0)), hy0 + CELL * 0.9, `+${HOME_POINTS}`, c.accent, 16, 1);
         homeFlash = 0.6;
         from = { x: s.x, row: s.row };
       }
       ctx.score(s.score);
       status();
       draw();
-      if (out === 'win') ctx.win();
+      if (out === 'win') {
+        ended = true;
+        const c = arena.colors;
+        for (let k = 0; k < 5; k++) fx.burst(W / 2, CELL, c.p[k], 10, 200, 3.5, 0.9, 'square', 220);
+        fx.flash(c.good, 0.22, 0.5);
+        arena.linger(1.4);
+        ctx.win();
+      }
     }
 
     const hx = () => (s.x + 0.5) * CELL;
@@ -332,25 +339,35 @@ export const crossing: GameDef = {
         const ev = step(s, dt);
         // Riding a log: the hop start drifts along with it.
         if (s.row === row) from = { x: from.x + (s.x - x), row: from.row };
+        arena.update(dt);
         homeFlash = Math.max(0, homeFlash - dt);
-        for (const p of sparks) {
-          p.x += p.vx * dt;
-          p.y += p.vy * dt;
-          p.life -= dt;
-        }
-        sparks = sparks.filter((p) => p.life > 0);
         if (ev.died) {
+          const c = arena.colors;
           wreck = { x: s.x, row: s.row, water: s.lanes[s.row].kind === 'river' };
-          burst(s.x, s.row, false);
-          if (wreck.water) sfx('splash');
-          else {
+          const wx = (s.x + 0.5) * CELL;
+          const wy = (s.row + 0.5) * CELL;
+          fx.shake(4, 0.3);
+          fx.flash(c.bad, 0.25, 0.35);
+          if (wreck.water) {
+            sfx('splash');
+            fx.burst(wx, wy, c.p[1], 14, 120, 3, 0.55, 'dot', 260, -Math.PI / 2, Math.PI * 0.9);
+            fx.burst(wx, wy, c.paper, 6, 80, 2.5, 0.4, 'dot', 200, -Math.PI / 2, Math.PI * 0.7);
+            fx.text(wx, wy - CELL * 0.6, L('Splash!', 'Plouf!'), c.fg, 13);
+          } else {
             sfx('boom', { vol: 0.8 });
             haptic(25);
+            fx.burst(wx, wy, c.accent, 12, 140, 3.5, 0.5);
+            fx.burst(wx, wy, c.bad, 6, 100, 2.5, 0.4, 'spark', 0);
+            fx.text(wx, wy - CELL * 0.6, L('Bonk!', 'Bang!'), c.bad, 13);
           }
           ctx.lives(s.lives, LIVES);
         }
         if (ev.respawned) from = { x: s.x, row: s.row };
         if (secondsLeft() !== shown) status();
+        if (ev.over && !ended) {
+          ended = true;
+          arena.linger(1.4);
+        }
         draw();
         if (ev.over) ctx.lose();
       },

@@ -29,7 +29,7 @@ import {
 const TONE = [0, 1, 2, 3, 4, 6];
 /** Radius of the shooter's base; a tap inside it swaps marbles. */
 const BASE_R = 19;
-const NEXT_R = 5.5;
+const NEXT_R = 7;
 /** Seconds a fired marble takes to slide into its slot. */
 const SLIDE_S = 0.12;
 /** The hole starts pulsing when the head has covered this share of the track. */
@@ -117,11 +117,12 @@ export const chain: GameDef = {
 
     function marble(g: CanvasRenderingContext2D, k: number, x: number, y: number, r: number, shadow = true) {
       const c = arena.colors;
-      arena.ball(g, x, y, r, c.p[TONE[k] ?? 0], shadow);
-      g.fillStyle = c.cell;
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.4;
-      glyphPath(g, k, x, y, r * 0.46);
+      const fill = c.p[TONE[k] ?? 0];
+      arena.ball(g, x, y, r, fill, shadow);
+      g.fillStyle = c.paper;
+      g.strokeStyle = arena.tone(fill).edge;
+      g.lineWidth = arena.lw * 0.45;
+      glyphPath(g, k, x - r * 0.04, y - r * 0.04, r * 0.5);
       g.fill();
       g.stroke();
     }
@@ -151,14 +152,17 @@ export const chain: GameDef = {
       g.lineWidth = 2 * R + 6 - 2 * arena.lw * 0.8;
       g.stroke();
       trackPath(g, Math.floor(s.track.pts.length / 2 - (s.track.length * 0.15) / 2));
-      g.globalAlpha = 0.22;
+      // The danger stretch warms up as the head gets closer.
+      g.globalAlpha = 0.1 + 0.3 * Math.max(0, Math.min(1, (progress(s) - 0.45) / 0.45));
       g.strokeStyle = c.bad;
       g.stroke();
       g.globalAlpha = 1;
       g.lineCap = 'butt';
 
       // Mouth and hole.
-      arena.disc(g, mouth.x, mouth.y, R + 4, c.muted);
+      // The mouth: a pipe end the marbles roll out of.
+      arena.disc(g, mouth.x, mouth.y, R + 5, c.muted);
+      arena.disc(g, mouth.x, mouth.y, R + 1, arena.tone(c.muted).lo);
       const danger = progress(s) > DANGER && !ended;
       const pulse = danger ? 0.5 + 0.5 * Math.sin(arena.time * 10) : 0;
       arena.disc(g, end.x, end.y, R + 5 + pulse * 2, c.coal);

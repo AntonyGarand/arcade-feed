@@ -9,8 +9,10 @@ import { sfx } from '../../kits/sound/sound';
 import { COLS, createLevel, goalFor, PELLET_POINTS, QUICK, ROWS, speedFor, step, turn } from './rules';
 
 const CELL = 20;
-const W = COLS * CELL;
-const H = ROWS * CELL;
+/** The border wall shows half its thickness: more room for the field. */
+const O = CELL / 2;
+const W = COLS * CELL - 2 * O;
+const H = ROWS * CELL - 2 * O;
 
 export const snake: GameDef = {
   id: 'snake',
@@ -34,8 +36,8 @@ export const snake: GameDef = {
     ],
     tips: [
       L(
-        `A pellet is worth ${PELLET_POINTS}, plus up to ${QUICK} more if you reach it in few steps.`,
-        `Une pastille vaut ${PELLET_POINTS}, plus jusqu’à ${QUICK} de plus si vous l’atteignez en peu de pas.`,
+        `A pellet is worth ${PELLET_POINTS}, plus up to ${QUICK} more if you reach it in few steps: the ring around it shows the bonus left.`,
+        `Une pastille vaut ${PELLET_POINTS}, plus jusqu’à ${QUICK} de plus si vous l’atteignez en peu de pas : l’anneau autour montre le bonus qui reste.`,
       ),
       L('You can queue two turns ahead for tight corners.', 'Vous pouvez enchaîner deux virages d’avance dans les coins serrés.'),
     ],
@@ -81,6 +83,8 @@ export const snake: GameDef = {
       const wall = arena.tone(wallFill);
       g.fillStyle = wall.base;
       g.fillRect(0, 0, W, H);
+      g.save();
+      g.translate(-O, -O);
       g.strokeStyle = wall.lo;
       g.lineWidth = 1;
       g.beginPath();
@@ -97,7 +101,13 @@ export const snake: GameDef = {
         g.lineTo(W, y);
       }
       g.stroke();
-      arena.field(g, CELL, CELL, W - 2 * CELL, H - 2 * CELL, 0, 0, false);
+      g.restore();
+      arena.field(g, CELL - O, CELL - O, W - 2 * (CELL - O), H - 2 * (CELL - O), 0, 0, false);
+      g.strokeStyle = wall.edge;
+      g.lineWidth = arena.lw * 0.6;
+      g.strokeRect(CELL - O, CELL - O, W - 2 * (CELL - O), H - 2 * (CELL - O));
+      g.save();
+      g.translate(-O, -O);
       g.fillStyle = c.cell;
       g.globalAlpha = 0.4;
       for (let i = 0; i < COLS * ROWS; i++)
@@ -116,7 +126,18 @@ export const snake: GameDef = {
         const pop = age < 0.3 ? outBack(age / 0.3, 2.4) : 1;
         const x = cx(s.pellet);
         const y = cy(s.pellet) + Math.sin(arena.time * 4) * 0.8;
-        const r = CELL * 0.36 * pop;
+        const r = CELL * 0.4 * pop;
+        // The quick bonus left, as a ring running down around the pellet.
+        const bonus = Math.max(0, QUICK - s.sinceLast) / QUICK;
+        if (bonus > 0 && !dead) {
+          g.strokeStyle = c.p[3];
+          g.lineWidth = arena.lw * 0.9;
+          g.lineCap = 'round';
+          g.beginPath();
+          g.arc(x, y, CELL * 0.66, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * bonus);
+          g.stroke();
+          g.lineCap = 'butt';
+        }
         if (r > 0.5) {
           g.fillStyle = arena.tone(c.p[0]).glow;
           g.beginPath();
@@ -165,7 +186,7 @@ export const snake: GameDef = {
       }
       const fill = dead ? c.bad : c.accent;
       const tone = arena.tone(fill);
-      const bw = CELL * 0.74;
+      const bw = CELL * 0.8;
       g.lineJoin = 'round';
       g.lineCap = 'round';
       if (arena.sh && arena.look === 'neo') {
@@ -232,7 +253,7 @@ export const snake: GameDef = {
         g.stroke();
         g.lineCap = 'butt';
       }
-      arena.ball(g, hx, hy, CELL * 0.5, fill);
+      arena.ball(g, hx, hy, CELL * 0.54, fill);
       const blink = !dead && arena.time % 3.2 > 3.05;
       for (const side of [-1, 1]) {
         const ex = hx + dx * 3 + dy * side * 4.2;
@@ -263,6 +284,7 @@ export const snake: GameDef = {
         }
       }
       arena.overlay(g);
+      g.restore();
     }
 
     const stopGestures = gestures(arena.canvas, {

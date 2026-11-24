@@ -7,8 +7,8 @@ export const H = 400;
 export const LIVES = 3;
 /** Formation cell (one critter per cell) and critter half-size. */
 const CELL_W = 30;
-const CELL_H = 26;
-export const CRITTER_R = 10;
+const CELL_H = 28;
+export const CRITTER_R = 11;
 const TOP = 40;
 const MARGIN = 8;
 /** Sideways step per march tick, and the drop at an edge. */
@@ -25,9 +25,9 @@ const FIRE_GAP = 0.22;
 export const SHOT_HW = 1.5;
 export const SHOT_HL = 6;
 /** Shields: a grid of small cells. */
-const SHIELD_Y = 318;
+export const SHIELD_Y = 318;
 export const BLOCK = 5;
-const SHIELD_COLS = 6;
+export const SHIELD_COLS = 6;
 const SHIELD_ROWS = 4;
 /** The formation wins if its lowest critter gets this low. */
 export const LAND_Y = 338;
@@ -189,6 +189,8 @@ interface Pop {
   x: number;
   y: number;
   k: number;
+  /** Points it scored (0 for the cannon). */
+  pts: number;
 }
 
 export interface StepEvents {
@@ -278,7 +280,7 @@ export function step(s: State, dt: number): StepEvents {
           gone = true;
           s.score += pointsFor(rowsFor(s.d), k.r);
           ev.hit = true;
-          ev.pops.push({ ...p, k: k.k });
+          ev.pops.push({ ...p, k: k.k, pts: pointsFor(rowsFor(s.d), k.r) });
         }
       }
       // Shots cancel each other out.
@@ -301,7 +303,7 @@ export function step(s: State, dt: number): StepEvents {
       s.lives--;
       s.safe = SAFE_S;
       ev.hurt = true;
-      ev.pops.push({ x: s.px, y: CANNON_Y, k: -1 });
+      ev.pops.push({ x: s.px, y: CANNON_Y, k: -1, pts: 0 });
       if (s.lives <= 0) {
         ev.over = true;
         return ev;

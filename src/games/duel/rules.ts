@@ -10,7 +10,7 @@ export const PADDLE_H = 10;
 export const YOU_Y = 368;
 export const AI_Y = 22;
 /** Seconds the ball waits in the middle before a serve. */
-const SERVE_S = 1.1;
+export const SERVE_S = 1.1;
 /** Keyboard paddle speed, and the fastest a dragged paddle catches up with the finger. */
 const KEY_SPEED = 400;
 const DRAG_SPEED = 1100;
