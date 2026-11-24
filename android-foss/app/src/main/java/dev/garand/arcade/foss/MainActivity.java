@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(BundleUpdaterPlugin.class);
         super.onCreate(savedInstanceState);
 
         // Back button: close an open sheet, else go back a page (the app routes by path, so every
