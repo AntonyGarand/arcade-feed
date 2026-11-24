@@ -4,8 +4,11 @@ import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
 import { gestures, keyDir, type Point } from '../../kits/gesture/gesture';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { glyphPath } from '../../kits/glyph/glyph';
 import { sfx } from '../../kits/sound/sound';
+import { drawHazards, drawMoles, drawStreak } from './draw';
+import { KIND_NAMES, POWER_NAMES } from './names';
 import {
   BRUSH,
   CELL,
@@ -17,6 +20,7 @@ import {
   EMPTY,
   GEM_POINTS,
   H,
+  LAVA,
   needFor,
   PCT_POINTS,
   ROCK,
@@ -25,6 +29,7 @@ import {
   SETTLE_S,
   SLUDGE,
   step,
+  STREAK_TIERS,
   W,
   WATER,
 } from './rules';
@@ -64,12 +69,16 @@ export const dig: GameDef = {
         'L’eau qui atteint une gemme la récolte : creusez un petit creux jusqu’à chacune.',
       ),
       L(
-        `Once the water is flowing, if it stays still for ${SETTLE_S} seconds while you don’t dig, the run ends.`,
-        `Une fois que l’eau coule, si elle reste immobile ${SETTLE_S} secondes sans que vous creusiez, la partie se termine.`,
+        'Red lava eats water too, but hardens into rock where it’s hit. Moles crawl for your gems: dig at one to send it home, or wash it away.',
+        'La lave rouge mange aussi l’eau, mais durcit en roche là où elle est touchée. Les taupes rampent vers vos gemmes : creusez dessus pour les renvoyer, ou noyez-les.',
       ),
       L(
-        'Keyboard: arrows or WASD move the digger, which digs as it goes; P to pause.',
-        'Clavier : les flèches ou WASD déplacent la pelle, qui creuse en avançant; P pour la pause.',
+        `Keep the water pouring into the pipe: every ${STREAK_TIERS[0] * 5}% in one go unlocks a reward: harmless hazards, water points ×2, then a gem magnet.`,
+        `Gardez l’eau qui coule dans le tuyau : chaque tranche de ${STREAK_TIERS[0] * 5} % d’un coup débloque une prime : dangers inoffensifs, points d’eau ×2, puis un aimant à gemmes.`,
+      ),
+      L(
+        `Once the water is flowing, if it stays still for ${SETTLE_S} seconds while you don’t dig, the run ends.`,
+        `Une fois que l’eau coule, si elle reste immobile ${SETTLE_S} secondes sans que vous creusiez, la partie se termine.`,
       ),
     ],
     tips: [
@@ -81,13 +90,23 @@ export const dig: GameDef = {
         `${PCT_POINTS} points per percent of the water delivered, ${GEM_POINTS} per gem.`,
         `${PCT_POINTS} points par pourcentage d’eau livrée, ${GEM_POINTS} par gemme.`,
       ),
+      L(
+        'Keyboard: arrows or WASD move the digger, which digs as it goes; P to pause.',
+        'Clavier : les flèches ou WASD déplacent la pelle, qui creuse en avançant; P pour la pause.',
+      ),
     ],
   }),
-  stars: (d) => [GEM_POINTS + (needFor(d) + 5) * PCT_POINTS, 3 * GEM_POINTS + cleanFor(d) * PCT_POINTS],
+  // Three stars take every gem and the water in one go (the flow combo's double points from 30 % on).
+  stars: (d) => [
+    GEM_POINTS + (needFor(d) + 15) * PCT_POINTS,
+    3 * GEM_POINTS + cleanFor(d) * PCT_POINTS + (cleanFor(d) - STREAK_TIERS[1] * 5) * PCT_POINTS,
+  ],
   par: (d) => byLevel(d, [25, 30, 35, 45, 55]),
   pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     const need = needFor(ctx.difficulty);
@@ -113,6 +132,9 @@ export const dig: GameDef = {
     let digT = -1;
     let sludgeT = -1;
     let arrived = false;
+    let bonks = 0;
+    let shownStreak = 0;
+    let lastDig: Point = { x: 0, y: 0 };
 
     const pct = () => Math.floor((100 * s.delivered) / s.total);
     const status = () => {
@@ -173,6 +195,9 @@ export const dig: GameDef = {
       discs((k) => k === ROCK, CELL * 0.8, rock);
       discs((k) => k === SLUDGE, CELL * 0.95, st.edge);
       discs((k) => k === SLUDGE, CELL * 0.8, st.base);
+      const lt = arena.tone(c.bad);
+      discs((k) => k === LAVA, CELL * 0.95, lt.edge);
+      discs((k) => k === LAVA, CELL * 0.8, c.bad);
       // The pipe: a metal body with a dark grated mouth.
       const { x, y, w } = s.drain;
       arena.block(t, (x - 1) * CELL, y * CELL, (w + 2) * CELL, H - y * CELL + 8, c.cellAlt, 3);
@@ -225,7 +250,7 @@ export const dig: GameDef = {
           g.arc((b.x + 0.5 + (j ? 0.6 : -0.5)) * CELL, (b.y + 0.5 + b.r * 0.4 - f * b.r) * CELL, 0.6 + f * 1.2, 0, Math.PI * 2);
           g.fill();
         }
-      g.globalAlpha = 1;
+      drawHazards(g, arena, s);
 
       // Water: merged blobs with a darker underside (falling drops stretch into streams), and a
       // rippling sheen on resting surfaces.
@@ -268,6 +293,7 @@ export const dig: GameDef = {
         const x = (gem.x + 0.5) * CELL;
         const y = (gem.y + 0.5) * CELL;
         const fill = c.p[6];
+        if (gem.stolen && !gem.got) continue; // on a mole's back
         if (!gem.got) {
           g.globalAlpha = 0.35 + 0.25 * Math.sin(T * 3 + k);
           g.fillStyle = arena.tone(fill).glow;
@@ -284,6 +310,9 @@ export const dig: GameDef = {
           g.globalAlpha = 1;
         }
       }
+
+      drawMoles(g, arena, s, star);
+      drawStreak(g, arena, s);
 
       // Pipe meter: delivered share against the goal.
       const { x: dx, y: dy, w: dw } = s.drain;
@@ -362,6 +391,7 @@ export const dig: GameDef = {
 
     function digTo(a: Point, b: Point) {
       const n = digLine(s, a.x, a.y, b.x, b.y);
+      lastDig = b;
       if (!n) return;
       dirty = true;
       if (arena.time - digT > 0.15) {
@@ -441,6 +471,56 @@ export const dig: GameDef = {
           fx.burst(x, y, c.p[7], 6, 60, 2.5, 0.4, 'dot', -40);
           fx.burst(x, y, c.bad, 3, 50, 2, 0.35, 'spark', 0);
           fx.shake(1, 0.12);
+        }
+        // Lava hardened by water: steam puffs, and the earth repaints.
+        if (ev.steam.length) {
+          dirty = true;
+          for (const i of ev.steam.slice(0, 3)) {
+            const x = ((i % COLS) + 0.5) * CELL;
+            const y = (Math.floor(i / COLS) + 0.5) * CELL;
+            fx.burst(x, y, c.paper, 4, 50, 2.6, 0.6, 'dot', -60, -Math.PI / 2, 1.2);
+          }
+          if (arena.time - lostT > 0.15) sfx('splash', { vol: 0.4, pitch: -4 });
+        }
+        if (s.bonks !== bonks) {
+          bonks = s.bonks;
+          sfx('hit');
+          for (const m of s.moles) if (m.wait > 0 && !m.gone) fx.ring((m.x + 0.5) * CELL, (m.y + 0.5) * CELL, c.fg, 3, 16, 0.35, arena.lw);
+          fx.text(lastDig.x, lastDig.y - 10, L('Bonk!', 'Paf!'), c.fg, 13, 0.7);
+        }
+        for (const k of ev.stolen) {
+          const gem = s.gems[k];
+          sfx('error', { vol: 0.5 });
+          fx.text((gem.x + 0.5) * CELL, (gem.y + 0.5) * CELL - 10, L('Stolen!', 'Volée!'), c.bad, 12, 0.9);
+        }
+        for (const k of ev.washed) {
+          const m = s.moles[k];
+          sfx('splash', { vol: 0.5 });
+          fx.burst((m.x + 0.5) * CELL, (m.y + 0.5) * CELL, arena.tone(c.accent).hi, 10, 90, 2.5, 0.5, 'dot', 120);
+          fx.text((m.x + 0.5) * CELL, (m.y + 0.5) * CELL - 10, L('Washed away!', 'Emportée!'), c.accent, 11, 0.9);
+        }
+        // Flow combo: a ×N pop at the pipe each 5 %, a banner at each milestone.
+        if (s.streak !== shownStreak) {
+          if (s.streak > shownStreak) comboPop(fx, mouth.x + 18, mouth.y - 8, s.streak, s.double ? c.p[3] : c.accent);
+          shownStreak = s.streak;
+        }
+        if (ev.unlocked) comboTier(fx, ev.tier, c.p[3], POWER_NAMES[ev.unlocked]());
+        if (ev.magnet >= 0) {
+          const gem = s.gems[ev.magnet];
+          fx.ring(mouth.x, mouth.y, c.p[6], 4, 30, 0.5, arena.lw * 1.2);
+          fx.burst(
+            (gem.x + 0.5) * CELL,
+            (gem.y + 0.5) * CELL,
+            c.p[6],
+            8,
+            60,
+            2.4,
+            0.6,
+            'spark',
+            0,
+            Math.atan2(mouth.y - (gem.y + 0.5) * CELL, mouth.x - (gem.x + 0.5) * CELL),
+            0.5,
+          );
         }
         for (const k of ev.gems) {
           gotAt[k] = arena.time;

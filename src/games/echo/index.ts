@@ -4,21 +4,31 @@ import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { outBack } from '../../kits/arena/ease';
 import { gestures } from '../../kits/gesture/gesture';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { glyphPath } from '../../kits/glyph/glyph';
 import { haptic, sfx } from '../../kits/sound/sound';
+import { KIND_NAMES, POWER_NAMES } from './names';
 import {
+  beatIndex,
+  COMBO_TIERS,
   createLevel,
+  ghost,
+  GOLD_POINTS,
   IDLE_S,
   lenOf,
   lit,
   livesFor,
   maxScore,
+  multOf,
   PERFECT_POINTS,
+  playback,
   press,
   ROUND_POINTS,
   runSeconds,
   step,
   TAP_POINTS,
+  wanted,
+  wantIndex,
   type PressResult,
 } from './rules';
 
@@ -62,10 +72,17 @@ export const echo: GameDef = {
         `A wrong pad (or waiting over ${IDLE_S} s) costs a heart, and the round plays again.`,
         `Une mauvaise pastille (ou plus de ${IDLE_S} s d’attente) coûte un cœur, et la ronde rejoue.`,
       ),
-      L('Tap a pad to press it.', 'Touchez une pastille pour l’appuyer.'),
       L(
-        'Keyboard: number keys 1 to 8 press the numbered pads, P to pause.',
-        'Clavier : les touches 1 à 8 appuient sur les pastilles numérotées, P pour la pause.',
+        'Levels vary: quicker playbacks, answering backwards, pads that trade places, grey decoy flashes to ignore.',
+        'Les niveaux varient : lectures plus rapides, réponse à rebours, pastilles qui changent de place, leurres gris à ignorer.',
+      ),
+      L(
+        `Right taps in a row unlock rewards: ${COMBO_TIERS[0]} a shield, ${COMBO_TIERS[1]} points ×2, ${COMBO_TIERS[2]} hints, ${COMBO_TIERS[3]} a slow replay, ${COMBO_TIERS[4]} a heart.`,
+        `Les bonnes touches d’affilée débloquent des primes : ${COMBO_TIERS[0]} un bouclier, ${COMBO_TIERS[1]} points ×2, ${COMBO_TIERS[2]} des indices, ${COMBO_TIERS[3]} une lecture lente, ${COMBO_TIERS[4]} un cœur.`,
+      ),
+      L(
+        'Tap a pad to press it. Keyboard: number keys 1 to 8 press the numbered pads, P to pause.',
+        'Touchez une pastille pour l’appuyer. Clavier : les touches 1 à 8 appuient sur les pastilles numérotées, P pour la pause.',
       ),
     ],
     tips: [
@@ -74,15 +91,22 @@ export const echo: GameDef = {
         `Chaque nouvelle étape vaut ${TAP_POINTS}, chaque ronde ${ROUND_POINTS} × son numéro, plus ${PERFECT_POINTS} si vous la réussissez du premier coup.`,
       ),
       L(
+        `A step with a gold star pays ${GOLD_POINTS} more the first time you get it right.`,
+        `Une étape marquée d’une étoile dorée rapporte ${GOLD_POINTS} de plus la première fois que vous la réussissez.`,
+      ),
+      L(
         'Say the shapes (or hum the colours) under your breath: it helps you remember.',
         'Nommez les formes (ou les couleurs) à voix basse : ça aide à retenir.',
       ),
     ],
   }),
-  stars: (d) => [maxScore(d) - PERFECT_POINTS, maxScore(d)],
+  // Three stars for a perfect run (combo rewards included); a slip or a broken combo still makes two.
+  stars: (d) => [Math.round(maxScore(d) * 0.75), maxScore(d)],
   par: (d) => Math.round(runSeconds(d)),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const n = s.n;
     const max = livesFor(ctx.difficulty);
     const arena = new Arena(ctx.root, W, H, () => draw());
@@ -90,11 +114,13 @@ export const echo: GameDef = {
     const ring = n <= 4 ? 92 : n <= 6 ? 94 : 104;
     const padR = Math.min(56, ring * Math.sin(Math.PI / n) * 0.86);
     const hubR = ring - padR - 8;
-    // Pads clockwise around the ring from the top (just left of it for an even count).
-    const pads = Array.from({ length: n }, (_, k) => {
+    // Ring slots clockwise from the top (just left of it for an even count). Pad k sits on slot
+    // s.slot[k] and glides there when pads trade places.
+    const slots = Array.from({ length: n }, (_, k) => {
       const a = -Math.PI / 2 - (n % 2 ? 0 : Math.PI / n) + (k * Math.PI * 2) / n;
       return { x: MID + Math.cos(a) * ring, y: CY + Math.sin(a) * ring };
     });
+    const pads = slots.map((p) => ({ ...p }));
     /** Per pad: a press / playback pulse, 1 → 0. */
     const pulse = new Float32Array(n);
     /** Pads tapped right this attempt, for the step pips. */
@@ -119,6 +145,37 @@ export const echo: GameDef = {
       const text = [`${L('Round', 'Ronde')} ${s.round}/${s.rounds}`, turn].filter(Boolean).join(' · ');
       if (text !== shown) ctx.status((shown = text));
     };
+
+    /** A decoy flash: the pad goes grey and hatched, with a dashed rim (not part of the sequence). */
+    function drawGhost(g: CanvasRenderingContext2D, k: number) {
+      const c = arena.colors;
+      const { x, y } = pads[k];
+      g.save();
+      g.globalAlpha = 0.9;
+      g.fillStyle = c.muted;
+      g.beginPath();
+      g.arc(x, y, padR, 0, Math.PI * 2);
+      g.fill();
+      g.clip();
+      g.strokeStyle = c.cellAlt;
+      g.lineWidth = arena.lw * 0.8;
+      g.beginPath();
+      for (let o = -padR * 2; o < padR * 2; o += 7) {
+        g.moveTo(x + o, y - padR);
+        g.lineTo(x + o + padR, y + padR);
+      }
+      g.stroke();
+      g.restore();
+      g.strokeStyle = c.fg;
+      g.lineWidth = arena.lw * 1.2;
+      g.setLineDash([5, 4]);
+      g.lineDashOffset = arena.time * 30;
+      g.beginPath();
+      g.arc(x, y, padR + 5, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+      g.lineDashOffset = 0;
+    }
 
     function drawPad(g: CanvasRenderingContext2D, k: number, on: boolean) {
       const c = arena.colors;
@@ -177,6 +234,18 @@ export const echo: GameDef = {
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       g.fillText(String(k + 1), x, y + r * 0.7);
+      // Hint (a combo reward): the pad to tap next breathes a dashed halo on your turn.
+      if (s.hint > 0 && s.phase === 'input' && wanted(s) === k) {
+        g.strokeStyle = c.accent;
+        g.lineWidth = arena.lw * 1.4;
+        g.globalAlpha = 0.55 + 0.35 * Math.sin(arena.time * 6);
+        g.setLineDash([4, 4]);
+        g.beginPath();
+        g.arc(x, y, r + 9, 0, Math.PI * 2);
+        g.stroke();
+        g.setLineDash([]);
+        g.globalAlpha = 1;
+      }
     }
 
     /** The prompt above the pads: what to do right now, and in which colour. */
@@ -186,7 +255,7 @@ export const echo: GameDef = {
       if (end === 'lose') return [L('Out of hearts', 'Plus de cœurs'), c.bad];
       switch (s.phase) {
         case 'input':
-          return [L('Your turn!', 'À vous!'), c.fg];
+          return [s.kind === 'reverse' ? L('Your turn: backwards!', 'À vous : à rebours!') : L('Your turn!', 'À vous!'), c.fg];
         case 'good':
           return [perfect ? L('Perfect!', 'Parfait!') : L('Got it!', 'Réussi!'), c.good];
         case 'bad':
@@ -195,7 +264,41 @@ export const echo: GameDef = {
             c.bad,
           ];
         default:
-          return [L('Watch…', 'Regardez…'), c.muted];
+          return [s.slow > 0 ? L('Watch… (slow)', 'Regardez… (lent)') : L('Watch…', 'Regardez…'), c.muted];
+      }
+    }
+
+    /** Combo rewards around the hub: a shield bubble, the ×2 badge (rounds left), the combo meter. */
+    function drawRewards(g: CanvasRenderingContext2D, good: boolean) {
+      const c = arena.colors;
+      if (s.shield) {
+        g.strokeStyle = c.p[5];
+        g.lineWidth = arena.lw * 1.6;
+        g.globalAlpha = 0.7 + 0.2 * Math.sin(arena.time * 4);
+        g.beginPath();
+        g.arc(MID, CY, hubR + 9, 0, Math.PI * 2);
+        g.stroke();
+        g.globalAlpha = 1;
+      }
+      if (s.dbl > 0 && !good) {
+        const bx = MID + hubR * 0.85;
+        const by = CY - hubR * 0.85;
+        arena.disc(g, bx, by, 11, c.p[3]);
+        g.fillStyle = c.coal;
+        g.font = `900 11px ${arena.family}`;
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.fillText('×2', bx, by + 0.5);
+        for (let i = 0; i < s.dbl; i++) arena.disc(g, bx - 4 + i * 8, by + 15, 2.2, c.p[3]);
+      }
+      // Combo meter: a thin bar under the prompt, filling towards the next milestone.
+      const next = COMBO_TIERS[s.tier] as number | undefined;
+      if (s.combo > 0 && next) {
+        const prev = s.tier ? COMBO_TIERS[s.tier - 1] : 0;
+        g.fillStyle = c.cellAlt;
+        g.fillRect(MID - 50, 44, 100, 4);
+        g.fillStyle = multOf(s) > 1 ? c.p[3] : c.accent;
+        g.fillRect(MID - 50, 44, (100 * (s.combo - prev)) / (next - prev), 4);
       }
     }
 
@@ -205,7 +308,11 @@ export const echo: GameDef = {
       const c = arena.colors;
       arena.field(g, 0, 0, W, H, 25, 0, false);
       const on = lit(s);
-      for (let k = 0; k < n; k++) drawPad(g, k, k === on || (k === tapped.pad && tapped.t > 0));
+      const fake = ghost(s);
+      for (let k = 0; k < n; k++) {
+        drawPad(g, k, k === on || (k === tapped.pad && tapped.t > 0));
+        if (k === fake) drawGhost(g, k);
+      }
 
       // Hub: the round number, coloured by the phase, with the idle clock around it on your turn.
       const good = s.phase === 'good' || end === 'win';
@@ -238,6 +345,7 @@ export const echo: GameDef = {
         g.stroke();
         g.lineCap = 'butt';
       }
+      drawRewards(g, good);
 
       // After a slip, ring the pad you should have tapped and cross the one you did.
       if (s.phase === 'bad' && s.want >= 0) {
@@ -293,10 +401,12 @@ export const echo: GameDef = {
       const gap = pr * 2 + 6;
       const x0 = MID - ((len - 1) * gap) / 2;
       const py = H - 20;
-      const played = s.phase === 'show' ? Math.floor(s.t / s.beat) : -1;
+      const bi = beatIndex(s);
+      const played = bi < 0 ? -1 : playback(s).filter((b, j) => j <= bi && !b.fake).length - 1;
+      const back = s.kind === 'reverse';
       for (let i = 0; i < len; i++) {
         const x = x0 + i * gap;
-        const done = good || (s.phase === 'input' && i < s.pos);
+        const done = good || (s.phase === 'input' && (back ? i >= len - s.pos : i < s.pos));
         if (done) arena.ball(g, x, py, pr, c.p[TONE[taps[i] ?? s.seq[i]]], false);
         else if (i <= played) arena.ball(g, x, py, pr, c.muted, false);
         else {
@@ -306,7 +416,17 @@ export const echo: GameDef = {
           g.arc(x, py, pr * 0.8, 0, Math.PI * 2);
           g.stroke();
         }
-        if (s.phase === 'input' && i === s.pos) {
+        const gi = s.gold.indexOf(i);
+        if (gi >= 0 && !s.goldGot[gi]) {
+          // A golden step: a little star over its pip.
+          g.fillStyle = c.p[3];
+          g.strokeStyle = c.ink;
+          g.lineWidth = arena.lw * 0.5;
+          glyphPath(g, 4, x, py - pr - 5, 3.6);
+          g.fill();
+          g.stroke();
+        }
+        if (s.phase === 'input' && i === wantIndex(s)) {
           g.strokeStyle = c.fg;
           g.lineWidth = arena.lw * 0.8;
           g.beginPath();
@@ -321,6 +441,19 @@ export const echo: GameDef = {
       if (!out) return;
       const c = arena.colors;
       ctx.score(s.score);
+      if (out === 'shield') {
+        // The shield pops instead of a heart; carry on from the same step.
+        fx.ring(MID, CY, c.p[5], hubR + 9, ring, 0.45, arena.lw * 1.4);
+        fx.text(MID, CY - hubR - 10, L('Shield!', 'Bouclier!'), c.p[5], 15, 0.9);
+        fx.shake(2, 0.2);
+        haptic(25);
+        if (s.got >= 0) fx.burst(pads[s.got].x, pads[s.got].y, c.muted, 8, 100, 2.5, 0.4, 'spark', 0);
+      }
+      if (s.unlocked) {
+        comboTier(fx, s.fired, c.p[3], POWER_NAMES[s.unlocked]());
+        if (s.unlocked === 'heart') ctx.lives(s.lives, max);
+        s.unlocked = '';
+      }
       if (out === 'slip' || out === 'lose') {
         ctx.lives(s.lives, max);
         fx.shake(4, 0.3);
@@ -355,10 +488,11 @@ export const echo: GameDef = {
       const before = s.score;
       const at = s.pos;
       const out = press(s, k);
-      if (out === 'slip' || out === 'lose') sfx('error');
+      if (out === 'slip' || out === 'lose' || out === 'shield') sfx('error');
       else {
         const tone = arena.colors.p[TONE[k]];
-        taps[at] = k;
+        taps[s.kind === 'reverse' ? lenOf(s) - at - 1 : at] = k;
+        comboPop(fx, pads[k].x, pads[k].y - padR * 0.6, s.combo, multOf(s) > 1 ? arena.colors.p[3] : arena.colors.accent);
         sfx('combo', { step: k + 1 });
         fx.ring(pads[k].x, pads[k].y, tone, padR * 0.8, padR * 1.3, 0.3, arena.lw * 1.2);
         fx.burst(pads[k].x, pads[k].y, arena.tone(tone).hi, 6, 90, 2.5, 0.35, 'dot', 0);
@@ -391,16 +525,27 @@ export const echo: GameDef = {
         const phase = s.phase;
         const ev = step(s, dt);
         arena.update(dt);
-        for (let k = 0; k < n; k++) pulse[k] = Math.max(0, pulse[k] - dt * 5);
+        for (let k = 0; k < n; k++) {
+          pulse[k] = Math.max(0, pulse[k] - dt * 5);
+          // Glide towards the pad's slot (pads trade places between rounds on a shuffle level).
+          const to = slots[s.slot[k]];
+          const f = Math.min(1, dt * 6);
+          pads[k].x += (to.x - pads[k].x) * f;
+          pads[k].y += (to.y - pads[k].y) * f;
+        }
         if (ev.phase && s.phase === 'show') taps = [];
         if (s.phase === 'show') {
-          const i = Math.floor(s.t / s.beat);
+          const i = beatIndex(s);
           const k = lit(s);
           if (i !== heard && k >= 0) {
             heard = i;
             pulse[k] = 1;
             sfx('combo', { step: k + 1 });
             fx.ring(pads[k].x, pads[k].y, arena.colors.p[TONE[k]], padR, padR * 1.35, 0.35, arena.lw * 1.2);
+          } else if (i !== heard && ghost(s) >= 0) {
+            // A decoy: a flat buzz, no ring.
+            heard = i;
+            sfx('tick', { vol: 0.5, pitch: -3 });
           }
         } else heard = -1;
         // The last seconds of the idle clock tick.

@@ -4,8 +4,10 @@ import { btn } from '../../core/pad';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { outBack } from '../../kits/arena/ease';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
+  CHAIN_WINDOW,
   createLevel,
   DRAG_FULL,
   FOOT_X,
@@ -20,11 +22,36 @@ import {
   SAFE_VX,
   SAFE_VY,
   SHIP_R,
+  SLOW_S,
   slowEnough,
   step,
   W,
   windNow,
+  type KindId,
+  type Reward,
 } from './rules';
+
+/** What each kind of level is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [L('Classic', 'Classique'), L('Rough ground, flat pads: pick one.', 'Sol accidenté, plateformes plates : choisissez.')],
+  canyon: () => [L('Canyon', 'Canyon'), L('Each pad sits deep between rock spires.', 'Chaque plateforme est au creux de pics rocheux.')],
+  moving: () => [
+    L('Moving pad', 'Plateforme mobile'),
+    L('The best pad slides along its rail.', 'La meilleure plateforme glisse sur son rail.'),
+  ],
+  moon: () => [L('Moon', 'Lune'), L('Low gravity, a small tank, no wind.', 'Faible gravité, petit réservoir, pas de vent.')],
+  storm: () => [L('Storm', 'Tempête'), L('Strong wind that swings side to side.', 'Un vent fort qui change de bord.')],
+  asteroids: () => [
+    L('Asteroids', 'Astéroïdes'),
+    L('Dodge the rocks drifting across the sky.', 'Évitez les roches qui dérivent dans le ciel.'),
+  ],
+};
+
+const REWARD_NAMES: Record<Reward, () => string> = {
+  refill: () => L('Tank refilled!', 'Le plein!'),
+  shield: () => L('Shield!', 'Bouclier!'),
+  slow: () => L('Slow motion!', 'Ralenti!'),
+};
 
 /** Landing score at a level for a pad multiplier, the fuel share left and softness (0–1). */
 const scoreAt = (d: Difficulty, mult: number, fuel: number, soft: number) =>
@@ -62,6 +89,10 @@ export const lander: GameDef = {
         'Un écrasement coûte un essai; le suivant repart du début avec le plein.',
       ),
       L(
+        'Fly through crystals for points and fuel cans for a quarter tank. Each level has a twist: canyon, moving pad, Moon, storm or asteroids.',
+        'Traversez les cristaux pour des points et les bidons pour un quart de réservoir. Chaque niveau a sa variante : canyon, plateforme mobile, Lune, tempête ou astéroïdes.',
+      ),
+      L(
         'Keyboard: ↑, W or Space for the engine, ← → or A D to tilt, P to pause.',
         'Clavier : ↑, W ou Espace pour le moteur, ← → ou A D pour pencher, P pour la pause.',
       ),
@@ -75,12 +106,17 @@ export const lander: GameDef = {
         'Score: (100 + up to 150 for fuel left + up to 50 for softness) × the pad’s multiplier.',
         'Pointage : (100 + jusqu’à 150 pour le carburant restant + jusqu’à 50 pour la douceur) × le multiplicateur.',
       ),
+      L(
+        'Grab pickups in a quick chain: 3 refills the tank, 5 gives a shield against one hit, 7 slows time down.',
+        'Ramassez les bonus en chaîne rapide : 3 font le plein, 5 donnent un bouclier contre un coup, 7 ralentissent le temps.',
+      ),
     ],
   }),
   stars: (d) => {
     // Fuel share a clean run keeps: a lot on Easy, little on Master (less fuel, more gravity and wind).
     const fuel = byLevel(d, [0.6, 0.5, 0.4, 0.3, 0.2]);
-    return [scoreAt(d, 2, fuel / 2, 0.3), scoreAt(d, 3, fuel, 0.4)];
+    // Plus a share of the pickup points (a few crystals on the way for ★★, a short chain for ★★★).
+    return [scoreAt(d, 2, fuel / 2, 0.3) + 20, scoreAt(d, 3, fuel, 0.4) + 40];
   },
   par: (d) => Math.round(fuelFor(d) * 2 + 6),
   pad: () => ({
@@ -89,6 +125,8 @@ export const lander: GameDef = {
   }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const max = s.lives;
     const arena = new Arena(ctx.root, W, H, () => draw());
     const keys = new Set<string>();
@@ -111,7 +149,10 @@ export const lander: GameDef = {
           : [
               L(`Fuel ${fuel}%`, `Carburant ${fuel} %`),
               s.phase === 'boom' ? L('Crashed', 'Écrasé') : slowEnough(s) ? L('speed OK', 'vitesse OK') : L('too fast', 'trop vite'),
-            ].join(' · ');
+              s.chain > 1 ? L(`chain ${s.chain}`, `chaîne ${s.chain}`) : '',
+            ]
+              .filter(Boolean)
+              .join(' · ');
       if (text !== shown) ctx.status((shown = text));
     };
 
@@ -187,6 +228,55 @@ export const lander: GameDef = {
       g.fill();
       g.globalAlpha = 1;
       g.restore();
+      if (s.shield) {
+        g.strokeStyle = c.p[4];
+        g.lineWidth = arena.lw * 1.2;
+        g.globalAlpha = 0.55 + 0.3 * Math.sin(arena.time * 6);
+        g.beginPath();
+        g.arc(s.x, s.y + 1, SHIP_R + 8, 0, Math.PI * 2);
+        g.stroke();
+        g.globalAlpha = 1;
+      }
+    }
+
+    /** Crystals, fuel cans and drifting rocks. */
+    function drawSky(g: CanvasRenderingContext2D) {
+      const c = arena.colors;
+      for (const p of s.pickups) {
+        if (p.taken) continue;
+        const y = p.y + Math.sin(arena.time * 3 + p.x) * 2;
+        if (p.type === 'gem') {
+          g.fillStyle = c.p[4];
+          g.strokeStyle = c.ink;
+          g.lineWidth = arena.lw * 0.7;
+          g.beginPath();
+          g.moveTo(p.x, y - 7);
+          g.lineTo(p.x + 5, y);
+          g.lineTo(p.x, y + 7);
+          g.lineTo(p.x - 5, y);
+          g.closePath();
+          g.fill();
+          g.stroke();
+          g.fillStyle = arena.tone(c.p[4]).hi;
+          g.fillRect(p.x - 1.5, y - 3, 2, 3);
+        } else {
+          arena.block(g, p.x - 5, y - 7, 10, 14, c.good, 2);
+          g.fillStyle = c.coal;
+          g.font = font(8);
+          g.textAlign = 'center';
+          g.textBaseline = 'middle';
+          g.fillText('F', p.x, y + 1);
+          g.textBaseline = 'alphabetic';
+        }
+      }
+      for (const r of s.rocks) {
+        arena.ball(g, r.x, r.y, r.r, c.muted);
+        g.fillStyle = arena.tone(c.muted).lo;
+        g.beginPath();
+        g.arc(r.x - r.r * 0.3, r.y - r.r * 0.2, r.r * 0.28, 0, Math.PI * 2);
+        g.arc(r.x + r.r * 0.35, r.y + r.r * 0.3, r.r * 0.2, 0, Math.PI * 2);
+        g.fill();
+      }
     }
 
     function draw() {
@@ -202,6 +292,31 @@ export const lander: GameDef = {
         g.fill();
       }
       g.globalAlpha = 1;
+      if (s.kind === 'moon') {
+        // The Earth hangs in the sky.
+        arena.ball(g, W - 58, 92, 22, c.p[4]);
+        g.fillStyle = c.good;
+        g.beginPath();
+        g.ellipse(W - 64, 86, 8, 5, 0.4, 0, Math.PI * 2);
+        g.ellipse(W - 50, 100, 6, 4, -0.3, 0, Math.PI * 2);
+        g.fill();
+      }
+      if (s.swing) {
+        // Rain streaks blown by the wind.
+        const lean = windNow(s) * 0.9;
+        g.strokeStyle = c.muted;
+        g.lineWidth = 1;
+        g.globalAlpha = 0.45;
+        g.beginPath();
+        for (let i = 0; i < 26; i++) {
+          const x = ((i * 53 + arena.time * lean * 6) % (W + 40)) + (lean < 0 ? W + 40 : 0) - 20;
+          const y = (i * 89 + arena.time * 260) % H;
+          g.moveTo(x, y);
+          g.lineTo(x + lean, y + 10);
+        }
+        g.stroke();
+        g.globalAlpha = 1;
+      }
       // Ground: the textured field inside the terrain's outline.
       const ridge = () => s.ground.forEach((y, i) => g.lineTo((i * W) / (s.ground.length - 1), y));
       g.save();
@@ -238,6 +353,21 @@ export const lander: GameDef = {
           g.globalAlpha = 1;
         }
       }
+      for (const p of s.pads) {
+        if (!p.rail) continue;
+        // The moving pad's rail: a dashed track with stops at both ends.
+        const w = p.x1 - p.x0;
+        g.strokeStyle = g.fillStyle = padColor(p.mult);
+        g.lineWidth = arena.lw;
+        g.setLineDash([4, 4]);
+        g.beginPath();
+        g.moveTo(p.rail.lo, p.y + 6);
+        g.lineTo(p.rail.hi + w, p.y + 6);
+        g.stroke();
+        g.setLineDash([]);
+        for (const x of [p.rail.lo, p.rail.hi + w]) g.fillRect(x - 1.5, p.y - 2, 3, 10);
+      }
+      drawSky(g);
       for (const p of s.pads) {
         const fill = padColor(p.mult);
         const mid = (p.x0 + p.x1) / 2;
@@ -322,6 +452,22 @@ export const lander: GameDef = {
         g.moveTo(x + (k * len) / 2, 22);
         g.lineTo(x + (k * len) / 2 - k * 5, 26);
         g.stroke();
+      }
+      // Chain meter: drains until the chain of pickups runs out.
+      if (s.chain > 0 && s.phase === 'fly') {
+        g.fillStyle = c.p[4];
+        g.globalAlpha = 0.85;
+        g.fillRect(0, 33, W * Math.max(0, s.chainLeft / CHAIN_WINDOW), 3);
+        g.globalAlpha = 1;
+      }
+      // Slow motion: a tinted sky and a draining bar along the bottom.
+      if (s.slow > 0) {
+        g.fillStyle = c.p[4];
+        g.globalAlpha = 0.08;
+        g.fillRect(0, 0, W, H);
+        g.globalAlpha = 0.85;
+        g.fillRect(0, H - 4, W * (s.slow / SLOW_S), 4);
+        g.globalAlpha = 1;
       }
       arena.overlay(g);
     }
@@ -413,6 +559,25 @@ export const lander: GameDef = {
           sfx('boom');
           haptic(30);
           ctx.lives(s.lives, max);
+        }
+        for (const p of ev.picked) {
+          const col = p.type === 'gem' ? c.p[4] : c.good;
+          fx.burst(p.x, p.y, col, 10, 110, 3, 0.45, 'spark', 0);
+          fx.ring(p.x, p.y, col, 3, 20, 0.3, arena.lw);
+          if (s.chain >= 2) comboPop(fx, p.x, p.y - 6, s.chain, col);
+          else sfx('coin', { vol: 0.6 });
+          ctx.score(s.bonus);
+        }
+        if (ev.tier && ev.reward) {
+          comboTier(fx, ev.tier, c.p[4], REWARD_NAMES[ev.reward]());
+          fx.ring(s.x, s.y, ev.reward === 'refill' ? c.good : c.p[4], 6, 40, 0.5, arena.lw * 1.5);
+        }
+        if (ev.shielded) {
+          fx.ring(s.x, s.y, c.p[4], 8, 50, 0.45, arena.lw * 1.5);
+          fx.burst(s.x, s.y, c.p[4], 14, 140, 3, 0.5, 'spark', 0);
+          fx.shake(4, 0.3);
+          sfx('hit');
+          haptic(20);
         }
         if (ev.retry) {
           spawn = 0;

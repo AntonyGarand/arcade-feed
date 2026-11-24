@@ -4,33 +4,60 @@ import type { GameDef } from '../../core/types';
 import { Arena, type Trace } from '../../kits/arena/arena';
 import { approach, outBack } from '../../kits/arena/ease';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { haptic, sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
 import {
+  BLAST_POINTS,
+  CHAIN_TIERS,
+  CHAIN_WINDOW,
   createLevel,
   durationFor,
   H,
+  GRAZE_POINTS,
   incoming,
   LIFE_BONUS,
   livesFor,
+  MAGNET_S,
   PICKUP_LIFE_S,
   PICKUP_POINTS,
   PICKUP_R,
   pickupsFor,
   PLAYER_R,
+  SLOW_S,
   starsOut,
   step,
   W,
+  type KindId,
+  type Power,
 } from './rules';
 
 /** Glyph used for pickups (a five-point star). */
 const STAR = 4;
 /** The player is drawn a little larger than its hit circle: grazes that look close stay fair. */
 const DRAW_R = PLAYER_R + 2.5;
-/** A hazard passing this close (gap in world units) without a hit is a near miss. */
-const CLOSE = 7;
 /** The last seconds are counted down in the middle of the field. */
 const COUNTDOWN = 5;
+
+/** What each kind of run is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [L('Classic', 'Classique'), L('A bit of everything flies at you.', 'Un peu de tout vous fonce dessus.')],
+  rain: () => [L('Downpour', 'Averse'), L('A thick rain of small, fast blocks.', 'Une pluie serrée de petits blocs rapides.')],
+  sweep: () => [
+    L('Sweepers', 'Balayeurs'),
+    L('Walls slide across: find the gap.', 'Des murs traversent le terrain : trouvez l’ouverture.'),
+  ],
+  seekers: () => [L('Seekers', 'Chercheurs'), L('Darts that home in on you for a while.', 'Des dards qui vous pourchassent un moment.')],
+  bouncers: () => [L('Bouncers', 'Rebonds'), L('Rubber balls ricochet off every wall.', 'Des balles de caoutchouc rebondissent partout.')],
+  shrapnel: () => [L('Shrapnel', 'Éclats'), L('Bombs fall and burst into shards.', 'Des bombes tombent et éclatent en morceaux.')],
+};
+
+const POWER_NAMES: Record<Power, () => string> = {
+  shield: () => L('Shield!', 'Bouclier!'),
+  slow: () => L('Slow motion!', 'Ralenti!'),
+  magnet: () => L('Star magnet!', 'Aimant à étoiles!'),
+  blast: () => L('Blast!', 'Déflagration!'),
+};
 
 export const dodge: GameDef = {
   id: 'dodge',
@@ -45,14 +72,17 @@ export const dodge: GameDef = {
     goal: L('Stay in one piece until the timer runs out.', 'Tenez bon sans trop de coups jusqu’à la fin du chrono.'),
     steps: [
       L(
-        'Blocks fall from the top; later, discs fly in from the sides and bars come down with a gap.',
-        'Des blocs tombent du haut; plus tard, des disques arrivent des côtés et des barres descendent avec une ouverture.',
+        'Each run has its own mix: falling blocks, saws from the sides, bars or sliding walls with a gap, homing darts, bouncing balls, bombs that burst into shards.',
+        'Chaque partie a son mélange : blocs qui tombent, scies des côtés, barres ou murs mobiles avec une ouverture, dards chercheurs, balles qui rebondissent, bombes qui éclatent.',
       ),
       L(
         'A hit costs a heart and leaves you safe for a moment (you blink).',
         'Un coup coûte un cœur et vous protège un instant (vous clignotez).',
       ),
-      L('Grab the stars for bonus points.', 'Attrapez les étoiles pour des points en prime.'),
+      L(
+        'Near misses and stars build a chain: 3 gives a shield, 6 slow motion, 10 a star magnet, 15 a blast that clears the field.',
+        'Frôlements et étoiles font une chaîne : 3 donnent un bouclier, 6 le ralenti, 10 un aimant à étoiles, 15 une déflagration qui vide le terrain.',
+      ),
       L(
         'Drag anywhere: your dot moves with your finger without hiding under it.',
         'Glissez n’importe où : votre pastille suit votre doigt sans se cacher dessous.',
@@ -62,8 +92,12 @@ export const dodge: GameDef = {
     tips: [
       L('Red marks on the edges show what is about to come in.', 'Les marques rouges sur les bords annoncent ce qui s’en vient.'),
       L(
-        `10 points per second, ${PICKUP_POINTS} per star, ${LIFE_BONUS} per heart left at the end.`,
-        `10 points par seconde, ${PICKUP_POINTS} par étoile, ${LIFE_BONUS} par cœur restant à la fin.`,
+        `10 points per second, ${PICKUP_POINTS} per star, ${GRAZE_POINTS}+ per near miss, ${LIFE_BONUS} per heart left at the end.`,
+        `10 points par seconde, ${PICKUP_POINTS} par étoile, ${GRAZE_POINTS}+ par frôlement, ${LIFE_BONUS} par cœur restant à la fin.`,
+      ),
+      L(
+        'A hit ends the chain, and the shield takes the hit instead of a heart.',
+        'Un coup met fin à la chaîne; le bouclier encaisse le coup à la place d’un cœur.',
       ),
     ],
   }),
@@ -73,13 +107,16 @@ export const dodge: GameDef = {
     const lives = livesFor(d);
     return [
       base + Math.floor(picks * 0.4) * PICKUP_POINTS + (lives - 1) * LIFE_BONUS,
-      base + Math.floor(picks * 0.75) * PICKUP_POINTS + lives * LIFE_BONUS,
+      // Chain rewards (near misses, the magnet's star shower) are worth about this much more.
+      base + Math.floor(picks * 0.75) * PICKUP_POINTS + lives * LIFE_BONUS + 100,
     ];
   },
   par: (d) => durationFor(d),
   pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const max = livesFor(ctx.difficulty);
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
@@ -94,9 +131,6 @@ export const dodge: GameDef = {
     let trailN = 0;
     let trailAt = 0;
     let ended = false;
-    /** Hazards that already sparked a near miss, and when the last one did (so they don't spam). */
-    const grazed = new WeakSet<object>();
-    let grazeAt = -9;
     /** Last countdown second announced. */
     let counted = COUNTDOWN + 1;
     /** Hurt wobble on the player, 1 → 0. */
@@ -107,7 +141,13 @@ export const dodge: GameDef = {
       const left = Math.max(0, Math.ceil(s.duration - s.time));
       shown = left;
       ctx.status(
-        [P(left, ['s left', 's left'], ['s restante', 's restantes']), P(s.pickups, ['star', 'stars'], ['étoile', 'étoiles'])].join(' · '),
+        [
+          P(left, ['s left', 's left'], ['s restante', 's restantes']),
+          P(s.pickups, ['star', 'stars'], ['étoile', 'étoiles']),
+          s.chain > 1 ? L(`chain ${s.chain}`, `chaîne ${s.chain}`) : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
       );
     };
 
@@ -161,6 +201,67 @@ export const dodge: GameDef = {
       g.restore();
     }
 
+    /** A homing dart pointing where it flies, its eye lit while it still steers. */
+    function dart(g: CanvasRenderingContext2D, x: number, y: number, r: number, a: number, homing: boolean) {
+      const c = arena.colors;
+      const t = arena.tone(c.bad);
+      g.save();
+      g.translate(x, y);
+      g.rotate(a);
+      g.beginPath();
+      g.moveTo(r * 1.35, 0);
+      g.lineTo(-r * 0.9, r * 0.95);
+      g.lineTo(-r * 0.45, 0);
+      g.lineTo(-r * 0.9, -r * 0.95);
+      g.closePath();
+      g.fillStyle = c.bad;
+      g.fill();
+      g.strokeStyle = t.edge;
+      g.lineWidth = arena.lw * 0.7;
+      g.lineJoin = 'round';
+      g.stroke();
+      g.fillStyle = homing ? c.paper : t.lo;
+      g.beginPath();
+      g.arc(r * 0.25, 0, r * 0.28, 0, Math.PI * 2);
+      g.fill();
+      if (homing) {
+        g.fillStyle = c.coal;
+        g.beginPath();
+        g.arc(r * 0.32, 0, r * 0.13, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.restore();
+    }
+
+    /** A bomb with a sparking fuse, blinking faster as it nears the height it bursts at. */
+    function bomb(g: CanvasRenderingContext2D, x: number, y: number, r: number, toGo: number) {
+      const c = arena.colors;
+      const hot = toGo < 60 && Math.floor(arena.time * (toGo < 25 ? 16 : 8)) % 2 === 0;
+      arena.ball(g, x, y, r, hot ? c.bad : c.coal);
+      g.strokeStyle = c.accent;
+      g.lineWidth = arena.lw * 0.6;
+      g.beginPath();
+      g.moveTo(x + r * 0.4, y - r * 0.8);
+      g.quadraticCurveTo(x + r * 0.9, y - r * 1.5, x + r * 1.2, y - r * 1.2);
+      g.stroke();
+      if (Math.sin(arena.time * 20 + x) > 0) {
+        g.fillStyle = c.accent;
+        g.fillRect(x + r * 1.1, y - r * 1.4, 3, 3);
+      }
+      // Where it bursts: a faint ring of the blast it's about to throw.
+      if (toGo < 80) {
+        g.strokeStyle = c.bad;
+        g.lineWidth = arena.lw * 0.6;
+        g.globalAlpha = 0.35 * (1 - Math.max(0, toGo) / 80);
+        g.setLineDash([3, 4]);
+        g.beginPath();
+        g.arc(x, y + Math.max(0, toGo), 34, 0, Math.PI * 2);
+        g.stroke();
+        g.setLineDash([]);
+        g.globalAlpha = 1;
+      }
+    }
+
     function draw() {
       const g = arena.begin();
       if (!g) return;
@@ -172,6 +273,33 @@ export const dodge: GameDef = {
       const f = Math.min(1, s.time / s.duration);
       const left = s.duration - s.time;
       if (f > 0) arena.block(g, -4, -4, W * f + 4, 11, left < COUNTDOWN ? c.good : c.accent, 4, false, 0.6);
+      // Slow motion: a cool wash over the field and its time left under the timer.
+      if (s.slow > 0) {
+        g.fillStyle = c.p[4];
+        g.globalAlpha = 0.1 * Math.min(1, s.slow * 2);
+        g.fillRect(0, 7, W, H - 7);
+        g.globalAlpha = 0.8;
+        g.fillRect(0, 7, (W * s.slow) / SLOW_S, 3);
+        g.globalAlpha = 1;
+      }
+      if (s.magnet > 0) {
+        g.fillStyle = c.p[3];
+        g.globalAlpha = 0.8;
+        g.fillRect(0, 10, (W * s.magnet) / MAGNET_S, 3);
+        g.globalAlpha = 1;
+      }
+      // The chain meter along the bottom: drains until the chain runs out, with the next milestone.
+      if (s.chain > 0 && !ended) {
+        const k = Math.max(0, s.chainLeft / CHAIN_WINDOW);
+        g.fillStyle = c.accent;
+        g.globalAlpha = 0.85;
+        g.fillRect(0, H - 4, W * k, 4);
+        g.globalAlpha = 1;
+        g.fillStyle = c.fg;
+        g.textAlign = 'left';
+        g.font = `800 11px ${arena.family}`;
+        g.fillText(s.tier < CHAIN_TIERS.length ? `×${s.chain} / ${CHAIN_TIERS[s.tier]}` : `×${s.chain}`, 6, H - 9);
+      }
       // The last seconds, big and faint behind the action.
       if (left < COUNTDOWN && left > 0 && !ended) {
         const n = Math.ceil(left);
@@ -219,6 +347,11 @@ export const dodge: GameDef = {
       g.globalAlpha = pulse;
       for (const z of incoming(s)) {
         g.beginPath();
+        if (z.kind === 'sweep') {
+          // A strip down the side it slides in from.
+          g.fillRect(z.vx > 0 ? 2 : W - 5, z.y + 2, 3, z.h - 4);
+          continue;
+        }
         if (z.kind === 'disc') {
           const y = z.y + z.h / 2;
           const x = z.vx > 0 ? 3 : W - 3;
@@ -240,14 +373,29 @@ export const dodge: GameDef = {
       }
       g.globalAlpha = 1;
       for (const z of s.live) {
-        if (z.kind === 'disc') saw(g, z.x + z.w / 2, z.y + z.h / 2, z.w / 2, arena.time * 7 * Math.sign(z.vx || 1));
-        else {
-          arena.block(g, z.x, z.y, z.w, z.h, c.bad, z.kind === 'bar' ? 2 : 4);
+        const zx = z.x + z.w / 2;
+        const zy = z.y + z.h / 2;
+        if (z.kind === 'disc' || z.kind === 'shard') saw(g, zx, zy, z.w / 2, arena.time * 7 * Math.sign(z.vx || 1));
+        else if (z.kind === 'seeker') dart(g, zx, zy, z.w / 2, Math.atan2(z.vy, z.vx), z.life > 0);
+        else if (z.kind === 'bomb') bomb(g, zx, zy, z.w / 2, z.life - zy);
+        else if (z.kind === 'bouncer') {
+          // A rubber ball with a spinning band, a little faded once it stops bouncing and heads out.
+          if (z.life <= 0) g.globalAlpha = 0.75;
+          arena.ball(g, zx, zy, z.w / 2, c.bad);
+          g.strokeStyle = arena.tone(c.bad).hi;
+          g.lineWidth = arena.lw * 0.8;
+          g.beginPath();
+          g.arc(zx, zy, z.w * 0.3, arena.time * 4, arena.time * 4 + Math.PI);
+          g.stroke();
+          g.globalAlpha = 1;
+        } else {
+          const flat = z.kind === 'bar' || z.kind === 'sweep';
+          arena.block(g, z.x, z.y, z.w, z.h, c.bad, flat ? 2 : 4);
           stripes(g, z.x, z.y, z.w, z.h - 2);
           g.strokeStyle = arena.tone(c.bad).edge;
           g.lineWidth = arena.lw * 0.8;
           g.beginPath();
-          g.roundRect(z.x, z.y, z.w, z.h, arena.r(z.kind === 'bar' ? 2 : 4));
+          g.roundRect(z.x, z.y, z.w, z.h, arena.r(flat ? 2 : 4));
           g.stroke();
         }
       }
@@ -263,6 +411,36 @@ export const dodge: GameDef = {
           g.fill();
         }
         g.globalAlpha = 1;
+        // Magnet: a dashed ring that turns, pulling stars in.
+        if (s.magnet > 0) {
+          g.strokeStyle = c.p[3];
+          g.globalAlpha = 0.45 * Math.min(1, s.magnet);
+          g.lineWidth = arena.lw * 0.6;
+          g.setLineDash([5, 7]);
+          g.lineDashOffset = -arena.time * 30;
+          g.beginPath();
+          g.arc(s.px, s.py, 40 + Math.sin(arena.time * 5) * 3, 0, Math.PI * 2);
+          g.stroke();
+          g.setLineDash([]);
+          g.lineDashOffset = 0;
+          g.globalAlpha = 1;
+        }
+        // The chain's shield: a hexagon around the dot until it takes a hit.
+        if (s.shield) {
+          g.fillStyle = arena.tone(c.good).glow;
+          g.strokeStyle = c.good;
+          g.lineWidth = arena.lw;
+          g.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const a = arena.time * 1.5 + (i * Math.PI) / 3;
+            const r = DRAW_R + 6;
+            if (i) g.lineTo(s.px + Math.cos(a) * r, s.py + Math.sin(a) * r);
+            else g.moveTo(s.px + Math.cos(a) * r, s.py + Math.sin(a) * r);
+          }
+          g.closePath();
+          g.fill();
+          g.stroke();
+        }
         // Safe after a hit: a shield bubble that fades as the safety runs out.
         if (s.invulnerable > 0) {
           g.strokeStyle = arena.tone(c.accent).hi;
@@ -329,6 +507,7 @@ export const dodge: GameDef = {
         const ox = s.px;
         const oy = s.py;
         const picks = s.pickups;
+        const chain = s.chain;
         const ev = step(s, dt);
         arena.update(dt);
         const c = arena.colors;
@@ -368,31 +547,48 @@ export const dodge: GameDef = {
           fx.burst(s.px, s.py, c.bad, 14, 150, 3.5, 0.5);
           fx.ring(s.px, s.py, c.bad, PLAYER_R, PLAYER_R * 4, 0.4, arena.lw * 1.4);
         }
-        // Near misses: a hazard brushing past the dot sparks (visual only, no points).
-        if (!ev.hurt && !s.invulnerable && arena.time - grazeAt > 0.5)
-          for (const z of s.live) {
-            if (grazed.has(z)) continue;
-            const zx = z.x + z.w / 2;
-            const zy = z.y + z.h / 2;
-            const gap =
-              z.kind === 'disc'
-                ? Math.hypot(zx - s.px, zy - s.py) - z.w / 2
-                : Math.hypot(s.px - Math.max(z.x, Math.min(s.px, z.x + z.w)), s.py - Math.max(z.y, Math.min(s.py, z.y + z.h)));
-            if (gap - PLAYER_R > CLOSE) continue;
-            grazed.add(z);
-            grazeAt = arena.time;
-            const a = Math.atan2(zy - s.py, zx - s.px);
-            fx.burst(s.px + Math.cos(a) * DRAW_R, s.py + Math.sin(a) * DRAW_R, c.fg, 6, 90, 2, 0.3, 'spark', 0, a + Math.PI, 1.6);
+        if (ev.shielded) {
+          haptic(40);
+          sfx('hit', { pitch: 6 });
+          fx.ring(s.px, s.py, c.good, DRAW_R + 6, PLAYER_R * 5, 0.45, arena.lw * 1.5);
+          fx.burst(s.px, s.py, c.good, 16, 160, 3, 0.5, 'spark', 0);
+          fx.text(s.px, s.py - DRAW_R - 12, L('blocked!', 'bloqué!'), c.good, 13);
+        }
+        // Near misses: sparks on the side the hazard brushed past, and the chain counts up.
+        for (const z of ev.grazes) {
+          const a = Math.atan2(z.y - s.py, z.x - s.px);
+          fx.burst(s.px + Math.cos(a) * DRAW_R, s.py + Math.sin(a) * DRAW_R, c.fg, 6, 90, 2, 0.3, 'spark', 0, a + Math.PI, 1.6);
+        }
+        if (ev.grazes.length) {
+          if (s.chain >= 2) comboPop(fx, s.px, s.py - DRAW_R - 6, s.chain, c.accent);
+          else {
             fx.text(s.px, s.py - DRAW_R - 10, L('close!', 'de justesse!'), c.fg, 12, 0.6);
             sfx('tick', { pitch: 7, vol: 0.6 });
-            break;
           }
+        }
+        for (const b of ev.bursts) {
+          fx.ring(b.x, b.y, c.bad, 4, 34, 0.35, arena.lw * 1.2);
+          fx.burst(b.x, b.y, c.accent, 12, 140, 3, 0.45, 'spark', 0);
+          sfx('boom', { vol: 0.6 });
+        }
+        if (ev.unlocked) {
+          comboTier(fx, ev.tier, c.accent, POWER_NAMES[ev.unlocked]());
+          if (ev.unlocked === 'blast') {
+            fx.ring(s.px, s.py, c.accent, PLAYER_R, W, 0.6, arena.lw * 2);
+            for (const b of ev.blasted) {
+              fx.burst(b.x, b.y, c.bad, 10, 150, 3.5, 0.5, 'square', 150);
+              fx.text(b.x, b.y, `+${BLAST_POINTS}`, c.fg, 11, 0.6);
+            }
+            sfx('boom');
+          } else if (ev.unlocked === 'shield') fx.ring(s.px, s.py, c.good, PLAYER_R, PLAYER_R * 4, 0.4, arena.lw);
+          else if (ev.unlocked === 'magnet') for (const p of starsOut(s)) fx.ring(p.x, p.y, c.p[3], 2, PICKUP_R * 2.5, 0.4, arena.lw);
+        }
         const left = Math.ceil(s.duration - s.time);
         if (left < counted && left <= COUNTDOWN && left > 0) {
           counted = left;
           sfx('tick', { pitch: 12 - left * 2 });
         }
-        if (ev.picked || left !== shown) status();
+        if (ev.picked || ev.grazes.length || ev.hurt || ev.shielded || left !== shown || (chain && !s.chain)) status();
         if (ev.won) {
           ended = true;
           for (let i = 0; i < 4; i++) fx.burst(s.px, s.py, c.p[i], 10, 190, 4, 0.9, 'square', 200);

@@ -2,7 +2,16 @@ import { telemetry } from '../../core/analytics';
 import { L, P } from '../../core/i18n';
 import { Rng } from '../../core/rng';
 import { getProfile, prefs, record, setLevel, stats, type Outcome } from '../../core/store';
-import { LEVEL_IDS, LEVEL_NAMES, starsFor, type Difficulty, type Stars, type GameDef, type GameInstance } from '../../core/types';
+import {
+  LEVEL_IDS,
+  LEVEL_NAMES,
+  starsFor,
+  type Difficulty,
+  type Stars,
+  type GameDef,
+  type GameInstance,
+  type Variant,
+} from '../../core/types';
 import { confetti } from '../../ui/confetti';
 import { cogIcon, h, s } from '../../ui/dom';
 import { helpButton } from '../../ui/help';
@@ -67,6 +76,8 @@ export class Card {
   phase: Phase = 'ready';
   private active = false;
   private score = 0;
+  /** The kind of level the game dealt (shown on the gate), if it named one. */
+  private variant: Variant | null = null;
   /** Bumped for every mount: callbacks from an older game instance are ignored. */
   private gen = 0;
   /** `gen` of the run already reported as left (scrolled past), so it's reported once. */
@@ -225,6 +236,7 @@ export class Card {
     this.mounted = true;
     this.phase = 'ready';
     this.score = 0;
+    this.variant = null;
     this.scoreVal.textContent = '0';
     this.el.classList.remove('is-cleared', 'is-lost', 'is-skipped');
     this.livesEl.hidden = true;
@@ -247,6 +259,9 @@ export class Card {
         lives: (left, max) => live() && this.syncLives(left, max),
         status: (t) => {
           if (live()) this.statusEl.textContent = t;
+        },
+        variant: (v) => {
+          if (gen === this.gen) this.variant = v;
         },
         win: () => live() && this.finish('cleared'),
         lose: () => live() && this.finish('lost'),
@@ -303,6 +318,14 @@ export class Card {
       h('div', { class: 'gate-art' }, gameArt(this.def)),
       h('p', { class: 'gate-name' }, this.def.name),
       h('p', { class: 'gate-rules' }, this.def.rules),
+      this.variant
+        ? h(
+            'p',
+            { class: 'gate-variant' },
+            h('strong', null, this.variant.name),
+            this.variant.blurb ? h('span', null, this.variant.blurb) : null,
+          )
+        : null,
       h(
         'p',
         { class: 'gate-goals' },
@@ -387,6 +410,7 @@ export class Card {
       'game.difficulty': this.level,
       'game.difficulty_name': LEVEL_IDS[this.level],
       'game.mode': this.opts.lab ? 'lab' : 'feed',
+      'game.variant': this.variant?.id ?? '',
     };
   }
 

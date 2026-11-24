@@ -5,11 +5,22 @@ import { Arena } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
 import { outBack } from '../../kits/arena/ease';
 import { DX, DY, gestures, keyDir, type Point } from '../../kits/gesture/gesture';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { haptic, sfx } from '../../kits/sound/sound';
+import { drawBonus, drawFlag, drawMine } from './draw';
+import { KIND_NAMES, POWER_NAMES } from './names';
 import {
   CELL_POINTS,
   CLEAN_BONUS,
+  CLOCK_S,
+  FREEZE_S,
+  GEM_POINTS,
   createLevel,
+  SCOUT_CELLS,
+  startCell,
+  STREAK_S,
+  STREAK_TIERS,
+  TIME_S,
   LIFE_BONUS,
   livesFor,
   minesFor,
@@ -65,6 +76,10 @@ export const mines: GameDef = {
         'Ouvrir une mine coûte une vie. Touchez un chiffre dont toutes les mines ont un drapeau pour ouvrir ses autres voisines.',
       ),
       L(
+        `Golden cells are always safe: an hourglass adds ${CLOCK_S} s, a gem ${GEM_POINTS} points. Some fields have holes: they aren’t cells.`,
+        `Les cases dorées sont toujours sûres : un sablier ajoute ${CLOCK_S} s, un joyau ${GEM_POINTS} points. Certains champs ont des trous : ce ne sont pas des cases.`,
+      ),
+      L(
         'Tap to open; hold a cell (or switch on the flag button) to plant a flag.',
         'Touchez pour ouvrir; maintenez une case (ou activez le bouton drapeau) pour planter un drapeau.',
       ),
@@ -74,6 +89,10 @@ export const mines: GameDef = {
       ),
     ],
     tips: [
+      L(
+        `Open cells quickly (under ${STREAK_S} s apart) for a streak: ${STREAK_TIERS[0]} freeze the clock ${FREEZE_S} s, ${STREAK_TIERS[1]} send a scout to open ${SCOUT_CELLS} safe cells, ${STREAK_TIERS[2]} add ${TIME_S} s.`,
+        `Ouvrez des cases rapidement (moins de ${STREAK_S} s d’écart) pour une série : ${STREAK_TIERS[0]} gèlent le chrono ${FREEZE_S} s, ${STREAK_TIERS[1]} envoient un éclaireur ouvrir ${SCOUT_CELLS} cases sûres, ${STREAK_TIERS[2]} ajoutent ${TIME_S} s.`,
+      ),
       L(
         'Compare two neighbouring numbers: the cells only one of them touches often settle it.',
         'Comparez deux chiffres voisins : les cases qu’un seul des deux touche règlent souvent la question.',
@@ -89,12 +108,15 @@ export const mines: GameDef = {
     const lives = livesFor(d);
     return [
       cells + (lives - 1) * LIFE_BONUS + (timeFor(d) - 2 * strongFor(d)) * TIME_POINTS,
-      cells + lives * LIFE_BONUS + CLEAN_BONUS + (timeFor(d) - strongFor(d)) * TIME_POINTS,
+      // A quick player also finds the bonus cells and freezes the clock once.
+      cells + lives * LIFE_BONUS + CLEAN_BONUS + (timeFor(d) - strongFor(d) + CLOCK_S + FREEZE_S) * TIME_POINTS + GEM_POINTS,
     ];
   },
   par: (d) => Math.round(strongFor(d) * 1.6),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const max = livesFor(ctx.difficulty);
     const arena = new Arena(ctx.root, W, H, () => draw());
     const cs = Math.floor(Math.min((W - 2 * PAD) / s.cols, (H - BAR - 2 * PAD) / s.rows));
@@ -121,14 +143,25 @@ export const mines: GameDef = {
 
     const button = { x: PAD, y: H - BAR + 6, w: 118, h: BAR - 14 };
 
+    /** What the status line last showed: frozen clock, streak running. */
+    let shownState = '';
+    const state = () => `${s.freeze > 0}${s.streak > 1 ? s.streak : 0}`;
     const status = () => {
       shown = Math.max(0, Math.ceil(s.limit - s.time));
+      shownState = state();
       if (!s.placed) {
         ctx.status(L(`Tap any cell to open an area · ${shown} s`, `Touchez une case pour ouvrir une zone · ${shown} s`));
         return;
       }
       ctx.status(
-        [P(Math.max(0, minesLeft(s)), ['mine left', 'mines left'], ['mine restante', 'mines restantes']), `${shown} s`].join(' · '),
+        [
+          P(Math.max(0, minesLeft(s)), ['mine left', 'mines left'], ['mine restante', 'mines restantes']),
+          `${shown} s`,
+          s.freeze > 0 ? L('frozen', 'gelé') : '',
+          s.streak > 1 ? L(`streak ${s.streak}`, `série ${s.streak}`) : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
       );
     };
 
@@ -156,6 +189,30 @@ export const mines: GameDef = {
         if (!ev.boom) sfx(ev.opened > 1 ? 'pop' : 'tick', { pitch: ev.opened > 1 ? Math.min(8, ev.opened / 4) : 0 });
         if (ev.opened > 1) fx.ring(cx, cy, c.accent, cs * 0.3, cs * (1.2 + Math.min(3, ev.opened / 8)), 0.45, arena.lw);
         fx.text(cx, cy - cs * 0.4, `+${ev.opened * CELL_POINTS}`, ev.opened > 8 ? c.accent : c.fg, ev.opened > 8 ? 14 : 11);
+      }
+      const centreOf = (i: number) => ({ x: ox + (i % s.cols) * cs + cs / 2, y: oy + Math.floor(i / s.cols) * cs + cs / 2 });
+      for (const b of ev.bonus) {
+        const p = centreOf(b.i);
+        const col = b.kind === 'clock' ? c.p[5] : c.p[3];
+        fx.burst(p.x, p.y, col, 12, 120, 3, 0.5, 'spark', 0);
+        fx.ring(p.x, p.y, col, cs * 0.2, cs * 0.9, 0.4, arena.lw);
+        fx.text(p.x, p.y - cs * 0.6, b.kind === 'clock' ? `+${CLOCK_S} s` : `+${GEM_POINTS}`, col, 15, 1);
+        sfx('coin', { pitch: b.kind === 'clock' ? 2 : 5 });
+      }
+      if (ev.opened && !ev.boom) comboPop(fx, cx + cs * 0.6, cy - cs * 0.6, s.streak, c.accent);
+      if (ev.power) {
+        const col = ev.power === 'freeze' ? c.p[5] : ev.power === 'scout' ? c.good : c.accent;
+        comboTier(fx, ev.tier, col, POWER_NAMES[ev.power]());
+        for (const j of ev.scouted) {
+          const p = centreOf(j);
+          fx.ring(p.x, p.y, c.good, cs * 0.2, cs * 1.4, 0.5, arena.lw * 1.3);
+        }
+        // The scout's cells ripple open from where they are.
+        for (let i = 0; i < n; i++)
+          if (s.open[i] && !shownOpen[i]) {
+            shownOpen[i] = true;
+            age[i] = -0.15;
+          }
       }
       if (ev.boom) {
         // Every mine that went off this time: a blast where it sits.
@@ -214,53 +271,6 @@ export const mines: GameDef = {
       }
     };
 
-    function drawFlag(g: CanvasRenderingContext2D, x: number, y: number, size: number, fill: string, k = 1) {
-      const c = arena.colors;
-      if (k <= 0.01) return;
-      const foot = y + size * 0.36;
-      g.save();
-      g.translate(x, foot);
-      g.scale(k, k);
-      g.translate(-x, -foot);
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.8;
-      g.lineCap = 'round';
-      g.beginPath();
-      g.moveTo(x - size * 0.22, foot);
-      g.lineTo(x - size * 0.22, y - size * 0.36);
-      g.moveTo(x - size * 0.34, foot);
-      g.lineTo(x + size * 0.1, foot);
-      g.stroke();
-      g.lineCap = 'butt';
-      // The cloth flutters a little.
-      const f = Math.sin(arena.time * 6 + x) * size * 0.03;
-      g.fillStyle = fill;
-      g.beginPath();
-      g.moveTo(x - size * 0.22, y - size * 0.36);
-      g.quadraticCurveTo(x + size * 0.05, y - size * 0.3 + f, x + size * 0.32, y - size * 0.18 + f);
-      g.lineTo(x - size * 0.22, y);
-      g.closePath();
-      g.fill();
-      g.stroke();
-      g.restore();
-    }
-
-    function drawMine(g: CanvasRenderingContext2D, x: number, y: number, size: number, fill: string) {
-      const c = arena.colors;
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw;
-      g.lineCap = 'round';
-      g.beginPath();
-      for (let k = 0; k < 4; k++) {
-        const a = (k * Math.PI) / 4;
-        g.moveTo(x - Math.cos(a) * size * 0.36, y - Math.sin(a) * size * 0.36);
-        g.lineTo(x + Math.cos(a) * size * 0.36, y + Math.sin(a) * size * 0.36);
-      }
-      g.stroke();
-      g.lineCap = 'butt';
-      arena.ball(g, x, y, size * 0.25, fill, false);
-    }
-
     function draw() {
       const g = arena.begin();
       if (!g) return;
@@ -279,19 +289,26 @@ export const mines: GameDef = {
         const mx = x + cs / 2;
         const my = y + cs / 2;
         const since = arena.time - struck[i];
+        if (s.hole[i]) {
+          // A hole in the field: the card shows through.
+          arena.box(g, x - 0.5, y - 0.5, cs + 1, cs + 1, c.cell, 0, false);
+          continue;
+        }
         if (s.boom[i]) {
           const k = since < 0.3 ? 1 + 0.25 * Math.sin((since / 0.3) * Math.PI) : 1;
           arena.box(g, x + 1.5, y + 1.5, cs - 3, cs - 3, c.bad, 4, false);
-          drawMine(g, mx, my, cs * k, c.coal);
+          drawMine(arena, g, mx, my, cs * k, c.coal);
           continue;
         }
         if (!s.open[i] || age[i] < 0) {
           // A tile sinks while it's held down.
           const down = i === press && !fired && held > 0.08 ? 1.5 : 0;
-          arena.block(g, x + 1.5, y + 1.5 + down, cs - 3, cs - 3 - down, tile, 4, !down);
+          const gold = s.bonus[i] && !s.flag[i];
+          arena.block(g, x + 1.5, y + 1.5 + down, cs - 3, cs - 3 - down, gold ? mix(tile, c.p[3], 0.35) : tile, 4, !down);
+          if (gold && !s.done) drawBonus(arena, g, mx, my + down, cs, s.bonus[i] === 'clock');
           const pop = since < 0 ? 0 : since < 0.3 ? Math.max(0.01, outBack(since / 0.3, 2.4)) : 1;
           if (s.flag[i]) {
-            drawFlag(g, mx, my, cs, won ? c.good : c.bad, pop);
+            drawFlag(arena, g, mx, my, cs, won ? c.good : c.bad, pop);
             if (lost && !s.mine[i]) {
               // A wrong flag: crossed out.
               g.strokeStyle = c.bad;
@@ -305,8 +322,8 @@ export const mines: GameDef = {
               g.stroke();
               g.lineCap = 'butt';
             }
-          } else if (s.mine[i] && won) drawFlag(g, mx, my, cs, c.good, pop);
-          else if (s.mine[i] && lost && pop > 0.01) drawMine(g, mx, my, cs * 0.85 * pop, c.muted);
+          } else if (s.mine[i] && won) drawFlag(arena, g, mx, my, cs, c.good, pop);
+          else if (s.mine[i] && lost && pop > 0.01) drawMine(arena, g, mx, my, cs * 0.85 * pop, c.muted);
           continue;
         }
         // Open: the tray shows through; the number pops in as the ripple reaches it.
@@ -346,6 +363,13 @@ export const mines: GameDef = {
         g.setLineDash([]);
         g.lineDashOffset = 0;
       }
+      // Streak meter along the top of the field: drains until the streak runs out.
+      if (s.streak > 1 && !s.done) {
+        g.fillStyle = c.accent;
+        g.globalAlpha = 0.85;
+        g.fillRect(ox, Math.max(1, oy - 6), cs * s.cols * Math.max(0, s.streakLeft / STREAK_S), 3);
+        g.globalAlpha = 1;
+      }
       drawBar(g);
       arena.overlay(g);
     }
@@ -354,7 +378,7 @@ export const mines: GameDef = {
       const c = arena.colors;
       const b = button;
       arena.box(g, b.x, b.y, b.w, b.h, flagMode ? c.accent : c.cell, 8);
-      drawFlag(g, b.x + 20, b.y + b.h / 2, 26, c.bad);
+      drawFlag(arena, g, b.x + 20, b.y + b.h / 2, 26, c.bad);
       g.fillStyle = flagMode ? c.coal : c.fg;
       g.textAlign = 'left';
       g.textBaseline = 'middle';
@@ -363,7 +387,7 @@ export const mines: GameDef = {
       // Mines left.
       const mx = b.x + b.w + 26;
       const my = b.y + b.h / 2;
-      drawMine(g, mx, my, 26, c.muted);
+      drawMine(arena, g, mx, my, 26, c.muted);
       g.fillStyle = c.fg;
       g.font = `700 16px ${arena.family}`;
       g.fillText(String(Math.max(0, minesLeft(s))), mx + 16, my + 1);
@@ -372,8 +396,9 @@ export const mines: GameDef = {
       const tx = mx + 46;
       const tw = W - PAD - tx;
       arena.box(g, tx, my - 9, tw, 18, c.cell, 9, false);
-      g.fillStyle = left <= 10 ? c.bad : c.accent;
-      g.globalAlpha = left <= 10 && left > 0 ? 0.75 + 0.25 * Math.sin(arena.time * 12) : 1;
+      const frozen = s.freeze > 0;
+      g.fillStyle = frozen ? c.p[5] : left <= 10 ? c.bad : c.accent;
+      g.globalAlpha = left <= 10 && left > 0 && !frozen ? 0.75 + 0.25 * Math.sin(arena.time * 12) : 1;
       g.beginPath();
       g.roundRect(tx + 2, my - 7, Math.max(0, (tw - 4) * (left / s.limit)), 14, 7);
       g.fill();
@@ -384,8 +409,9 @@ export const mines: GameDef = {
       g.strokeStyle = c.cell;
       g.lineWidth = 3;
       g.lineJoin = 'round';
-      g.strokeText(`${Math.ceil(left)} s`, tx + tw / 2, my + 1);
-      g.fillText(`${Math.ceil(left)} s`, tx + tw / 2, my + 1);
+      const label = frozen ? `❄ ${Math.ceil(left)} s` : `${Math.ceil(left)} s`;
+      g.strokeText(label, tx + tw / 2, my + 1);
+      g.fillText(label, tx + tw / 2, my + 1);
     }
 
     const stopGestures = gestures(arena.canvas, {
@@ -440,9 +466,9 @@ export const mines: GameDef = {
         const ev = tick(s, dt);
         const secs = Math.ceil(s.limit - s.time);
         if (secs !== shown) {
-          if (secs <= 5 && secs > 0) sfx('tick', { pitch: 5 - secs });
+          if (secs <= 5 && secs > 0 && !s.freeze) sfx('tick', { pitch: 5 - secs });
           status();
-        }
+        } else if (state() !== shownState) status();
         if (ev.over) {
           const c = arena.colors;
           fx.text(W / 2, oy + (cs * s.rows) / 2, L('Time’s up!', 'Temps écoulé!'), c.bad, 22, 1.4);
@@ -460,8 +486,7 @@ export const mines: GameDef = {
         const arrow = dir !== -1 && k.startsWith('arrow');
         if (!arrow && k !== ' ' && k !== 'enter' && k !== 'f') return false;
         if (e.type !== 'keydown') return true;
-        const mid = Math.floor(s.rows / 2) * s.cols + Math.floor(s.cols / 2);
-        if (cursor < 0) cursor = mid;
+        if (cursor < 0) cursor = startCell(s);
         else if (arrow) {
           const c = Math.min(s.cols - 1, Math.max(0, (cursor % s.cols) + DX[dir]));
           const r = Math.min(s.rows - 1, Math.max(0, Math.floor(cursor / s.cols) + DY[dir]));

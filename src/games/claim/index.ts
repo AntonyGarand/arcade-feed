@@ -4,12 +4,16 @@ import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
 import { DX, DY, gestures, keyDir } from '../../kits/gesture/gesture';
-import { sfx } from '../../kits/sound/sound';
+import { comboPop, comboTier } from '../../kits/combo/combo';
+import { haptic, sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
 import {
   CLAIMED,
   COLS,
   createLevel,
+  DOUBLE_S,
+  FREEZE_S,
+  GEM_POINTS,
   goalFor,
   LIFE_BONUS,
   LIVES,
@@ -21,10 +25,14 @@ import {
   starGoals,
   step,
   stop,
+  STREAK_TIERS,
+  STREAK_WINDOW,
   TIME_POINTS,
   turn,
   WALL,
+  type Power,
 } from './rules';
+import { KIND_NAMES, POWER_NAMES } from './names';
 
 const CELL = 5;
 const W = COLS * CELL;
@@ -58,6 +66,10 @@ export const claim: GameDef = {
         'Une étincelle qui touche votre ligne ou votre marqueur, ou un rôdeur qui vous attrape sur le bord, coûte une vie et efface la ligne.',
       ),
       L(
+        `Each field has its twist: rocks, mines (drawing over one costs a life), a seeker spark that chases your line, swarms or comets. Claim the ground under a gem for ${GEM_POINTS} points.`,
+        `Chaque terrain a sa particularité : rochers, mines (tracer dessus coûte une vie), étincelle chercheuse qui traque votre ligne, essaims ou comètes. Conquérez le terrain sous un joyau pour ${GEM_POINTS} points.`,
+      ),
+      L(
         'Swipe to move: the marker keeps going while it draws and stops on the edge. Tap to stop on the edge.',
         'Balayez pour bouger : le marqueur continue tant qu’il trace et s’arrête sur le bord. Touchez pour l’arrêter sur le bord.',
       ),
@@ -72,6 +84,10 @@ export const claim: GameDef = {
         `Les grosses prises rapportent plus par pour cent. Chaque vie restante ajoute ${LIFE_BONUS}, chaque seconde sous la normale ${TIME_POINTS}, chaque pour cent au-delà de l’objectif ${OVER_POINTS}.`,
       ),
       L(
+        `Captures less than ${STREAK_WINDOW} s apart build a streak: ${STREAK_TIERS[0]} in a row freeze the enemies, ${STREAK_TIERS[1]} give a shield against one hit, ${STREAK_TIERS[2]} double your points, ${STREAK_TIERS[3]} freeze them again with another shield.`,
+        `Des prises à moins de ${STREAK_WINDOW} s d’intervalle forment une série : ${STREAK_TIERS[0]} de suite gèlent les ennemis, ${STREAK_TIERS[1]} donnent un bouclier contre un coup, ${STREAK_TIERS[2]} doublent vos points, ${STREAK_TIERS[3]} les gèlent encore avec un autre bouclier.`,
+      ),
+      L(
         'Quick bites near the edge are safest. Shut a spark in a small pocket to claim the rest at once.',
         'Les petites bouchées rapides près du bord sont les plus sûres. Enfermez une étincelle dans une petite poche pour conquérir le reste d’un coup.',
       ),
@@ -82,6 +98,8 @@ export const claim: GameDef = {
   pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     const rng = ctx.rng;
@@ -113,7 +131,15 @@ export const claim: GameDef = {
 
     const status = () => {
       const pct = Math.floor(percent(s));
-      ctx.status([L(`${pct}% claimed`, `${pct} % conquis`), L(`goal ${goalFor(s.d)}%`, `objectif ${goalFor(s.d)} %`)].join(' · '));
+      ctx.status(
+        [
+          L(`${pct}% claimed`, `${pct} % conquis`),
+          L(`goal ${goalFor(s.d)}%`, `objectif ${goalFor(s.d)} %`),
+          s.streak > 1 ? L(`streak ${s.streak}`, `série ${s.streak}`) : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      );
     };
 
     const cx = (i: number) => (i % COLS) * CELL + CELL / 2;
@@ -222,6 +248,37 @@ export const claim: GameDef = {
       g.lineWidth = arena.lw * 0.7;
       g.stroke(paths.edges);
 
+      // Gems: bobbing hexagons waiting to be fenced in.
+      s.gems.forEach((i, n) => {
+        const bob = Math.sin(now * 3 + n * 1.7) * 1.2;
+        g.fillStyle = arena.tone(c.good).glow;
+        g.beginPath();
+        g.arc(cx(i), cy(i) + bob, 9 + Math.sin(now * 5 + n) * 1.2, 0, Math.PI * 2);
+        g.fill();
+        arena.gem(g, cx(i), cy(i) + bob, 6.5, c.good, (gg, r) => glyphPath(gg, 5, 0, 0, r));
+      });
+      // Mines: dark spiked balls with a blinking light.
+      for (const i of s.mines) {
+        const x = cx(i);
+        const y = cy(i);
+        g.strokeStyle = c.coal;
+        g.lineWidth = 1.6;
+        g.beginPath();
+        for (let k = 0; k < 8; k++) {
+          const a = (k * Math.PI) / 4;
+          g.moveTo(x + Math.cos(a) * 3, y + Math.sin(a) * 3);
+          g.lineTo(x + Math.cos(a) * 7.5, y + Math.sin(a) * 7.5);
+        }
+        g.stroke();
+        arena.ball(g, x, y, 5, c.coal);
+        if (Math.sin(now * 6 + i) > 0) {
+          g.fillStyle = c.bad;
+          g.beginPath();
+          g.arc(x, y, 1.8, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+
       const [mx, my] = glide(prevPos, s.pos, moveAt, MARKER_SPEED);
       // The erased line, fading out in red.
       if (now - ghostAt < 0.5 && ghost.length) {
@@ -260,8 +317,8 @@ export const claim: GameDef = {
         g.scale(1.4, 1.4);
         const x = 0;
         const y = 0;
-        const fill = c.p[0];
-        const wob = Math.sin(now * 18 + k) * 0.6;
+        const fill = s.freeze > 0 ? mix(c.p[0], c.paper, 0.5) : c.p[0];
+        const wob = s.freeze > 0 ? 0 : Math.sin(now * 18 + k) * 0.6;
         g.strokeStyle = arena.tone(fill).edge;
         g.lineWidth = 1;
         g.beginPath();
@@ -288,12 +345,24 @@ export const claim: GameDef = {
         g.restore();
       });
 
-      // Sparks: spinning stars with a pulsing glow and a comet tail.
+      // Sparks: spinning stars with a pulsing glow and a comet tail. Frozen ones go pale and still;
+      // a seeker is a triangle pointing where it flies, inside a hunting ring.
+      const frozen = s.freeze > 0;
+      const sparkFill = frozen ? mix(c.bad, c.paper, 0.55) : c.bad;
       s.sparks.forEach((k, n) => {
         const x = k.x * CELL;
         const y = k.y * CELL;
-        const tail = sparkTrail[n] ?? [];
-        g.fillStyle = c.bad;
+        const tail = frozen ? [] : (sparkTrail[n] ?? []);
+        if (k.seek) {
+          g.strokeStyle = sparkFill;
+          g.lineWidth = arena.lw;
+          g.setLineDash([3, 3]);
+          g.beginPath();
+          g.arc(x, y, 15, now * 2, now * 2 + Math.PI * 2);
+          g.stroke();
+          g.setLineDash([]);
+        }
+        g.fillStyle = sparkFill;
         for (let j = 0; j < tail.length; j++) {
           const f = (j + 1) / (tail.length + 1);
           g.globalAlpha = 0.5 * f;
@@ -302,11 +371,24 @@ export const claim: GameDef = {
           g.fill();
         }
         g.globalAlpha = 1;
-        g.fillStyle = arena.tone(c.bad).glow;
+        g.fillStyle = arena.tone(sparkFill).glow;
         g.beginPath();
-        g.arc(x, y, 12 + Math.sin(now * 9) * 1.8, 0, Math.PI * 2);
+        g.arc(x, y, frozen ? 11 : 12 + Math.sin(now * 9) * 1.8, 0, Math.PI * 2);
         g.fill();
-        arena.gem(g, x, y, 8.5, c.bad, (gg, r) => glyphPath(gg, 4, 0, 0, r), true, 1, now * 5);
+        if (k.seek) arena.gem(g, x, y, 9, sparkFill, (gg, r) => glyphPath(gg, 3, 0, 0, r), true, 1, Math.atan2(k.vy, k.vx) + Math.PI / 2);
+        else arena.gem(g, x, y, 8.5, sparkFill, (gg, r) => glyphPath(gg, 4, 0, 0, r), true, 1, frozen ? 0 : now * 5);
+        if (frozen) {
+          // Ice crystal spokes over a frozen spark.
+          g.strokeStyle = c.paper;
+          g.lineWidth = 1.2;
+          g.beginPath();
+          for (let a = 0; a < 3; a++) {
+            const r = (a * Math.PI) / 3;
+            g.moveTo(x - Math.cos(r) * 11, y - Math.sin(r) * 11);
+            g.lineTo(x + Math.cos(r) * 11, y + Math.sin(r) * 11);
+          }
+          g.stroke();
+        }
       });
 
       // Marker: a diamond, with a pulse while drawing; it blinks while safe after a hit.
@@ -322,6 +404,16 @@ export const claim: GameDef = {
         }
         // Paper on dark ground, ink on light ground: the marker never fades into the field.
         arena.gem(g, mx, my, 7, arena.dark ? c.paper : c.fg, (gg, r) => glyphPath(gg, 1, 0, 0, r));
+        // Shield: a bright ring per charge around the marker.
+        for (let k = 0; k < s.shield; k++) {
+          g.strokeStyle = c.good;
+          g.lineWidth = arena.lw * 1.2;
+          g.globalAlpha = 0.75 + 0.25 * Math.sin(now * 6 + k);
+          g.beginPath();
+          g.arc(mx, my, 11 + k * 4, 0, Math.PI * 2);
+          g.stroke();
+        }
+        g.globalAlpha = 1;
       }
       if (!moved && !ended) {
         // Waiting for the first move: a pulse and an arrow up into the field.
@@ -342,7 +434,44 @@ export const claim: GameDef = {
         g.closePath();
         g.fill();
       }
+      if (!ended) drawMeters(g);
       arena.overlay(g);
+    }
+
+    /** Meters along the top: the streak draining, then freeze and double points running out. */
+    function drawMeters(g: CanvasRenderingContext2D) {
+      const c = arena.colors;
+      const bars: [number, string, string][] = [];
+      if (s.streak > 0) bars.push([s.streakLeft / STREAK_WINDOW, c.accent, `×${s.streak}`]);
+      if (s.freeze > 0) bars.push([s.freeze / FREEZE_S, mix(c.bad, c.paper, 0.55), '❄']);
+      if (s.double > 0) bars.push([s.double / DOUBLE_S, c.good, '×2']);
+      g.font = `800 8px ${arena.family}`;
+      g.textBaseline = 'middle';
+      g.textAlign = 'left';
+      bars.forEach(([k, col, label], n) => {
+        const y = 2 + n * 9;
+        const w = W * Math.min(1, Math.max(0, k));
+        g.globalAlpha = 0.85;
+        g.fillStyle = col;
+        g.fillRect(0, y, w, 4);
+        g.globalAlpha = 1;
+        g.fillStyle = c.fg;
+        g.fillText(label, Math.min(W - 16, w + 3), y + 2);
+      });
+      g.textBaseline = 'alphabetic';
+    }
+
+    /** The look of a power switching on: frost on every enemy, a ring on the marker, a glow on the field. */
+    function powerUp(p: Power) {
+      const c = arena.colors;
+      const ice = mix(c.bad, c.paper, 0.55);
+      if (p === 'freeze' || p === 'storm')
+        for (const k of s.sparks) {
+          fx.ring(k.x * CELL, k.y * CELL, ice, 4, 30, 0.5, arena.lw * 1.2);
+          fx.burst(k.x * CELL, k.y * CELL, c.paper, 10, 80, 2.5, 0.5, 'dot', 0);
+        }
+      if (p === 'shield' || p === 'storm') fx.ring(cx(s.pos), cy(s.pos), c.good, 6, 40, 0.5, arena.lw * 1.5);
+      if (p === 'double') fx.ring(W / 2, H / 2, c.good, 20, W * 0.7, 0.6, arena.lw * 1.5);
     }
 
     const stopGestures = gestures(arena.canvas, {
@@ -364,6 +493,7 @@ export const claim: GameDef = {
         const crawl = s.crawlers.map((cr) => cr.pos);
         const trail = s.trail;
         const start = s.start;
+        const streak = s.streak;
         const ev = step(s, dt);
         arena.update(dt);
         const now = arena.time;
@@ -423,9 +553,39 @@ export const claim: GameDef = {
             fx.shake(3, 0.25);
             fx.flash(c.accent, 0.18, 0.35);
           }
+          if (s.double > 0) fx.text(x, y + 22, '×2', c.good, 11, 0.8);
+          if (s.streak >= 2 && !ev.tier) comboPop(fx, x, y - 20, s.streak, c.accent);
+          for (const i of ev.gems) {
+            fx.burst(cx(i), cy(i), c.good, 14, 120, 3, 0.6, 'spark', 0);
+            fx.ring(cx(i), cy(i), c.good, 3, 24, 0.4, arena.lw);
+            fx.text(cx(i), cy(i) - 10, `+${GEM_POINTS}`, c.good, 13);
+          }
+          if (ev.gems.length) sfx('coin');
+          for (const i of ev.defused) {
+            fx.burst(cx(i), cy(i), c.muted, 8, 60, 2, 0.4, 'dot', 0);
+            fx.ring(cx(i), cy(i), c.muted, 2, 14, 0.35, arena.lw);
+          }
+          if (ev.tier && ev.unlocked) {
+            comboTier(fx, ev.tier, c.accent, POWER_NAMES[ev.unlocked]());
+            powerUp(ev.unlocked);
+          }
           ctx.score(s.score);
           status();
           paths = null;
+        } else if (s.streak === 0 && streak > 0) status();
+        if (ev.boom >= 0) {
+          const bx = cx(ev.boom);
+          const by = cy(ev.boom);
+          fx.ring(bx, by, c.bad, 4, 40, 0.4, arena.lw * 1.5);
+          fx.burst(bx, by, c.accent, 18, 160, 3.5, 0.6, 'spark', 0);
+          sfx('boom');
+          haptic(40);
+        }
+        if (ev.shielded) {
+          fx.ring(cx(s.pos), cy(s.pos), c.good, 8, 34, 0.45, arena.lw * 1.5);
+          fx.burst(cx(ev.hitAt), cy(ev.hitAt), c.good, 12, 120, 3, 0.5, 'spark', 0);
+          fx.text(cx(s.pos), cy(s.pos) - 16, L('Blocked!', 'Bloqué!'), c.good, 13);
+          sfx('hit', { pitch: 6 });
         }
         if (ev.lostLife) {
           ghost = [start, ...trail];

@@ -1,5 +1,6 @@
 import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
+import { dealKind, type Kind } from '../../core/variety';
 
 /** Playfield in world units. */
 export const W = 300;
@@ -28,6 +29,33 @@ export const POP_POINTS = 10;
 export const DROP_POINTS = 20;
 /** Bonus per free row between the ceiling and the line when the board is cleared. */
 export const ROW_BONUS = 100;
+/** Points for a bubble blown up by a bomb, or a stone or bomb left over at the end. */
+const BLAST_POINTS = 15;
+
+/** Grid codes for the pieces that aren't coloured bubbles (colours are 0…4). */
+export const STONE = 10;
+export const BOMB = 11;
+/** Launcher-only: a rainbow shot takes the colour of the biggest group it touches. */
+export const RAINBOW = 12;
+/** A coloured bubble (not a stone, a bomb or an empty cell). */
+const isColour = (k: number) => k >= 0 && k < STONE;
+
+/** Popping shots in a row that fire a streak event (bomb shot, ceiling lift, rainbow shot…). */
+export const STREAK_TIERS = [3, 5, 8, 12, 17] as const;
+export type Reward = 'bomb' | 'lift' | 'rainbow';
+const REWARDS: readonly Reward[] = ['bomb', 'lift', 'rainbow', 'bomb', 'lift'];
+/** Points multiplier inside a streak: ×1, then +0.5 per milestone reached. */
+export const streakMult = (s: State) => 1 + s.tier * 0.5;
+
+/** The kinds of board a level can deal. */
+export const KINDS = [
+  { id: 'classic', weight: 2 },
+  { id: 'chandelier' },
+  { id: 'quarry', min: 2 },
+  { id: 'glacier', min: 2 },
+  { id: 'minefield', min: 3 },
+] as const satisfies readonly Kind[];
+export type KindId = (typeof KINDS)[number]['id'];
 
 export const rowsFor = (d: Difficulty) => byLevel(d, [5, 6, 7, 8, 9]);
 export const coloursFor = (d: Difficulty) => byLevel(d, [3, 4, 4, 5, 5]);
@@ -43,9 +71,12 @@ export interface Point {
 
 export interface State {
   d: Difficulty;
+  kind: KindId;
   colours: number;
-  /** Row-major colour per cell (row 0 under the ceiling), -1 when empty. */
+  /** Row-major colour per cell (row 0 under the ceiling), -1 when empty, `STONE` or `BOMB` for pieces. */
   grid: number[];
+  /** Cells frozen in ice: they don't match until a bubble lands or pops next to them. */
+  ice: boolean[];
   /** Rows the ceiling has come down. */
   drops: number;
   every: number;
@@ -63,6 +94,9 @@ export interface State {
   shot: Trace | null;
   travelled: number;
   score: number;
+  /** Popping shots in a row, and the streak milestones reached. */
+  streak: number;
+  tier: number;
   rng: Rng;
 }
 
@@ -89,7 +123,7 @@ function neighbours(i: number): number[] {
 
 /** Colours still on the board, in order. */
 export function present(grid: readonly number[]): number[] {
-  return [...new Set(grid.filter((k) => k >= 0))].sort((a, b) => a - b);
+  return [...new Set(grid.filter(isColour))].sort((a, b) => a - b);
 }
 
 const pickColour = (s: State) => {
@@ -97,18 +131,37 @@ const pickColour = (s: State) => {
   return left.length ? s.rng.pick(left) : 0;
 };
 
-export function createLevel(d: Difficulty, rng: Rng): State {
+/** Rows of thin stems a chandelier hangs from. */
+const STEM_ROWS = 2;
+
+export function createLevel(d: Difficulty, rng: Rng, kindId?: KindId): State {
+  const kind = kindId ?? dealKind(rng, d, KINDS).id;
   const colours = coloursFor(d);
   const grid: number[] = Array(ROWS * COLS).fill(-1);
+  const ice: boolean[] = Array(ROWS * COLS).fill(false);
+  // Chandelier: three stems hold the whole block; cut one and its side falls.
+  const stems = new Set([1, rng.int(4, 5), 8]);
   for (let i = 0; i < rowsFor(d) * COLS; i++) {
     if (!valid(i)) continue;
+    if (kind === 'chandelier' && Math.floor(i / COLS) < STEM_ROWS && !stems.has(i % COLS)) continue;
     const near = neighbours(i).filter((j) => j < i && grid[j] >= 0);
     grid[i] = near.length && rng.chance(clumpFor(d)) ? grid[rng.pick(near)] : rng.int(0, colours - 1);
   }
+  // Special pieces go below the top row, so the board stays anchored by bubbles you can pop.
+  const spots = rng.shuffle(grid.map((k, i) => (k >= 0 && i >= COLS ? i : -1)).filter((i) => i >= 0));
+  const n = spots.length;
+  const stones = kind === 'quarry' ? Math.round(n * byLevel(d, [0.08, 0.08, 0.09, 0.1, 0.1])) : 0;
+  const bombs = kind === 'minefield' ? Math.round(n / 9) : kind === 'quarry' ? 3 : kind === 'chandelier' ? 0 : byLevel(d, [0, 1, 1, 2, 2]);
+  const frozen = kind === 'glacier' ? Math.round(n * byLevel(d, [0.2, 0.22, 0.24, 0.25, 0.25])) : kind === 'classic' && d >= 4 ? 4 : 0;
+  for (let k = 0; k < stones && spots.length; k++) grid[spots.pop()!] = STONE;
+  for (let k = 0; k < bombs && spots.length; k++) grid[spots.pop()!] = BOMB;
+  for (let k = 0; k < frozen && spots.length; k++) ice[spots.pop()!] = true;
   const s: State = {
     d,
+    kind,
     colours,
     grid,
+    ice,
     drops: 0,
     every: everyFor(d),
     untilDrop: everyFor(d),
@@ -120,6 +173,8 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     shot: null,
     travelled: 0,
     score: 0,
+    streak: 0,
+    tier: 0,
     rng,
   };
   s.cur = pickColour(s);
@@ -237,8 +292,21 @@ export interface Landing {
   /** Cells that popped (3+ of a colour) and cells that fell (cut off from the ceiling). */
   popped: number[];
   dropped: number[];
-  /** Colours of the dropped cells, in the same order. */
+  /** What sat in the dropped cells (colours, stones, bombs), in the same order. */
   droppedColours: number[];
+  /** Cells cleared by bomb blasts, and what was in them. */
+  blasted: number[];
+  blastedKinds: number[];
+  /** Cells where a bomb went off. */
+  booms: number[];
+  /** Cells whose ice melted. */
+  melted: number[];
+  /** Points this landing scored. */
+  gain: number;
+  /** Popping shots in a row after this one (0: the streak broke), and a milestone just reached (0: none). */
+  streak: number;
+  tier: number;
+  reward: Reward | null;
   /** The ceiling came down a row. */
   lowered: boolean;
   won: boolean;
@@ -266,40 +334,155 @@ function anchored(grid: readonly number[]): Set<number> {
 /** Free rows between the ceiling and the line. */
 const freeRows = (s: State) => Math.max(0, Math.floor((LINE_Y - ceilingY(s)) / RH) - 1);
 
-/** Settle the bubble in `cell`: pop its group, drop what's cut off, maybe lower the ceiling, reload. */
+/** Unfrozen bubbles of colour `k` connected to `from`. */
+function groupOf(s: State, from: number, k: number): number[] {
+  const out = [from];
+  const seen = new Set(out);
+  for (let n = 0; n < out.length; n++)
+    for (const j of neighbours(out[n]))
+      if (s.grid[j] === k && !s.ice[j] && !seen.has(j)) {
+        seen.add(j);
+        out.push(j);
+      }
+  return out;
+}
+
+/** A rainbow shot's colour: the biggest unfrozen group it touches, or any colour still on the board. */
+function rainbowColour(s: State, cell: number): number {
+  let best = -1;
+  let size = 0;
+  for (const j of neighbours(cell)) {
+    const k = s.grid[j];
+    if (!isColour(k) || s.ice[j]) continue;
+    const n = groupOf(s, j, k).length;
+    if (n > size) [best, size] = [k, n];
+  }
+  return best >= 0 ? best : pickColour(s);
+}
+
+/** Set off the bomb at `at`: it clears every cell within `reach` steps, setting off the bombs it catches. */
+function explode(s: State, at: number, reach: number, out: Landing) {
+  const todo: [number, number][] = [[at, reach]];
+  for (let n = 0; n < todo.length; n++) {
+    const [c, r0] = todo[n];
+    out.booms.push(c);
+    s.grid[c] = -1;
+    s.ice[c] = false;
+    let ring = [c];
+    const seen = new Set(ring);
+    for (let r = 0; r < r0; r++) {
+      const next: number[] = [];
+      for (const i of ring)
+        for (const j of neighbours(i)) {
+          if (seen.has(j)) continue;
+          seen.add(j);
+          next.push(j);
+          const k = s.grid[j];
+          if (k < 0) continue;
+          if (k === BOMB) todo.push([j, 1]);
+          else {
+            out.blasted.push(j);
+            out.blastedKinds.push(k);
+          }
+          s.grid[j] = -1;
+          s.ice[j] = false;
+        }
+      ring = next;
+    }
+  }
+}
+
+/** Settle the bubble in `cell`: pop its group, set off bombs, drop what's cut off, maybe lower the ceiling, reload. */
 export function land(s: State, cell: number): Landing {
-  const colour = s.cur;
-  const out: Landing = { cell, colour, popped: [], dropped: [], droppedColours: [], lowered: false, won: false, lost: false };
+  const shot = s.cur;
+  const colour = shot === RAINBOW && cell >= 0 ? rainbowColour(s, cell) : shot;
+  const out: Landing = {
+    cell,
+    colour,
+    popped: [],
+    dropped: [],
+    droppedColours: [],
+    blasted: [],
+    blastedKinds: [],
+    booms: [],
+    melted: [],
+    gain: 0,
+    streak: 0,
+    tier: 0,
+    reward: null,
+    lowered: false,
+    won: false,
+    lost: false,
+  };
+  const before = s.score;
   s.shot = null;
   s.shots++;
+  let hit = false;
   if (cell >= 0) {
-    s.grid[cell] = colour;
-    const group = [cell];
-    const seen = new Set(group);
-    for (let k = 0; k < group.length; k++)
-      for (const j of neighbours(group[k]))
-        if (s.grid[j] === colour && !seen.has(j)) {
-          seen.add(j);
-          group.push(j);
+    const touched = neighbours(cell);
+    if (shot === BOMB) {
+      // A bomb shot blows up where it lands.
+      explode(s, cell, 2, out);
+    } else {
+      s.grid[cell] = colour;
+      const group = groupOf(s, cell, colour);
+      if (group.length >= 3) {
+        for (const i of group) s.grid[i] = -1;
+        out.popped = group;
+        // Bombs touching a popped group go off.
+        for (const i of group) {
+          touched.push(...neighbours(i));
+          for (const j of neighbours(i)) if (s.grid[j] === BOMB) explode(s, j, 1, out);
         }
-    if (group.length >= 3) {
-      for (const i of group) s.grid[i] = -1;
-      out.popped = group;
-      s.score += group.length * POP_POINTS;
+      }
+    }
+    // Ice melts next to a landing or a pop.
+    for (const j of new Set(touched))
+      if (s.ice[j]) {
+        s.ice[j] = false;
+        if (s.grid[j] >= 0) out.melted.push(j);
+      }
+    hit = out.popped.length > 0 || out.booms.length > 0;
+    if (hit) {
       const keep = anchored(s.grid);
       for (let i = 0; i < s.grid.length; i++)
         if (s.grid[i] >= 0 && !keep.has(i)) {
           out.dropped.push(i);
           out.droppedColours.push(s.grid[i]);
           s.grid[i] = -1;
+          s.ice[i] = false;
         }
-      s.score += out.dropped.length * DROP_POINTS;
     }
   }
+  // A shot that pops or blasts something keeps the streak going; milestones load rewards.
+  if (hit) {
+    s.streak++;
+    if (s.tier < STREAK_TIERS.length && s.streak >= STREAK_TIERS[s.tier]) {
+      out.reward = REWARDS[s.tier];
+      out.tier = ++s.tier;
+    }
+    const raw = out.popped.length * POP_POINTS + out.dropped.length * DROP_POINTS + out.blasted.length * BLAST_POINTS;
+    s.score += Math.round(raw * streakMult(s));
+  } else s.streak = s.tier = 0;
+  out.streak = s.streak;
+  // Nothing coloured left: the stones and bombs still hanging crumble, and the board is clear.
   if (!present(s.grid).length) {
+    for (let i = 0; i < s.grid.length; i++)
+      if (s.grid[i] >= 0) {
+        out.dropped.push(i);
+        out.droppedColours.push(s.grid[i]);
+        s.grid[i] = -1;
+        s.score += BLAST_POINTS;
+      }
     out.won = true;
     s.score += freeRows(s) * ROW_BONUS;
+    out.gain = s.score - before;
     return out;
+  }
+  // Lift: the ceiling goes back up a row (or, still at the top, holds off its next drop).
+  if (out.reward === 'lift') {
+    if (s.drops > 0) s.drops--;
+    else s.untilDrop += s.every;
   }
   if (--s.untilDrop <= 0) {
     s.drops++;
@@ -307,10 +490,13 @@ export function land(s: State, cell: number): Landing {
     out.lowered = true;
   }
   out.lost = cell < 0 || s.grid.some((k, i) => k >= 0 && cellY(s, i) + R > LINE_Y);
-  // Reload, keeping to colours still on the board.
+  // Reload, keeping to colours still on the board; a streak reward loads a special shot.
   const left = present(s.grid);
-  s.cur = left.includes(s.next) ? s.next : pickColour(s);
+  s.cur = left.includes(s.next) || s.next >= BOMB ? s.next : pickColour(s);
   s.next = pickColour(s);
+  if (out.reward === 'bomb') s.cur = BOMB;
+  else if (out.reward === 'rainbow') s.cur = RAINBOW;
+  out.gain = s.score - before;
   return out;
 }
 

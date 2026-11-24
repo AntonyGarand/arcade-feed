@@ -99,6 +99,8 @@ Create `src/games/<id>/index.ts` exporting a `GameDef` (see `src/core/types.ts` 
 - `category`: `match`, `aim`, `reflex`, `move`, `stack` or `think` (`src/core/categories.ts`).
 - `stars(d)` → `[two, three]` score thresholds, `par(d)` → typical run length in seconds.
 - `create(ctx)`: build into `ctx.root` (usually `new Arena(ctx.root, W, H, redraw)`), report with `ctx.score()`, `ctx.lives()`, `ctx.status()`, end with `ctx.win()` / `ctx.lose()`. Return `{ frame, draw, onKey, destroy }`. `onKey` gets keydown and keyup.
+- Variety: deal one of several level kinds (layouts, twists, enemy mixes) with `dealKind(ctx.rng, d, KINDS)` from `core/variety.ts` and name it with `ctx.variant({ id, name, blurb })` for the start gate. `stars(d)` can't see the kind, so keep every kind's score potential comparable, and test that each one can be cleared.
+- Combos: big combos should unlock real events (a power, a bonus wave, a multiplier), not just points. `kits/combo` has a `Combo` counter with milestones, `comboPop` for each step and `comboTier` for a milestone banner (`fx.banner`).
 - Sound: call `sfx(name)` from `kits/sound` at each discrete event (a hit, a pop, a shot), with `pitch` or a combo `step` so repeats don’t grate, and `haptic(ms)` for big impacts only. The card already plays the start, lost-life, win and lose sounds.
 - Pointer input on the canvas (`touch-action: none` is set by the arena), so drags never scroll the feed.
 - On-screen buttons: `pad` lists buttons under the field (`left` / `right` thumb groups, or `'dpad'`), each sending a key your `onKey` already handles (helpers in `core/pad.ts`). Leave it out for games played by tapping the pieces. Players can hide them in Settings.

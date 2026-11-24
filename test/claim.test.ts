@@ -1,16 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../src/core/rng';
 import { LEVELS, type Difficulty } from '../src/core/types';
+import { kindsAt } from '../src/core/variety';
 import type { Dir } from '../src/kits/gesture/gesture';
 import {
   CLAIMED,
   COLS,
   createLevel,
   crawlersFor,
+  GEM_POINTS,
+  gemsFor,
   goalFor,
+  grant,
   idx,
   isEdge,
+  KINDS,
+  type KindId,
   LIVES,
+  MARKER_SPEED,
+  MINE_POINTS,
   next,
   OPEN,
   percent,
@@ -21,6 +29,7 @@ import {
   START,
   step,
   stop,
+  STREAK_TIERS,
   TRAIL,
   turn,
   type State,
@@ -112,8 +121,8 @@ function decide(s: State, turnNo: number): Plan {
   return { kind: 'wait', t: 0.25 };
 }
 
-function autopilot(d: Difficulty, seed: number, seconds = 400) {
-  const s = createLevel(d, new Rng(seed));
+function autopilot(d: Difficulty, seed: number, seconds = 400, kind?: KindId) {
+  const s = createLevel(d, new Rng(seed), kind);
   let lost = 0;
   for (let n = 0; s.time < seconds && !s.won && !s.over; n++) {
     const r = execute(s, decide(s, n));
@@ -126,7 +135,10 @@ describe('claim rules', () => {
   it('deals the same field and enemies from the same seed', () => {
     const a = createLevel(5, new Rng(21));
     const b = createLevel(5, new Rng(21));
+    expect(a.kind).toBe(b.kind);
     expect(a.grid).toEqual(b.grid);
+    expect(a.mines).toEqual(b.mines);
+    expect(a.gems).toEqual(b.gems);
     expect(a.sparks).toEqual(b.sparks);
     expect(a.crawlers).toEqual(b.crawlers);
     expect(autopilot(3, 21).s.time).toBe(autopilot(3, 21).s.time);
@@ -139,10 +151,10 @@ describe('claim rules', () => {
       expect(sparkSpeedFor(d)).toBeGreaterThan(sparkSpeedFor(lo));
       expect(sparksFor(d) + crawlersFor(d)).toBeGreaterThan(sparksFor(lo) + crawlersFor(lo));
     }
-    const s = createLevel(5, new Rng(3));
+    const s = createLevel(5, new Rng(3), 'open');
     expect(s.sparks.length).toBe(3);
     expect(s.crawlers.length).toBe(2);
-    expect(s.open0).toBeLessThan(createLevel(1, new Rng(3)).open0);
+    expect(s.open0).toBeLessThan(createLevel(1, new Rng(3), 'open').open0);
   });
 
   it('starts the marker on the edge, enemies far from it and every spark in the open', () => {
@@ -166,7 +178,7 @@ describe('claim rules', () => {
   });
 
   it('draws a trail into the open and claims the side with no spark when it closes', () => {
-    const s = createLevel(1, new Rng(4));
+    const s = createLevel(1, new Rng(4), 'open');
     // Park the spark in the top-right corner so the bottom-left pocket is free.
     s.sparks[0] = { x: COLS - 3.5, y: 3.5, vx: 0, vy: 0 };
     s.pos = idx(1, ROWS - 1);
@@ -202,7 +214,7 @@ describe('claim rules', () => {
   });
 
   it('never claims the side that holds a spark', () => {
-    const s = createLevel(1, new Rng(5));
+    const s = createLevel(1, new Rng(5), 'open');
     s.sparks[0] = { x: 5.5, y: ROWS - 4.5, vx: 0, vy: 0 };
     // A full-height wall of trail at column 20: the spark's left side stays open, the right is claimed.
     s.pos = idx(20, ROWS - 1);
@@ -217,7 +229,7 @@ describe('claim rules', () => {
   });
 
   it('moves along the edge and stops where it ends', () => {
-    const s = createLevel(1, new Rng(6));
+    const s = createLevel(1, new Rng(6), 'open');
     turn(s, 3);
     for (let t = 0; t < 5; t += DT) step(s, DT);
     expect(s.pos).toBe(idx(0, ROWS - 1));
@@ -242,7 +254,7 @@ describe('claim rules', () => {
 
   it('loses lives, then the run, when drawing straight into a spark', () => {
     for (const d of [1, 5] as Difficulty[]) {
-      const s = createLevel(d, new Rng(9));
+      const s = createLevel(d, new Rng(9), 'open');
       let lost = 0;
       for (let t = 0; t < 120 && !s.over; t += DT) {
         const k = s.sparks[0];
@@ -256,5 +268,172 @@ describe('claim rules', () => {
       expect(lost).toBe(LIVES);
       expect(s.lives).toBe(0);
     }
+  });
+
+  it('deals different kinds of field across seeds, each with its own twist', () => {
+    const seen = new Set<string>();
+    for (let seed = 0; seed < 60; seed++) seen.add(createLevel(4, new Rng(seed)).kind);
+    expect(seen.size).toBeGreaterThanOrEqual(5);
+    expect(kindsAt(1, KINDS).map((k) => k.id)).toEqual(['open', 'rocks']);
+
+    const d = 5;
+    const open = createLevel(d, new Rng(2), 'open');
+    const inner = (s: State) => {
+      let n = 0;
+      for (let r = 12; r < ROWS - 12; r++) for (let c = 12; c < COLS - 12; c++) if (s.grid[idx(c, r)] === WALL) n++;
+      return n;
+    };
+    expect(inner(open)).toBe(0);
+    expect(inner(createLevel(d, new Rng(2), 'rocks'))).toBeGreaterThan(20);
+    expect(createLevel(d, new Rng(2), 'minefield').mines.length).toBeGreaterThan(open.mines.length);
+    expect(createLevel(d, new Rng(2), 'swarm').sparks.length).toBeGreaterThan(open.sparks.length);
+    expect(createLevel(d, new Rng(2), 'comet').sparkSpeed).toBeGreaterThan(open.sparkSpeed);
+    expect(createLevel(d, new Rng(2), 'hunt').sparks.some((k) => k.seek)).toBe(true);
+    expect(open.sparks.some((k) => k.seek)).toBe(false);
+  });
+
+  it('every kind can be cleared at each level it is dealt', () => {
+    for (const d of LEVELS)
+      for (const { id } of kindsAt(d, KINDS)) {
+        const s0 = createLevel(d, new Rng(5), id);
+        expect(s0.kind).toBe(id);
+        expect(s0.gems.length, `${id} ${d}`).toBe(gemsFor(d));
+        for (const k of s0.sparks) expect(s0.grid[idx(Math.floor(k.x), Math.floor(k.y))]).toBe(OPEN);
+        for (const i of [...s0.mines, ...s0.gems]) expect(s0.grid[i]).toBe(OPEN);
+        for (const seed of [3, 8]) {
+          const { s, lost } = autopilot(d, seed + d, 400, id);
+          expect(s.won, `${id} level ${d} seed ${seed}`).toBe(true);
+          expect(lost).toBeLessThan(LIVES);
+        }
+      }
+  }, 60_000);
+
+  /** Park every enemy far away and drop the marker on the bottom edge at column `c`. */
+  const calm = (s: State) => {
+    s.sparks = [{ x: COLS - 3.5, y: 3.5, vx: 0, vy: 0 }];
+    s.crawlers = [];
+    s.mines = [];
+    s.gems = [];
+  };
+  /** A 5 × 6 bite up from the bottom edge at column `c`: returns the events of the step that closed it. */
+  const bite = (s: State, c: number) => {
+    s.pos = idx(c, ROWS - 1);
+    const legs: [Dir, number][] = [
+      [0, 6],
+      [1, 5],
+      [2, 6],
+    ];
+    let ev = step(s, 0);
+    for (const [d, n] of legs) {
+      turn(s, d);
+      for (let i = 0; i < n; i++) ev = step(s, 1 / MARKER_SPEED);
+    }
+    return ev;
+  };
+
+  it('quick captures in a row freeze the enemies, then grant a shield, then double points', () => {
+    const s = createLevel(1, new Rng(4), 'open');
+    calm(s);
+    s.sparks[0].vx = 5;
+    const unlocked: string[] = [];
+    const sizes: number[] = [];
+    /** Where the spark was before and after a half-second wait right after the freeze. */
+    const still: number[] = [];
+    let c = 1;
+    for (let n = 0; n < STREAK_TIERS[2]; n++, c += 6) {
+      const ev = bite(s, c);
+      sizes.push(ev.fresh.length);
+      if (ev.unlocked) unlocked.push(ev.unlocked);
+      if (ev.unlocked === 'freeze') {
+        still.push(s.sparks[0].x);
+        step(s, 0.5);
+        still.push(s.sparks[0].x, s.freeze);
+      }
+    }
+    expect(sizes.every((n) => n > 0)).toBe(true);
+    expect(still[1]).toBe(still[0]);
+    expect(still[2]).toBeGreaterThan(0);
+    expect(s.streak).toBe(STREAK_TIERS[2]);
+    expect(unlocked).toEqual(['freeze', 'shield', 'double']);
+    expect(s.shield).toBe(1);
+    expect(s.double).toBeGreaterThan(0);
+    // Double points: the same bite pays twice as much.
+    const fresh = createLevel(1, new Rng(4), 'open');
+    calm(fresh);
+    const plain = bite(fresh, 1).gain;
+    expect(bite(s, c).gain).toBe(plain * 2);
+  });
+
+  it('the streak ends after a pause', () => {
+    const s = createLevel(1, new Rng(4), 'open');
+    calm(s);
+    bite(s, 2);
+    bite(s, 8);
+    expect(s.streak).toBe(2);
+    for (let t = 0; t < 7; t += DT) step(s, DT);
+    expect(s.streak).toBe(0);
+  });
+
+  it('a shield absorbs a hit without erasing the line', () => {
+    const s = createLevel(1, new Rng(4), 'open');
+    calm(s);
+    grant(s, 'shield');
+    s.pos = idx(10, ROWS - 1);
+    turn(s, 0);
+    for (let i = 0; i < 4; i++) step(s, 1 / MARKER_SPEED);
+    // A spark right on the line.
+    s.sparks[0] = { x: 10.5, y: ROWS - 3.5, vx: 0, vy: 0 };
+    const ev = step(s, 0.001);
+    expect(ev.shielded).toBe(true);
+    expect(ev.lostLife).toBe(false);
+    expect(s.lives).toBe(LIVES);
+    expect(s.shield).toBe(0);
+    expect(s.drawing).toBe(true);
+    expect(s.trail.length).toBe(4);
+  });
+
+  it('drawing over a mine costs a life once, and shutting one in a capture defuses it', () => {
+    const s = createLevel(1, new Rng(4), 'open');
+    calm(s);
+    const mine = idx(10, ROWS - 4);
+    s.mines = [mine];
+    s.pos = idx(10, ROWS - 1);
+    turn(s, 0);
+    let ev = step(s, 0);
+    for (let i = 0; i < 4 && !ev.lostLife; i++) ev = step(s, 1 / MARKER_SPEED);
+    expect(ev.lostLife).toBe(true);
+    expect(ev.hitAt).toBe(mine);
+    expect(s.mines).toEqual([]);
+    expect(s.trail).toEqual([]);
+
+    // A mine and a gem inside a bite: both are taken with it, for points.
+    const t = createLevel(1, new Rng(4), 'open');
+    calm(t);
+    t.mines = [idx(4, ROWS - 3)];
+    t.gems = [idx(5, ROWS - 4)];
+    const base = createLevel(1, new Rng(4), 'open');
+    calm(base);
+    const plain = bite(base, 2).gain;
+    ev = bite(t, 2);
+    expect(ev.defused).toEqual([idx(4, ROWS - 3)]);
+    expect(ev.gems).toEqual([idx(5, ROWS - 4)]);
+    expect(ev.gain).toBe(plain + GEM_POINTS + MINE_POINTS);
+    expect(t.mines).toEqual([]);
+    expect(t.gems).toEqual([]);
+  });
+
+  it('a seeker spark turns towards the marker while it draws', () => {
+    const s = createLevel(3, new Rng(4), 'hunt');
+    const k = s.sparks.find((x) => x.seek)!;
+    s.sparks = [k];
+    s.crawlers = [];
+    s.mines = [];
+    Object.assign(k, { x: 40.5, y: 10.5, vx: 6, vy: -6, aim: 0.01 });
+    s.pos = idx(10, ROWS - 1);
+    turn(s, 0);
+    for (let i = 0; i < 3; i++) step(s, 1 / MARKER_SPEED);
+    expect(s.drawing).toBe(true);
+    expect(k.vx).toBeLessThan(0);
+    expect(k.vy).toBeGreaterThan(0);
   });
 });

@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../src/core/rng';
+import { _setLocaleForTests } from '../src/core/i18n';
 import { LEVELS, starsFor, type Difficulty } from '../src/core/types';
+import { kindsAt } from '../src/core/variety';
 import type { Dir } from '../src/kits/gesture/gesture';
 import { pipeline } from '../src/games/pipeline';
+import { KIND_NAMES } from '../src/games/pipeline/names';
 import {
+  accepts,
   blocksFor,
+  CHAIN_TIERS,
+  COIN_POINTS,
   COLS,
   countdownFor,
   createLevel,
@@ -12,9 +18,12 @@ import {
   DL,
   EARLY_POINTS,
   exitOf,
+  coinsFor,
   flowNow,
+  FREEZE_S,
   goalFor,
   H,
+  KINDS,
   LU,
   neighbour,
   openEnd,
@@ -22,15 +31,18 @@ import {
   opp,
   perPieceFor,
   place,
+  perfectPiece,
   PIPE_POINTS,
   QUEUE,
   RD,
   REPLACE_POINTS,
+  RES_COUNT,
   ROWS,
   step,
   UNUSED_POINTS,
   V,
   X,
+  type KindId,
   type State,
 } from '../src/games/pipeline/rules';
 import { mountGame } from './support/mount';
@@ -59,7 +71,7 @@ function plan(s: State, end: { cell: number; from: Dir }, len: number, flip = fa
   const usable = (c: number) => c >= 0 && !s.block[c] && c !== s.source && c !== s.drain && !s.wet[c] && !used.has(c);
   const dfs = (cell: number, from: Dir): boolean => {
     const p = s.pipe[cell];
-    if (p && !opens(p, from)) return false;
+    if (p && !accepts(s, cell, from)) return false;
     route.push({ cell, from, to: -1 });
     used.add(cell);
     if (route.length >= want) return true;
@@ -91,8 +103,9 @@ const fitsSlot = (p: number, slot: Slot) => opens(p, slot.from) === 1 && (slot.t
  * can help it), else dump it on a spare cell off the route (or cover an earlier dump). Once the chain is
  * a little past the goal, start and speed up the flow.
  */
-function autopilot(d: Difficulty, seed: number, every = 0.6, extra = 2) {
-  const s = createLevel(d, new Rng(seed));
+function autopilot(d: Difficulty, seed: number, every = 0.6, extra = 2, kind?: KindId) {
+  const s = createLevel(d, new Rng(seed), kind);
+  const unlocked: string[] = [];
   const target = s.goal + extra;
   const dumps: number[] = [];
   let route: Slot[] = [];
@@ -146,8 +159,9 @@ function autopilot(d: Difficulty, seed: number, every = 0.6, extra = 2) {
       cell = best >= 0 ? best : (dumps.find((c) => !s.wet[c] && !onRoute.has(c)) ?? end.cell);
     }
     if (place(s, cell) === 'wait') wait = 0;
+    if (s.unlocked) unlocked.push(s.unlocked);
   }
-  return { s, t };
+  return { s, t, unlocked };
 }
 
 describe('pipeline rules', () => {
@@ -155,11 +169,11 @@ describe('pipeline rules', () => {
     const a = createLevel(4, new Rng(8));
     const b = createLevel(4, new Rng(8));
     const c = createLevel(4, new Rng(9));
-    const layout = (s: State) => [s.block, s.source, s.srcDir, s.drain, s.drainDir, s.queue];
+    const layout = (s: State) => [s.kind, s.block, s.source, s.srcDir, s.drain, s.drainDir, s.queue, s.pipe, s.oneway, s.coin];
     expect(layout(a)).toEqual(layout(b));
     expect(layout(a)).not.toEqual(layout(c));
     expect(a.queue.length).toBe(QUEUE);
-    expect(a.block.filter(Boolean).length).toBe(blocksFor(4));
+    expect(createLevel(4, new Rng(8), 'classic').block.filter(Boolean).length).toBe(blocksFor(4));
   });
 
   it('gets harder: longer goal, shorter countdown, faster flow, more blocked cells', () => {
@@ -176,7 +190,7 @@ describe('pipeline rules', () => {
   });
 
   it('lays the head of the queue; replacing a dry piece costs points and a delay; wet pieces stay', () => {
-    const s = createLevel(1, new Rng(3));
+    const s = createLevel(1, new Rng(3), 'classic');
     const cell = neighbour(s.source, s.srcDir);
     const [first, second] = s.queue;
     s.score = 100;
@@ -196,9 +210,10 @@ describe('pipeline rules', () => {
   });
 
   it('flows through matching pieces, pays a bonus for crossing a cross twice, and spills at an open end', () => {
-    const s = createLevel(1, new Rng(1));
+    const s = createLevel(1, new Rng(1), 'classic');
     const at = (r: number, c: number) => r * COLS + c;
     s.block.fill(false);
+    s.coin.fill(false);
     s.source = at(3, 1);
     s.srcDir = 1;
     s.flow = { at: s.source, from: -1, exit: 1, t: 0 };
@@ -220,10 +235,10 @@ describe('pipeline rules', () => {
   });
 
   it('waits for the countdown, and pays for starting early', () => {
-    const s = createLevel(2, new Rng(2));
+    const s = createLevel(2, new Rng(2), 'classic');
     for (let t = 0; t < countdownFor(2) - 0.5; t += DT) step(s, DT);
     expect(s.started).toBe(false);
-    const e = createLevel(2, new Rng(2));
+    const e = createLevel(2, new Rng(2), 'classic');
     for (let t = 0; t < 6.5; t += DT) step(e, DT);
     flowNow(e);
     expect(e.started).toBe(true);
@@ -231,7 +246,7 @@ describe('pipeline rules', () => {
   });
 
   it('finds the open end of the chain from the source', () => {
-    const s = createLevel(1, new Rng(4));
+    const s = createLevel(1, new Rng(4), 'classic');
     const first = neighbour(s.source, s.srcDir);
     expect(openEnd(s)).toEqual({ cell: first, from: (s.srcDir + 2) % 4, length: 0 });
     s.pipe[first] = s.srcDir % 2 ? H : V;
@@ -264,12 +279,152 @@ describe('pipeline rules', () => {
       expect(s.done).toBe('lose');
       expect(s.count).toBe(0);
     }
-    const s = createLevel(1, new Rng(5));
+    const s = createLevel(1, new Rng(5), 'classic');
     const first = neighbour(s.source, s.srcDir);
     s.pipe[first] = s.srcDir % 2 ? H : V;
     for (let t = 0; t < 60 && !s.done; t += DT) step(s, DT);
     expect(s.done).toBe('lose');
     expect(s.count).toBe(1);
+  });
+});
+
+describe('pipeline level kinds', () => {
+  it('deals different kinds across seeds, gated by level', () => {
+    for (const d of LEVELS) {
+      const seen = new Set<string>();
+      for (let seed = 0; seed < 80; seed++) seen.add(createLevel(d, new Rng(seed)).kind);
+      expect(seen.size, `level ${d}`).toBe(kindsAt(d, KINDS).length);
+    }
+    for (let seed = 0; seed < 30; seed++) expect(['classic', 'reservoir']).toContain(createLevel(1, new Rng(seed)).kind);
+  });
+
+  it('names every kind briefly, in both languages', () => {
+    for (const loc of ['en', 'fr'] as const) {
+      _setLocaleForTests(loc);
+      for (const { id } of KINDS) {
+        const [name, blurb] = KIND_NAMES[id]();
+        expect(name.length, id).toBeLessThanOrEqual(18);
+        expect(blurb.length, id).toBeLessThanOrEqual(60);
+      }
+    }
+    _setLocaleForTests('en');
+  });
+
+  it('can clear every kind allowed at every level, steadily, and three-star it on a good run', () => {
+    for (const d of LEVELS)
+      for (const { id } of kindsAt(d, KINDS)) {
+        const runs = [1, 2, 3, 4, 5].map((k) => autopilot(d, k * 13 + d, 0.5, 2, id));
+        const wins = runs.filter((r) => r.s.done === 'win');
+        expect(wins.length, `${id} level ${d}`).toBeGreaterThanOrEqual(4);
+        const best = Math.max(...[1, 2, 3, 4, 5, 6].map((k) => autopilot(d, k * 11 + d, 0.35, 8, id).s.score));
+        expect(starsFor(pipeline, d, true, best), `${id} level ${d}: ${best}`).toBe(3);
+      }
+  });
+
+  it('shapes each kind: fixed tanks or one-way pipes, walls, a long countdown and a fast flow', () => {
+    const res = createLevel(2, new Rng(1), 'reservoir');
+    expect(res.res.filter(Boolean).length).toBe(2);
+    expect(res.fixed.filter(Boolean).length).toBe(2);
+    const one = createLevel(4, new Rng(1), 'oneway');
+    expect(one.oneway.filter((d) => d >= 0).length).toBe(3);
+    const maze = createLevel(3, new Rng(1), 'maze');
+    expect(maze.block.filter(Boolean).length).toBeGreaterThan(blocksFor(3));
+    expect(maze.clock).toBeGreaterThan(countdownFor(3));
+    const flood = createLevel(3, new Rng(1), 'flood');
+    expect(flood.clock).toBeGreaterThan(countdownFor(3));
+    expect(flood.per).toBeLessThan(perPieceFor(3));
+    for (const { id } of KINDS) expect(createLevel(3, new Rng(2), id).coin.filter(Boolean).length).toBe(coinsFor(3));
+  });
+
+  it('fixed pieces can not be replaced; one-way pipes refuse the flow the wrong way', () => {
+    const s = createLevel(4, new Rng(3), 'oneway');
+    const cell = s.oneway.findIndex((d) => d >= 0);
+    expect(place(s, cell)).toBe('no');
+    const exit = s.oneway[cell] as Dir;
+    expect(accepts(s, cell, opp(exit))).toBe(true);
+    expect(accepts(s, cell, exit)).toBe(false);
+  });
+
+  it('a reservoir fills slowly and counts double; coins pay as the flow passes', () => {
+    const s = createLevel(1, new Rng(1), 'classic');
+    const at = (r: number, c: number) => r * COLS + c;
+    s.block.fill(false);
+    s.coin.fill(false);
+    s.pipe.fill(0);
+    s.source = at(3, 0);
+    s.srcDir = 1;
+    s.flow = { at: s.source, from: -1, exit: 1, t: 0 };
+    s.pipe[at(3, 1)] = H;
+    s.pipe[at(3, 2)] = H;
+    s.res[at(3, 2)] = true;
+    s.fixed[at(3, 2)] = true;
+    s.pipe[at(3, 3)] = H;
+    s.coin[at(3, 3)] = true;
+    flowNow(s);
+    const score = s.score;
+    // Into the tank (it counts as two pipes), then out of it: that takes far longer than a pipe.
+    let t = 0;
+    for (; s.count < 1 + RES_COUNT; t += DT) step(s, DT);
+    const into = t;
+    for (; s.count < 2 + RES_COUNT; t += DT) step(s, DT);
+    expect(t - into).toBeGreaterThan(s.per * 2);
+    expect(s.score - score).toBe((2 + RES_COUNT) * PIPE_POINTS + COIN_POINTS);
+  });
+});
+
+describe('pipeline chain combo', () => {
+  /** Lay the perfect piece at the open end `n` times (forced to the head of the queue). */
+  function chain(s: State, n: number) {
+    const fired: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const end = openEnd(s);
+      s.queue[0] = perfectPiece(s);
+      if (!end || !s.queue[0] || place(s, end.cell) !== 'placed') break;
+      if (s.unlocked) fired.push(s.unlocked);
+    }
+    return fired;
+  }
+
+  it('counts pieces joined in a row and fires the milestones', () => {
+    const s = createLevel(2, new Rng(4), 'classic');
+    s.block.fill(false);
+    const clock = s.countdown;
+    expect(chain(s, CHAIN_TIERS[0])).toEqual(['freeze']);
+    expect(s.countdown).toBe(clock + FREEZE_S); // before the flow: more time
+    expect(chain(s, CHAIN_TIERS[1] - CHAIN_TIERS[0])).toEqual(['perfect']);
+    // The perfect piece is now the head of the queue: it fits the open end.
+    expect(opens(s.queue[0], openEnd(s)!.from)).toBe(1);
+    expect(chain(s, CHAIN_TIERS[2] - CHAIN_TIERS[1])).toEqual(['double']);
+    expect(s.double).toBe(true);
+    expect(s.chain).toBe(CHAIN_TIERS[2]);
+  });
+
+  it('a piece off the chain breaks it', () => {
+    const s = createLevel(2, new Rng(5), 'classic');
+    s.block.fill(false);
+    chain(s, 2);
+    expect(s.chain).toBe(2);
+    const end = openEnd(s)!;
+    const far = [...Array(N).keys()].find(
+      (c) => empty(s, c) && Math.abs((c % COLS) - (end.cell % COLS)) + Math.abs(Math.floor(c / COLS) - Math.floor(end.cell / COLS)) > 2,
+    )!;
+    place(s, far);
+    expect(s.chain).toBe(0);
+  });
+
+  it('a freeze during the flow holds it still, and double points pay twice', () => {
+    const s = createLevel(1, new Rng(6), 'classic');
+    s.block.fill(false);
+    s.coin.fill(false);
+    chain(s, 2);
+    flowNow(s);
+    s.freeze = FREEZE_S;
+    for (let t = 0; t < FREEZE_S - 0.1; t += DT) step(s, DT);
+    expect(s.count).toBe(0);
+    s.double = true;
+    const before = s.score;
+    while (s.count < 1) step(s, DT);
+    expect(s.score - before).toBe(PIPE_POINTS * 2);
   });
 });
 
@@ -287,6 +442,7 @@ describe('pipeline card', () => {
 
   it('lays a piece with Space and starts the flow early with F, then ends the run', () => {
     const m = mountGame(pipeline, 1, 5);
+    expect(m.variant?.id).toBe(createLevel(1, new Rng(5)).kind);
     const key = (k: string) => m.inst.onKey?.(new KeyboardEvent('keydown', { key: k }));
     expect(key('ArrowRight')).toBe(true);
     expect(key(' ')).toBe(true);

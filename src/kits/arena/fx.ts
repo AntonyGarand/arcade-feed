@@ -76,6 +76,7 @@ export class Fx {
   private flashMax = 0;
   private flashA = 0;
   private flashColor = '';
+  private ban = { t: 1, max: 1, str: '', sub: '', color: '' };
   /** Current shake offset in world units (applied by `Arena.begin`). */
   sx = 0;
   sy = 0;
@@ -88,7 +89,14 @@ export class Fx {
 
   /** Anything still animating (shake, flash, particles, rings or text)? */
   get busy(): boolean {
-    return this.n > 0 || this.shakeT > 0 || this.flashT > 0 || this.rings.some((r) => r.live) || this.texts.some((t) => t.live);
+    return (
+      this.n > 0 ||
+      this.shakeT > 0 ||
+      this.flashT > 0 ||
+      this.ban.t < this.ban.max ||
+      this.rings.some((r) => r.live) ||
+      this.texts.some((t) => t.live)
+    );
   }
 
   /**
@@ -145,6 +153,14 @@ export class Fx {
     Object.assign(slot, { live: true, x, y, t: 0, max: life, size, str, color });
   }
 
+  /**
+   * A big headline across the middle of the field ("FRENZY!", "Boss wave") with an optional smaller
+   * line under it: slides in, holds, fades. One at a time; a new one replaces the old.
+   */
+  banner(str: string, color: string, sub = '', life = 1.5) {
+    Object.assign(this.ban, { t: 0, max: life, str, sub, color });
+  }
+
   /** Shake the whole field by up to `amp` world units for `s` seconds (skipped under reduced motion). */
   shake(amp: number, s = 0.3) {
     if (this.calm) return;
@@ -165,6 +181,7 @@ export class Fx {
   clear() {
     this.n = 0;
     this.shakeT = this.flashT = 0;
+    this.ban.t = this.ban.max;
     this.sx = this.sy = 0;
     for (const r of this.rings) r.live = false;
     for (const t of this.texts) t.live = false;
@@ -185,6 +202,7 @@ export class Fx {
     }
     for (const r of this.rings) if (r.live && (r.t += dt) >= r.max) r.live = false;
     for (const t of this.texts) if (t.live && (t.t += dt) >= t.max) t.live = false;
+    if (this.ban.t < this.ban.max) this.ban.t = Math.min(this.ban.max, this.ban.t + dt);
     if (this.flashT > 0) this.flashT = Math.max(0, this.flashT - dt);
     if (this.shakeT > 0) {
       this.shakeT = Math.max(0, this.shakeT - dt);
@@ -263,6 +281,7 @@ export class Fx {
       g.fillStyle = t.color;
       g.fillText(t.str, t.x, y);
     }
+    if (this.ban.t < this.ban.max) this.drawBanner(g, host, w, h);
     g.textBaseline = 'alphabetic';
     if (this.flashT > 0) {
       g.globalAlpha = this.flashA * (this.flashT / this.flashMax);
@@ -270,5 +289,42 @@ export class Fx {
       g.fillRect(-20, -20, w + 40, h + 40);
     }
     g.globalAlpha = 1;
+  }
+
+  private drawBanner(g: CanvasRenderingContext2D, host: FxHost, w: number, h: number) {
+    // In screen space: a game that scrolls or crops its world (a camera, a sky) still gets it centred.
+    g.save();
+    g.setTransform(g.canvas.width / w, 0, 0, g.canvas.height / h, 0, 0);
+    const b = this.ban;
+    const f = b.t / b.max;
+    const inn = Math.min(1, b.t / 0.18);
+    const out = f > 0.75 ? (f - 0.75) / 0.25 : 0;
+    const size = Math.min(w / Math.max(4, b.str.length * 0.62), w * 0.11);
+    const band = size * (b.sub ? 2.3 : 1.6);
+    const cy = h * 0.42;
+    g.globalAlpha = 0.82 * inn * (1 - out);
+    g.fillStyle = host.colors.cell;
+    g.fillRect(-20, cy - band / 2, w + 40, band);
+    g.fillStyle = b.color;
+    g.fillRect(-20, cy - band / 2, w + 40, Math.max(1.5, size * 0.08));
+    g.fillRect(-20, cy + band / 2 - Math.max(1.5, size * 0.08), w + 40, Math.max(1.5, size * 0.08));
+    g.globalAlpha = 1 - out;
+    // Slide in from the left with a little overshoot, drift on, slide out to the right.
+    const e = inn < 1 ? 1 - (1 - inn) ** 3 * (1 + 2.2 * inn) : 1;
+    const x = w / 2 + (1 - e) * -w * 0.6 + out * w * 0.4 + (f - 0.5) * size * 0.4;
+    const y = b.sub ? cy - size * 0.32 : cy;
+    g.font = `900 ${size.toFixed(1)}px ${host.family}`;
+    g.lineWidth = Math.max(2, size * 0.2);
+    g.strokeStyle = host.dark ? host.colors.cell : host.colors.ink;
+    g.strokeText(b.str, x, y);
+    g.fillStyle = b.color;
+    g.fillText(b.str, x, y);
+    if (b.sub) {
+      const s2 = size * 0.42;
+      g.font = `700 ${s2.toFixed(1)}px ${host.family}`;
+      g.fillStyle = host.colors.fg;
+      g.fillText(b.sub, x, cy + size * 0.55);
+    }
+    g.restore();
   }
 }

@@ -85,6 +85,19 @@ export interface Pad {
   right?: PadButton[];
 }
 
+/**
+ * The kind of level a game dealt: its layout, twist or enemy mix (picked from `ctx.rng`, so "Again"
+ * deals the same one). Shown on the start gate so each card feels different.
+ */
+export interface Variant {
+  /** Stable English id for telemetry (`'windy'`, `'boss'`). */
+  id: string;
+  /** Short name (localised, ≤ 18 characters): "Windy", "Boss wave". */
+  name: string;
+  /** One short line (localised, ≤ 60 characters): what's different this time. */
+  blurb?: string;
+}
+
 /** What a game gets from its card. @public */
 export interface GameCtx {
   difficulty: Difficulty;
@@ -101,6 +114,8 @@ export interface GameCtx {
   lives: (left: number, max: number) => void;
   /** Short status line shown in the card footer (goal progress, moves or time left…). */
   status: (text: string) => void;
+  /** Name the kind of level dealt (call once from `create`, before the gate shows). Optional. */
+  variant: (v: Variant) => void;
   /** The level is cleared. Call once; stars come from the last score. */
   win: () => void;
   /** The run is over without a clear (out of lives, moves or time). Call once. */

@@ -1,5 +1,5 @@
-import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
+import type { KindId } from './level';
 
 /** Playfield in world units, side view: the sling on the left, the forts on the right. */
 export const W = 300;
@@ -8,6 +8,8 @@ export const GROUND = 360;
 /** Where the pouch rests (and stones leave from). */
 export const SLING = { x: 54, y: 302 };
 export const STONE_R = 7;
+/** The view leaves out the empty sky above this world height (high lobs get an arrow at the top edge). */
+export const VIEW_TOP = 70;
 const GRAVITY = 500;
 const MIN_SPEED = 140;
 const MAX_SPEED = 430;
@@ -41,11 +43,15 @@ const MAX_FLIGHT = 8;
 export const TARGET_POINTS = 100;
 export const SHOT_BONUS = 150;
 
-type Mat = 'wood' | 'stone' | 'blob' | 'shot' | 'ground';
+export type Mat = 'wood' | 'stone' | 'ice' | 'tnt' | 'blob' | 'shot' | 'ground';
 /** Per material: density, friction, bounce, the hit speed change that costs a hit point (0 = unbreakable), hit points and points. */
 const MATS = {
   wood: { density: 1, friction: 0.6, bounce: 0.1, tough: 130, hp: 1, points: 10 },
   stone: { density: 2.6, friction: 0.7, bounce: 0.05, tough: 120, hp: 2, points: 25 },
+  /** Brittle and slippery: shatters on a light knock. */
+  ice: { density: 0.8, friction: 0.3, bounce: 0.05, tough: 85, hp: 1, points: 5 },
+  /** Dynamite: blows up (and everything near it) on a solid knock. */
+  tnt: { density: 0.9, friction: 0.6, bounce: 0.1, tough: 85, hp: 1, points: 30 },
   blob: { density: 0.7, friction: 0.5, bounce: 0.35, tough: 0, hp: 1, points: TARGET_POINTS },
   shot: { density: 3, friction: 0.5, bounce: 0.25, tough: 0, hp: 1, points: 0 },
   ground: { density: 0, friction: 0.8, bounce: 0.1, tough: 0, hp: 1, points: 0 },
@@ -70,7 +76,20 @@ export interface Body {
   /** Rolling angle (drawing only). */
   spin: number;
   dead: boolean;
+  /** A blob hovering in the sky: drifts on a fixed loop, pops at any touch. */
+  hover?: { x: number; y: number; ax: number; ay: number; ph: number; sp: number };
+  /** A stone that blows up on its first hard touch, or splits in three at the top of its arc. */
+  boom?: boolean;
+  split?: boolean;
 }
+
+/** Things smashed by one stone (blobs and blocks) that unlock a reward for the next shots. */
+export const CHAIN_TIERS = [5, 10, 15] as const;
+export type Reward = 'boom' | 'stone' | 'split';
+const REWARDS: readonly Reward[] = ['boom', 'stone', 'split'];
+/** Blast reach (world units) of dynamite and an explosive stone. */
+export const BLAST_R = 50;
+const BLAST_V = 420;
 
 export const shotsFor = (d: Difficulty) => byLevel(d, [3, 3, 4, 5, 5]);
 export const targetsFor = (d: Difficulty) => byLevel(d, [2, 3, 4, 5, 6]);
@@ -79,6 +98,7 @@ const previewFor = (d: Difficulty) => byLevel(d, [0.5, 0.42, 0.34, 0.27, 0.22]);
 
 export interface State {
   d: Difficulty;
+  kind: KindId;
   bodies: Body[];
   nextId: number;
   shots: number;
@@ -99,6 +119,14 @@ export interface State {
   acc: number;
   /** Last tick's impulses per touching pair (normal, friction), to start the solver from: stacks rest still. */
   warm: Map<number, [number, number]>;
+  /** Seconds since the level started (hovering blobs). */
+  t: number;
+  /** Things the stone in flight has smashed so far, and the chain milestones it reached. */
+  chain: number;
+  tier: number;
+  /** Rewards waiting for the next stone. */
+  boomNext: boolean;
+  splitNext: boolean;
 }
 
 interface Hit {
@@ -118,6 +146,12 @@ export interface StepEvents {
   cracked: Hit[];
   /** Spent stones cleared away when the world settled. */
   crumbled: Hit[];
+  /** Explosions (dynamite or an explosive stone). */
+  blasts: { x: number; y: number }[];
+  /** A stone split in three, where. */
+  split: { x: number; y: number } | null;
+  /** Chain milestones reached this frame (1-based), with what each unlocked. */
+  rewards: { tier: number; reward: Reward }[];
   /** The world settled and the next stone is ready. */
   ready: boolean;
   cleared: boolean;
@@ -126,7 +160,7 @@ export interface StepEvents {
   bonus: number;
 }
 
-function add(s: State, ball: boolean, mat: Mat, x: number, y: number, hw: number, hh: number): Body {
+export function add(s: State, ball: boolean, mat: Mat, x: number, y: number, hw: number, hh: number): Body {
   const m = MATS[mat];
   const mass = (ball ? Math.PI * hw * hw : 4 * hw * hh) * m.density;
   const b: Body = {
@@ -150,128 +184,14 @@ function add(s: State, ball: boolean, mat: Mat, x: number, y: number, hw: number
   return b;
 }
 
-/** A box by its left edge and bottom; returns its top. */
-const box = (s: State, x: number, bottom: number, w: number, h: number, mat: Mat) => {
-  add(s, false, mat, x + w / 2, bottom - h / 2, w / 2, h / 2);
-  return bottom - h;
-};
-const BLOB_R = 8.5;
-const blob = (s: State, cx: number, bottom: number) => {
-  add(s, true, 'blob', cx, bottom - BLOB_R, BLOB_R, BLOB_R);
-  s.targets++;
-};
-
-/** Building blocks of a fort, sized in world units. */
-const POST_W = 8;
-const POST_H = 28;
-const PLANK_H = 8;
-const CUBE = 16;
-
-/**
- * A hut of `floors` stacked rooms (two posts and a roof each), a blob sheltered in the rooms listed in
- * `inside`, maybe one on the roof. The top `stone` floors are built of stone: heavy lids that crush
- * what they fall on.
- */
-function hut(s: State, x: number, ground: number, w: number, floors: number, inside: boolean[], roof: boolean, stone: number) {
-  let base = ground;
-  for (let f = 0; f < floors; f++) {
-    const mat: Mat = f >= floors - stone ? 'stone' : 'wood';
-    box(s, x, base, POST_W, POST_H, mat);
-    box(s, x + w - POST_W, base, POST_W, POST_H, mat);
-    if (inside[f]) blob(s, x + w / 2, base);
-    base = box(s, x, base - POST_H, w, PLANK_H, mat);
+/** Hovering blobs drift on their loop. */
+function hover(s: State) {
+  for (const b of s.bodies) {
+    const h = b.hover;
+    if (!h || b.dead) continue;
+    b.x = h.x + Math.sin(s.t * h.sp + h.ph) * h.ax;
+    b.y = h.y + Math.sin(s.t * h.sp * 1.7 + h.ph) * h.ay;
   }
-  if (roof) blob(s, x + w / 2, base);
-}
-
-/** A column of cubes with a blob on top. */
-function perch(s: State, x: number, ground: number, n: number, stone: boolean) {
-  let base = ground;
-  for (let i = 0; i < n; i++) base = box(s, x, base, CUBE, CUBE, stone && i === 0 ? 'stone' : 'wood');
-  blob(s, x + CUBE / 2, base);
-}
-
-/** One fort plan: what it needs and how wide it is. */
-interface Plan {
-  w: number;
-  build: (s: State, x: number, ground: number) => void;
-}
-
-/** Forts for a level: huts (taller and stonier with the level) and perches, `n` blobs in all. */
-function plans(d: Difficulty, rng: Rng): Plan[] {
-  const out: Plan[] = [];
-  let left = targetsFor(d);
-  const huts = byLevel(d, [1, 1, 2, 2, 2]);
-  const floorsMax = byLevel(d, [1, 2, 2, 3, 3]);
-  const stoneMax = byLevel(d, [0, 0, 1, 1, 2]);
-  for (let i = 0; i < huts && left > 0; i++) {
-    const floors = rng.int(Math.max(1, floorsMax - 1), floorsMax);
-    const w = rng.int(36, 44);
-    const inside = Array.from({ length: floors }, () => false);
-    let blobs = 0;
-    for (let f = 0; f < floors && left - blobs > 1; f++)
-      if (f === 0 || rng.chance(0.6)) {
-        inside[f] = true;
-        blobs++;
-      }
-    const roof = left - blobs > (huts - i - 1) * 2 ? true : rng.chance(0.4);
-    if (roof) blobs++;
-    const stone = Math.min(floors - 1, stoneMax ? rng.int(stoneMax - 1, stoneMax) : 0);
-    left -= blobs;
-    out.push({ w, build: (st, x, g) => hut(st, x, g, w, floors, inside, roof, stone) });
-  }
-  while (left > 0) {
-    const n = rng.int(1, byLevel(d, [1, 2, 3, 3, 4]));
-    const stone = d >= 3 && rng.chance(0.5);
-    left--;
-    out.push({ w: CUBE, build: (st, x, g) => perch(st, x, g, n, stone) });
-  }
-  return rng.shuffle(out);
-}
-
-/** Deal a level: forts side by side on the right, everything at rest, the first stone ready. */
-export function createLevel(d: Difficulty, rng: Rng): State {
-  const s: State = {
-    d,
-    bodies: [],
-    nextId: 0,
-    shots: shotsFor(d),
-    used: 0,
-    score: 0,
-    targets: 0,
-    angle: 0.55,
-    power: 0.7,
-    turn: 0,
-    pull: 0,
-    phase: 'aim',
-    shot: -1,
-    flight: 0,
-    acc: 0,
-    warm: new Map(),
-  };
-  // The ground: one static slab, wider than the field.
-  add(s, false, 'ground', W / 2, GROUND + 60, W * 2, 60);
-  // A boulder in front of the forts from Medium up: flat shots stop there, lob over it.
-  const rock = byLevel(d, [0, 46, 50, 54, 56]);
-  if (rock) box(s, rng.int(82, 92), GROUND, rng.int(16, 22), rock + rng.int(0, 6), 'ground');
-  const forts = plans(d, rng);
-  const span = forts.reduce((a, p) => a + p.w, 0);
-  const lo = 146;
-  const hi = W - 8;
-  const room = Math.max(0, hi - lo - span);
-  // Gaps between forts: a seeded share of the spare room, at least 10 units each.
-  const cuts = forts.map(() => 0.4 + rng.next());
-  const total = cuts.reduce((a, c) => a + c, 0) + 0.4;
-  let x = lo + (room * 0.4) / total;
-  const ledge = byLevel(d, [0, 0.3, 0.45, 0.6, 0.7]);
-  for (const [i, p] of forts.entries()) {
-    // Some forts stand on a rock ledge (solid, part of the ground).
-    let base = GROUND;
-    if (rng.chance(ledge)) base = box(s, Math.round(x) - 4, GROUND, p.w + 8, rng.int(1, 3) * 12, 'ground');
-    p.build(s, Math.round(x), base);
-    x += p.w + Math.max(10, (room * cuts[i]) / total);
-  }
-  return s;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -292,10 +212,14 @@ export function fire(s: State): boolean {
   b.awake = true;
   b.vx = Math.cos(s.angle) * v;
   b.vy = -Math.sin(s.angle) * v;
+  b.boom = s.boomNext;
+  b.split = s.splitNext;
+  s.boomNext = s.splitNext = false;
   s.shot = b.id;
   s.used++;
   s.phase = 'flight';
   s.flight = 0;
+  s.chain = s.tier = 0;
   return true;
 }
 
@@ -396,13 +320,65 @@ function remove(s: State, b: Body, ev: StepEvents, list: 'popped' | 'broken') {
   if (b.mat === 'blob') s.targets--;
   ev[list].push({ x: b.x, y: b.y, mat: b.mat, points });
   wakeAround(s, b);
+  if (s.phase === 'flight') chainUp(s, ev);
+}
+
+/** One more thing smashed by this stone: past a milestone, the next stones get a reward. */
+function chainUp(s: State, ev: StepEvents) {
+  s.chain++;
+  while (s.tier < CHAIN_TIERS.length && s.chain >= CHAIN_TIERS[s.tier]) {
+    const reward = REWARDS[s.tier++];
+    grant(s, reward);
+    ev.rewards.push({ tier: s.tier, reward });
+  }
+}
+
+/** Hand out a reward: an explosive next stone, a stone more, or a next stone that splits in three. */
+export function grant(s: State, r: Reward) {
+  if (r === 'boom') s.boomNext = true;
+  else if (r === 'stone') s.shots++;
+  else s.splitNext = true;
+}
+
+/**
+ * An explosion at (x, y): pops blobs and breaks light blocks near it, cracks stone, sets off other
+ * dynamite (queued in `fuse`) and throws everything else outwards.
+ */
+function blast(s: State, x: number, y: number, ev: StepEvents, fuse: Body[]) {
+  ev.blasts.push({ x, y });
+  for (const o of s.bodies) {
+    if (o.dead || o.mat === 'ground' || o.mat === 'shot') continue;
+    const dx = o.x - x;
+    const dy = o.y - y;
+    const len = Math.hypot(dx, dy) || 1;
+    const k = 1 - Math.max(0, len - Math.min(o.hw, o.hh)) / BLAST_R;
+    if (k <= 0) continue;
+    if (o.mat === 'tnt') {
+      if (!fuse.includes(o)) fuse.push(o);
+      continue;
+    }
+    if (o.mat === 'blob' && (k > 0.3 || o.hover)) remove(s, o, ev, 'popped');
+    else if ((o.mat === 'wood' || o.mat === 'ice') && k > 0.4) remove(s, o, ev, 'broken');
+    else if (o.mat === 'stone' && k > 0.55) {
+      if (--o.hp <= 0) remove(s, o, ev, 'broken');
+      else ev.cracked.push({ x: o.x, y: o.y, mat: o.mat, points: 0 });
+    }
+    if (o.dead || !o.inv) continue;
+    wake(o);
+    o.vx += (dx / len) * BLAST_V * k;
+    o.vy += (dy / len) * BLAST_V * k - 120 * k;
+  }
 }
 
 /** One fixed physics tick. */
 function tick(s: State, ev: StepEvents) {
   const h = TICK;
+  s.t += h;
+  hover(s);
   const bodies = s.bodies;
   for (const b of bodies) if (dynamic(b)) b.vy += GRAVITY * h;
+  /** Dynamite (and explosive stones) going off this tick. */
+  const fuse: Body[] = [];
 
   // Contacts (pairs where something moves); moving bodies wake what they touch.
   const contacts: Contact[] = [];
@@ -497,6 +473,15 @@ function tick(s: State, ev: StepEvents) {
       [c.a, c.ia],
       [c.b, c.ib],
     ] as const) {
+      // A hovering blob pops at any real touch; an explosive stone goes off at its first.
+      if (body.hover && !body.dead && c.hit > 30) {
+        remove(s, body, ev, 'popped');
+        continue;
+      }
+      if (body.boom && c.hit > 40 && !fuse.includes(body)) {
+        fuse.push(body);
+        continue;
+      }
       // Blobs are soft: being squashed (the whole impulse, loads included) pops them too.
       const dv = !inv ? 0 : body.mat === 'blob' ? Math.max(c.pn * inv, (c.hit * inv) / (c.ia + c.ib)) : (c.hit * inv) / (c.ia + c.ib);
       if (body.dead || !dv) continue;
@@ -505,8 +490,31 @@ function tick(s: State, ev: StepEvents) {
       if (body.mat === 'blob' && dv > POP_V) remove(s, body, ev, 'popped');
       else if (m.tough && dv > m.tough) {
         body.hp--;
-        if (body.hp <= 0) remove(s, body, ev, 'broken');
+        if (body.mat === 'tnt') fuse.push(body);
+        else if (body.hp <= 0) remove(s, body, ev, 'broken');
         else ev.cracked.push({ x: body.x, y: body.y, mat: body.mat, points: 0 });
+      }
+    }
+
+  // Explosions, each one maybe setting off more dynamite.
+  for (let i = 0; i < fuse.length; i++) {
+    const b = fuse[i];
+    if (b.dead) continue;
+    if (b.mat === 'shot') b.dead = true;
+    else remove(s, b, ev, 'broken');
+    blast(s, b.x, b.y, ev, fuse);
+  }
+
+  // A splitting stone breaks in three at the top of its arc.
+  for (const b of bodies)
+    if (b.split && !b.dead && b.vy >= 0) {
+      b.split = false;
+      ev.split = { x: b.x, y: b.y };
+      for (const da of [-0.22, 0.22]) {
+        const v = Math.hypot(b.vx, b.vy);
+        const a = Math.atan2(b.vy, b.vx) + da;
+        const o = add(s, true, 'shot', b.x, b.y, STONE_R * 0.8, STONE_R * 0.8);
+        Object.assign(o, { awake: true, vx: Math.cos(a) * v, vy: Math.sin(a) * v });
       }
     }
 
@@ -556,12 +564,17 @@ export function step(s: State, dt: number): StepEvents {
     bumps: [],
     cracked: [],
     crumbled: [],
+    blasts: [],
+    split: null,
+    rewards: [],
     ready: false,
     cleared: false,
     over: false,
     bonus: 0,
   };
   if (s.phase === 'aim') {
+    s.t += dt;
+    hover(s);
     s.angle = clamp(s.angle + s.turn * TURN_SPEED * dt, MIN_ANGLE, MAX_ANGLE);
     s.power = clamp(s.power + s.pull * PULL_SPEED * dt, 0, 1);
     return ev;

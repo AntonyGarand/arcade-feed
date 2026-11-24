@@ -5,7 +5,8 @@ import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { outCubic } from '../../kits/arena/ease';
 import { gestures } from '../../kits/gesture/gesture';
-import { sfx } from '../../kits/sound/sound';
+import { comboPop, comboTier } from '../../kits/combo/combo';
+import { haptic, sfx } from '../../kits/sound/sound';
 import {
   aimAt,
   aimPath,
@@ -14,17 +15,46 @@ import {
   ballsFor,
   BUCKET_H,
   BUCKET_Y,
+  BUMPER_R,
   createLevel,
   H,
   LAUNCH,
   multiplier,
   PEG_R,
   shoot,
+  SHOT_TIERS,
   step,
   targetsFor,
   targetsLeft,
   W,
+  type KindId,
+  type Power,
 } from './rules';
+
+/** What each kind of field is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  scatter: () => [L('Peg field', 'Champ de chevilles'), L('A classic field of pegs.', 'Un champ de chevilles classique.')],
+  rings: () => [L('Rings', 'Anneaux'), L('Rings of pegs around bouncy bumpers.', 'Des anneaux de chevilles autour de pare-chocs.')],
+  wheels: () => [
+    L('Wheels', 'Roues'),
+    L('Two wheels of pegs spin: time your shot.', 'Deux roues de chevilles tournent : choisissez le moment.'),
+  ],
+  mines: () => [
+    L('Minefield', 'Champ de mines'),
+    L('Bomb pegs everywhere: set off chain blasts.', 'Des bombes partout : déclenchez des explosions en chaîne.'),
+  ],
+  fortress: () => [
+    L('Fortress', 'Forteresse'),
+    L('Armoured orange pegs hide down low.', 'Des chevilles orange blindées se cachent en bas.'),
+  ],
+};
+
+/** What a shot milestone unlocked, under its banner. */
+const POWER_NAMES: Record<Power, () => string> = {
+  bucket: () => L('Big bucket!', 'Gros panier!'),
+  blast: () => L('Blast!', 'Explosion!'),
+  ball: () => L('Free ball!', 'Balle gratuite!'),
+};
 
 export const pegs: GameDef = {
   id: 'pegs',
@@ -51,6 +81,10 @@ export const pegs: GameDef = {
         'Les chevilles orange sont carrées. Une balle qui tombe dans le panier mobile vous est rendue.',
       ),
       L(
+        'Bombs light the pegs around them, green pegs give a ball back, armoured orange pegs take two hits, bumpers kick the ball.',
+        'Les bombes allument les chevilles voisines, les vertes redonnent une balle, les orange blindées demandent deux coups, les pare-chocs relancent la balle.',
+      ),
+      L(
         'Touch and drag to aim along the guide, release to shoot (with a mouse: point, click).',
         'Touchez et glissez pour viser selon le guide, relâchez pour tirer (à la souris : pointez, cliquez).',
       ),
@@ -58,24 +92,30 @@ export const pegs: GameDef = {
     ],
     tips: [
       L(
-        'Every 4 pegs hit in one shot raise its multiplier: long rallies pay.',
-        'Toutes les 4 chevilles touchées d’un même tir, le multiplicateur monte : les longs rebonds paient.',
+        'Every 4 pegs hit in one shot raise its multiplier (up to ×5): long rallies pay.',
+        'Toutes les 4 chevilles touchées d’un même tir, le multiplicateur monte (jusqu’à ×5) : les longs rebonds paient.',
+      ),
+      L(
+        `Combos: ${SHOT_TIERS[0]} pegs in one shot widen the bucket, ${SHOT_TIERS[1]} set off a blast, ${SHOT_TIERS[2]} earn a free ball.`,
+        `Combos : ${SHOT_TIERS[0]} chevilles d’un même tir élargissent le panier, ${SHOT_TIERS[1]} font exploser, ${SHOT_TIERS[2]} donnent une balle.`,
       ),
       L(`Each ball left at the end is worth ${BALL_BONUS} points.`, `Chaque balle restante à la fin vaut ${BALL_BONUS} points.`),
     ],
   }),
   stars: (d) =>
     byLevel(d, [
-      [2300, 3200],
-      [2500, 3500],
-      [2800, 3900],
+      [2650, 3700],
       [3100, 4300],
-      [3400, 4800],
+      [3500, 4900],
+      [4100, 5700],
+      [4700, 6500],
     ] as const),
   par: (d) => 30 + targetsFor(d) * 5,
   pad: () => ({ left: leftRight(), right: [btn(' ', 'fire', L('Shoot', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const max = ballsFor(ctx.difficulty);
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
@@ -83,6 +123,8 @@ export const pegs: GameDef = {
     /** Arena time each peg lit up (-1: not lit), and which pegs have already popped. */
     const litAt = new Float32Array(n).fill(-1);
     const popped = new Uint8Array(n);
+    /** Pegs that started armoured (they keep their cracked plate once hit). */
+    const armoured = Uint8Array.from(s.pegs, (p) => (p.hp > 1 ? 1 : 0));
     /** When each cleared peg pops (arena time): lit pegs pop one after another once the ball is gone. */
     const popAt = new Float32Array(n).fill(-1);
     const TRAIL = 9;
@@ -92,6 +134,8 @@ export const pegs: GameDef = {
     let shotStart = 0;
     let lastMult = 1;
     let ended = false;
+    /** Arena time each bumper last kicked (for its flash). */
+    const bumpAt = s.bumpers.map(() => -1);
 
     const status = () =>
       ctx.status(
@@ -120,11 +164,45 @@ export const pegs: GameDef = {
         }
         g.globalAlpha = 1;
       }
+      // Wheels: a faint track under each spinning ring.
+      const tracks = new Set<string>();
+      g.strokeStyle = c.muted;
+      g.lineWidth = arena.lw * 0.6;
+      g.setLineDash([3, 5]);
+      g.globalAlpha = 0.5;
+      for (const p of s.pegs) {
+        const o = p.orbit;
+        if (!o || tracks.has(`${o.cx},${o.cy}`)) continue;
+        tracks.add(`${o.cx},${o.cy}`);
+        g.beginPath();
+        g.arc(o.cx, o.cy, o.r, 0, Math.PI * 2);
+        g.stroke();
+      }
+      g.setLineDash([]);
+      g.globalAlpha = 1;
+      // Bumpers: violet discs with a ring that flashes when they kick.
+      s.bumpers.forEach((b, i) => {
+        const k = bumpAt[i] < 0 ? 0 : Math.max(0, 1 - (arena.time - bumpAt[i]) / 0.25);
+        const tone = arena.tone(c.p[4]);
+        if (k > 0) {
+          g.fillStyle = tone.glow;
+          g.beginPath();
+          g.arc(b.x, b.y, BUMPER_R * (1.4 + k), 0, Math.PI * 2);
+          g.fill();
+        }
+        arena.ball(g, b.x, b.y, BUMPER_R * (1 + 0.15 * k), k > 0 ? tone.hi : c.p[4]);
+        g.strokeStyle = tone.edge;
+        g.lineWidth = arena.lw * 0.8;
+        g.beginPath();
+        g.arc(b.x, b.y, BUMPER_R * 0.5, 0, Math.PI * 2);
+        g.stroke();
+      });
       for (let i = 0; i < n; i++) {
         const p = s.pegs[i];
         if (p.gone && (popAt[i] < 0 || arena.time >= popAt[i])) continue;
-        // Targets are orange rounded squares, plain pegs blue balls; lit pegs glow and turn light.
-        const base = p.target ? c.p[0] : c.p[1];
+        // Targets are orange rounded squares, plain pegs blue balls, bombs dark, gold pegs green;
+        // lit pegs glow and turn light.
+        const base = p.target ? c.p[0] : p.trait === 'bomb' ? c.coal : p.trait === 'gold' ? c.good : c.p[1];
         let r = PEG_R;
         let fill = base;
         if (p.lit) {
@@ -138,6 +216,7 @@ export const pegs: GameDef = {
         }
         if (p.target) arena.block(g, p.x - r - 1, p.y - r - 1, r * 2 + 2, r * 2 + 2, fill, 3, !p.lit, 0.8);
         else arena.ball(g, p.x, p.y, r, fill, !p.lit);
+        if (!p.lit) drawTrait(g, p, i);
       }
       // Bucket: a tub with a dark opening and a rim.
       const bl = s.bucketX - s.bucketW / 2;
@@ -182,7 +261,63 @@ export const pegs: GameDef = {
         g.globalAlpha = 1;
       }
       if (!ended) arena.ball(g, s.flying ? s.bx : bx, s.flying ? s.by : by, BALL_R, ballFill);
+      // Combo meter along the top: pegs hit this shot towards the next milestone.
+      if (s.flying && s.hits > 0 && s.tier < SHOT_TIERS.length) {
+        const from = s.tier ? SHOT_TIERS[s.tier - 1] : 0;
+        const k = (s.hits - from) / (SHOT_TIERS[s.tier] - from);
+        g.globalAlpha = 0.85;
+        g.fillStyle = c.muted;
+        g.fillRect(0, 0, W, 4);
+        g.fillStyle = c.accent;
+        g.fillRect(0, 0, W * k, 4);
+        g.globalAlpha = 1;
+      }
       arena.overlay(g);
+    }
+
+    /** Marks on special pegs: a fuse on bombs, a + on gold pegs, a plate (then a crack) on armour. */
+    function drawTrait(g: CanvasRenderingContext2D, p: (typeof s.pegs)[number], i: number) {
+      const c = arena.colors;
+      g.lineWidth = arena.lw * 0.7;
+      if (p.trait === 'bomb') {
+        g.strokeStyle = c.accent;
+        g.beginPath();
+        g.moveTo(p.x + 3, p.y - 4);
+        g.quadraticCurveTo(p.x + 5, p.y - 9, p.x + 8, p.y - 8);
+        g.stroke();
+        if (Math.sin(arena.time * 14 + i) > 0) {
+          g.fillStyle = c.bad;
+          g.fillRect(p.x + 7, p.y - 10, 2.5, 2.5);
+        }
+      } else if (p.trait === 'gold') {
+        g.fillStyle = c.paper;
+        g.fillRect(p.x - 3.5, p.y - 1, 7, 2);
+        g.fillRect(p.x - 1, p.y - 3.5, 2, 7);
+      }
+      if (p.target && (p.hp > 1 || armoured[i])) {
+        const t = arena.tone(c.p[0]);
+        g.strokeStyle = t.edge;
+        g.beginPath();
+        g.roundRect(p.x - PEG_R + 2, p.y - PEG_R + 2, PEG_R * 2 - 4, PEG_R * 2 - 4, 1.5);
+        g.stroke();
+        g.fillStyle = t.edge;
+        for (const [dx, dy] of [
+          [-1, -1],
+          [1, -1],
+          [-1, 1],
+          [1, 1],
+        ])
+          g.fillRect(p.x + dx * (PEG_R - 4) - 0.8, p.y + dy * (PEG_R - 4) - 0.8, 1.6, 1.6);
+        if (p.hp <= 1) {
+          // Cracked: one more hit lights it.
+          g.beginPath();
+          g.moveTo(p.x - 4, p.y - 5);
+          g.lineTo(p.x, p.y - 1);
+          g.lineTo(p.x - 2, p.y + 2);
+          g.lineTo(p.x + 3, p.y + 5);
+          g.stroke();
+        }
+      }
     }
 
     /** Effects for what changed this frame: newly lit pegs, popped pegs, a rising multiplier. */
@@ -232,8 +367,39 @@ export const pegs: GameDef = {
       }
       if (multiplier(s) > lastMult) {
         lastMult = multiplier(s);
-        sfx('power');
-        fx.text(s.bx, s.by - 14, `×${lastMult}`, c.accent, 15);
+        fx.text(s.bx, s.by - 26, L(`Points ×${lastMult}`, `Points ×${lastMult}`), c.accent, 13);
+      }
+    }
+
+    /** Effects for armour, blasts, bumpers, free balls and shot milestones. */
+    function onEvents(ev: ReturnType<typeof step>, hits: number) {
+      const c = arena.colors;
+      for (const k of ev.cracks) {
+        fx.burst(k.x, k.y, c.muted, 6, 90, 2, 0.3, 'spark', 0);
+        sfx('hit', { pitch: 2 });
+      }
+      for (const b of ev.blasts) {
+        fx.ring(b.x, b.y, c.bad, 6, b.r, 0.4, arena.lw * 1.5);
+        fx.burst(b.x, b.y, c.accent, 16, 160, 3.5, 0.55, 'spark', 0);
+        fx.shake(3, 0.25);
+      }
+      if (ev.blasts.length) {
+        sfx('boom');
+        haptic(40);
+      }
+      for (const i of ev.bumps) {
+        if (arena.time - bumpAt[i] > 0.1) sfx('hit', { pitch: 9 });
+        bumpAt[i] = arena.time;
+      }
+      if (ev.free) {
+        sfx('coin');
+        fx.text(s.bx, s.by - 20, L('+1 ball', '+1 balle'), c.good, 14);
+        ctx.lives(s.balls, max);
+      }
+      if (s.hits > hits && s.hits >= 4) comboPop(fx, s.bx, s.by - 12, s.hits, c.accent);
+      for (const u of ev.unlocks) {
+        comboTier(fx, u.tier, c.accent, POWER_NAMES[u.power]());
+        if (u.power === 'bucket') fx.ring(s.bucketX, BUCKET_Y, c.accent, 8, s.bucketW, 0.45, arena.lw);
       }
     }
 
@@ -283,6 +449,7 @@ export const pegs: GameDef = {
       draw,
       frame(dt) {
         const score = s.score;
+        const hits = s.hits;
         const ev = step(s, dt);
         arena.update(dt);
         const c = arena.colors;
@@ -297,6 +464,7 @@ export const pegs: GameDef = {
           status();
         }
         react(s.score - score);
+        onEvents(ev, hits);
         if (ev.ended) {
           ctx.score(s.score);
           ctx.lives(s.balls, max);

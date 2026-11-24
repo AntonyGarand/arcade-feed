@@ -1,5 +1,6 @@
 import type { Rng } from '../../core/rng';
 import { byLevel, type Difficulty } from '../../core/types';
+import { dealKind, type Kind } from '../../core/variety';
 
 /** Playfield in world units (the canvas scales it to the card). */
 export const W = 260;
@@ -31,20 +32,42 @@ const PIT_DEPTH = 46;
 /** Reaction time we allow between landing and the next obstacle, in seconds. */
 const REACT_S = 0.42;
 
+/** A spring pad's launch speed (much higher than a jump), and its width. */
+const SPRING = 860;
+export const SPRING_W = 22;
+/** Seconds a spring launch stays above the ground. */
+const SPRING_AIR = (2 * SPRING) / GRAVITY;
+/** Bird box: width and height. Low birds fly at `LOW_BIRD` (jump them), high ones at `BAR_GAP` (duck them). */
+const BIRD_W = 18;
+export const BIRD_H = 12;
+const LOW_BIRD = 4;
+/** Seconds a duck lasts once under a tunnel's roof (refreshed while under it). */
+const TUNNEL_HOLD = 0.25;
+
+/** Clean passes in a row that fire a combo event (tier 1 at 5…). */
+export const COMBO_TIERS = [5, 10, 16, 24, 32] as const;
+/** What a combo milestone unlocks: a coin magnet, a shield, an unstoppable dash, then more of them. */
+export type Power = 'magnet' | 'shield' | 'dash' | 'dashShield' | 'all';
+const TIER_POWERS: readonly Power[] = ['magnet', 'shield', 'dash', 'dashShield', 'all'];
+export const MAGNET_S = 7;
+export const DASH_S = 4;
+/** Coins this close to the runner's middle fly in while the magnet runs. */
+export const MAGNET_R = 26;
+
 export const COIN_POINTS = 10;
 export const LIFE_BONUS = 100;
 /** Coins in a group (an arc over an obstacle, or a line under a bar). */
 const GROUP = 5;
 
-/** Track length to run. */
+/** Track length to run (faster kinds run a longer track in the same time). */
 export const lengthFor = (d: Difficulty) => byLevel(d, [5200, 6400, 7600, 8800, 10000]);
 /** Running speed at the start; it climbs by `RAMP` by the finish line. */
 export const speedFor = (d: Difficulty) => byLevel(d, [175, 195, 215, 235, 255]);
 const RAMP = 0.3;
 export const livesFor = (d: Difficulty) => byLevel(d, [3, 3, 3, 2, 2]);
-/** Obstacle kinds by level: low blocks always, pits from Medium, overhead bars from Hard. */
-const kindsFor = (d: Difficulty): Kind[] =>
-  byLevel<Kind[]>(d, [
+/** City obstacles by level: low blocks always, pits from Medium, overhead bars from Hard. */
+const cityPieces = (d: Difficulty): Piece[] =>
+  byLevel<Piece[]>(d, [
     ['block'],
     ['block', 'block', 'pit'],
     ['block', 'pit', 'bar'],
@@ -57,15 +80,55 @@ export const slackFor = (d: Difficulty) => byLevel(d, [0.9, 0.7, 0.5, 0.35, 0.25
 const groupsFor = (d: Difficulty) => byLevel(d, [8, 9, 10, 11, 12]);
 export const coinsFor = (d: Difficulty) => groupsFor(d) * GROUP;
 
-type Kind = 'block' | 'pit' | 'bar';
+/** The kinds of run a level can deal. */
+export const KINDS = [
+  { id: 'city', weight: 2 },
+  { id: 'woods' },
+  { id: 'springs', min: 2 },
+  { id: 'underpass', min: 3 },
+  { id: 'sprint', min: 2 },
+] as const satisfies readonly Kind[];
+export type KindId = (typeof KINDS)[number]['id'];
+
+/** What each kind of run throws at you. */
+function piecesFor(kind: KindId, d: Difficulty): Piece[] {
+  switch (kind) {
+    case 'woods':
+      return d === 1 ? ['block', 'block', 'bird'] : ['block', 'pit', 'bird', 'bird'];
+    case 'springs':
+      return [...cityPieces(d).filter((p) => p !== 'bar'), 'spring', 'spring'];
+    case 'underpass':
+      return d >= 4 ? ['block', 'pit', 'bar', 'tunnel', 'tunnel'] : ['block', 'block', 'bar', 'tunnel', 'tunnel'];
+    case 'sprint':
+      return ['block', 'block', 'pit'];
+    default:
+      return cityPieces(d);
+  }
+}
+/** A sprint runs a fifth faster (on a track a fifth longer). */
+const paceOf = (kind: KindId) => (kind === 'sprint' ? 1.2 : 1);
+
+/**
+ * A piece of track: a crate (`block`), a hole (`pit`; a wide chasm after a spring), a hanging `bar`,
+ * a long low `tunnel` (stay ducked), a `spring` pad that launches you high, or a `bird` flying along.
+ */
+type Piece = 'block' | 'pit' | 'bar' | 'tunnel' | 'spring' | 'bird';
 
 interface Obstacle {
-  kind: Kind;
-  /** Track x of the left edge, and width. */
+  kind: Piece;
+  /** Track x of the left edge, and width. A bird is here when the runner meets it (see `birdX`). */
   x: number;
   w: number;
-  /** Block height (0 for pits and bars). */
+  /** Block height; a bird's flying height (its bottom). 0 otherwise. */
   h: number;
+  /** Birds: their own speed along the run, as a share of yours (they fly the same way, slower). */
+  k?: number;
+  /** A pit too wide to jump: the spring before it clears it. */
+  chasm?: boolean;
+  /** Passed (counted for the combo, or spoiled by a bump). */
+  done?: boolean;
+  /** Smashed by a dash (crates, birds): gone. */
+  smashed?: boolean;
 }
 
 interface Coin {
@@ -73,10 +136,15 @@ interface Coin {
   /** Height above the ground. */
   y: number;
   taken: boolean;
+  /** Group index: taking a whole group counts for the combo. */
+  g: number;
 }
 
 export interface State {
   d: Difficulty;
+  kind: KindId;
+  /** Speed multiplier of this kind of run. */
+  pace: number;
   length: number;
   obstacles: Obstacle[];
   coins: Coin[];
@@ -102,10 +170,24 @@ export interface State {
   collected: number;
   score: number;
   time: number;
+  /** Launched by a spring: letting go of jump doesn't cut this flight. */
+  sprung: boolean;
+  /** Clean passes in a row: obstacles cleared without a bump, and whole coin groups. */
+  combo: number;
+  best: number;
+  /** Combo milestones reached by the current combo. */
+  tier: number;
+  /** Seconds of magnet and dash left, and shield charges. */
+  magnet: number;
+  dash: number;
+  shield: number;
 }
 
-/** Running speed at track position `x`: it ramps up along the run. */
-export const speedAt = (d: Difficulty, x: number) => speedFor(d) * (1 + (RAMP * Math.max(0, x)) / lengthFor(d));
+/** Running speed at track position `x`: it ramps up along the run (`pace` for faster kinds). */
+export const speedAt = (d: Difficulty, x: number, pace = 1) => speedFor(d) * pace * (1 + (RAMP * Math.max(0, x)) / (lengthFor(d) * pace));
+const speedOf = (s: State) => speedAt(s.d, s.x, s.pace);
+/** Track x of a bird's centre when the runner's centre is at `x`: it meets you right over its slot. */
+export const birdX = (o: Obstacle, x: number) => o.x + o.w / 2 + (x - o.x - o.w / 2) * (o.k ?? 0);
 
 /** Seconds a full jump stays above height `h`. */
 const airAbove = (h: number) => (2 * Math.sqrt(Math.max(0, JUMP * JUMP - 2 * GRAVITY * h))) / GRAVITY;
@@ -115,61 +197,92 @@ const APEX = (JUMP * JUMP) / (2 * GRAVITY);
 export const APEX_S = JUMP / GRAVITY;
 
 /**
- * Deal a run: obstacles and coins along the track, all from the seed. Every obstacle is checked
- * against the jump at the speed you'll be running when you reach it, with room to land and react.
+ * Deal a run: its kind, obstacles and coins along the track, all from the seed. Every obstacle is
+ * checked against the jump at the speed you'll be running when you reach it, with room to land and
+ * react; a chasm against the spring launch before it.
  */
-export function createLevel(d: Difficulty, rng: Rng): State {
-  const length = lengthFor(d);
-  const kinds = kindsFor(d);
+export function createLevel(d: Difficulty, rng: Rng, kindId?: KindId): State {
+  const kind = kindId ?? dealKind(rng, d, KINDS).id;
+  const pace = paceOf(kind);
+  const length = Math.round(lengthFor(d) * pace);
+  const pieces = piecesFor(kind, d);
+  const speed = (x: number) => speedAt(d, x, pace);
+  /** Room to land, see the next obstacle and react, at the speed by then. */
+  const room = (x: number) => speed(x) * (2 * APEX_S + REACT_S + slackFor(d) * (0.4 + rng.next()));
   const obstacles: Obstacle[] = [];
-  let x = 700; // a calm start: the first obstacle is a few seconds away
-  let last: Kind | '' = '';
-  while (x < length - 300) {
-    const v = speedAt(d, x);
-    let kind = rng.pick(kinds);
-    if (kind === last && kind !== 'block' && rng.chance(0.5)) kind = 'block';
+  let x = 700 * pace; // a calm start: the first obstacle is a few seconds away
+  let last: Piece | '' = '';
+  while (x < length - 300 * pace) {
+    const v = speed(x);
+    let piece = rng.pick(pieces);
+    if (piece === last && piece !== 'block' && rng.chance(0.5)) piece = 'block';
+    last = piece;
+    if (piece === 'spring') {
+      // A spring pad, then a chasm too wide to jump that its launch clears with room to spare.
+      obstacles.push({ kind: 'spring', x, w: SPRING_W, h: 0 });
+      const cx = x + SPRING_W + 6;
+      const reach = Math.floor(-SPRING_W / 2 - 6 + 0.85 * v * SPRING_AIR - PW / 2);
+      const jumpable = airAbove(0) * v * 0.8 - PW;
+      const cw = Math.min(reach, Math.round(Math.max(jumpable + 8, reach * (0.8 + rng.next() * 0.12))));
+      obstacles.push({ kind: 'pit', x: cx, w: cw, h: 0, chasm: true });
+      x = cx + cw + speed(cx) * SPRING_AIR * 0.25 + room(cx + cw);
+      continue;
+    }
     let w: number;
     let h = 0;
-    if (kind === 'block') {
+    let k: number | undefined;
+    if (piece === 'block') {
       h = rng.int(18, byLevel(d, [34, 42, 50, 56, 62]));
       // The runner must clear the block's top with its whole width while above it.
       const most = airAbove(h + 6) * v * 0.8 - PW;
       w = Math.max(14, Math.min(rng.int(16, byLevel(d, [30, 40, 50, 60, 70])), most));
-    } else if (kind === 'pit') {
+    } else if (piece === 'pit') {
       // A full jump crosses it with a fifth of its flight to spare.
       const most = airAbove(0) * v * 0.8 - PW;
       w = Math.min(rng.int(byLevel(d, [40, 44, 50, 56, 60]), byLevel(d, [60, 80, 100, 115, 130])), most);
-    } else {
+    } else if (piece === 'bar') {
       // A bar is ducked under: passing it must fit inside one swiped duck.
       const most = (SWIPE_DUCK_S - 0.2) * v - PW;
       w = Math.min(rng.int(30, byLevel(d, [40, 50, 70, 85, 100])), most);
+    } else if (piece === 'tunnel') {
+      // Long: a duck started before it lasts as long as you stay under its roof.
+      w = rng.int(110, byLevel(d, [150, 170, 200, 230, 260]));
+    } else {
+      // A bird flying your way, slower: low ones are jumped, high ones (Hard and up) ducked. It
+      // closes in slower than a crate, so both fit inside a full jump or a swiped duck.
+      w = BIRD_W;
+      h = d >= 3 && rng.chance(0.5) ? BAR_GAP : LOW_BIRD;
+      k = 0.2 + rng.next() * 0.2;
     }
     w = Math.round(w);
-    obstacles.push({ kind, x, w, h });
-    last = kind;
-    // Room to land, see the next one and react, at the speed by then.
-    const vAfter = speedAt(d, x + w);
-    x += w + vAfter * (2 * APEX_S + REACT_S + slackFor(d) * (0.4 + rng.next()));
+    obstacles.push(k == null ? { kind: piece, x, w, h } : { kind: piece, x, w, h, k });
+    x += w + room(x + w);
   }
   const coins: Coin[] = [];
-  const slots = rng.shuffle(obstacles.map((_, i) => i)).slice(0, groupsFor(d));
-  for (const i of slots) {
+  // No coins on a spring's flight: it flies itself, so they'd be free.
+  const spots = obstacles.map((_, i) => i).filter((i) => obstacles[i].kind !== 'spring' && !obstacles[i].chasm);
+  const slots = rng.shuffle(spots).slice(0, groupsFor(d));
+  slots.forEach((i, g) => {
     const o = obstacles[i];
-    const v = speedAt(d, o.x);
+    const v = speed(o.x);
     const mid = o.x + o.w / 2;
     for (let k = 0; k < GROUP; k++) {
       const t = (k - (GROUP - 1) / 2) * 0.1;
-      // Under a bar: a low line. Elsewhere: along a full jump whose top is over the obstacle.
-      if (o.kind === 'bar') coins.push({ x: o.x + (o.w * (k + 0.5)) / GROUP, y: 8, taken: false });
-      else coins.push({ x: mid + v * t, y: APEX - 0.5 * GRAVITY * t * t + PH / 2, taken: false });
+      if (o.kind === 'bar' || o.kind === 'tunnel' || (o.kind === 'bird' && o.h === BAR_GAP))
+        // Under a bar, a tunnel or a high bird: a low line.
+        coins.push({ x: o.x + (o.w * (k + 0.5)) / GROUP, y: 8, taken: false, g });
+      // Elsewhere: along a full jump whose top is over the obstacle.
+      else coins.push({ x: mid + v * t, y: APEX - 0.5 * GRAVITY * t * t + PH / 2, taken: false, g });
     }
-  }
-  // Groups past the obstacles (short tracks): a low line on open ground.
+  });
+  // Groups the obstacles can't hold (short tracks, many springs): a low coin road on the calm start.
   for (let i = slots.length; i < groupsFor(d); i++)
-    for (let k = 0; k < GROUP; k++) coins.push({ x: 400 + i * 40 + k * 16, y: 10, taken: false });
+    for (let k = 0; k < GROUP; k++) coins.push({ x: 90 + (i - slots.length) * 72 + k * 16, y: 10, taken: false, g: i });
   coins.sort((a, b) => a.x - b.x);
   return {
     d,
+    kind,
+    pace,
     length,
     obstacles,
     coins,
@@ -188,6 +301,13 @@ export function createLevel(d: Difficulty, rng: Rng): State {
     collected: 0,
     score: 0,
     time: 0,
+    sprung: false,
+    combo: 0,
+    best: 0,
+    tier: 0,
+    magnet: 0,
+    dash: 0,
+    shield: 0,
   };
 }
 
@@ -202,10 +322,10 @@ export function press(s: State) {
   }
 }
 
-/** Let go of jump: a rising jump is cut short. */
+/** Let go of jump: a rising jump is cut short (not a spring's launch). */
 export function release(s: State) {
   s.holding = false;
-  if (!s.grounded && s.vy > CUT) s.vy = CUT;
+  if (!s.grounded && !s.sprung && s.vy > CUT) s.vy = CUT;
 }
 
 /**
@@ -214,7 +334,7 @@ export function release(s: State) {
  */
 export function duck(s: State) {
   s.duckTime = SWIPE_DUCK_S;
-  if (!s.grounded && !s.falling && s.vy > 0 && s.y - s.jumpY < HOP_UNDO) {
+  if (!s.grounded && !s.falling && !s.sprung && s.vy > 0 && s.y - s.jumpY < HOP_UNDO) {
     s.y = s.jumpY;
     s.vy = 0;
     s.grounded = true;
@@ -231,34 +351,118 @@ const pitUnder = (s: State, left: number, right: number) =>
 
 /**
  * Top of the surface under the feet span, for feet at height `feet`: a block top you're above, the
- * ground (if any part of the feet is over it), or -∞ over a pit. A block you ran into is no floor.
+ * ground (if any part of the feet is over it, or always while dashing), or -∞ over a pit. A block
+ * you ran into is no floor.
  */
 function supportAt(s: State, left: number, right: number, feet: number): number {
-  let top = pitUnder(s, left, right) >= 0 ? -Infinity : 0;
-  for (const o of s.obstacles) if (o.kind === 'block' && o.x < right && o.x + o.w > left && o.h <= feet + 2) top = Math.max(top, o.h);
+  let top = s.dash <= 0 && pitUnder(s, left, right) >= 0 ? -Infinity : 0;
+  for (const o of s.obstacles)
+    if (o.kind === 'block' && !o.smashed && o.x < right && o.x + o.w > left && o.h <= feet + 2) top = Math.max(top, o.h);
   return top;
 }
+
+/** Whether obstacle `o` overlaps the runner's box right now. */
+function touches(s: State, o: Obstacle, left: number, right: number): boolean {
+  if (o.smashed) return false;
+  const top = s.y + heightOf(s);
+  if (o.kind === 'bird') {
+    const bx = birdX(o, s.x);
+    return bx - o.w / 2 < right - 2 && bx + o.w / 2 > left + 2 && o.h < top - 2 && o.h + BIRD_H > s.y + 2;
+  }
+  if (!(o.x < right - 2 && o.x + o.w > left + 2)) return false;
+  if (o.kind === 'block') return s.y < o.h - 3;
+  return (o.kind === 'bar' || o.kind === 'tunnel') && top > BAR_GAP;
+}
+
+/** Whether the runner is past obstacle `o`. */
+const passed = (s: State, o: Obstacle) => (o.kind === 'bird' ? birdX(o, s.x) + o.w / 2 < s.x - PW / 2 : o.x + o.w < s.x - PW / 2);
 
 export interface StepEvents {
   coin: boolean;
   hurt: boolean;
+  /** A shield took a bump instead of a heart. */
+  shielded: boolean;
   landed: boolean;
+  /** A spring launched you. */
+  sprung: boolean;
+  /** The combo grew this step (a clean pass or a whole coin group). */
+  combo: boolean;
+  /** A combo milestone reached this step (1-based), and what it unlocked; 0 for none. */
+  tier: number;
+  unlocked: Power | null;
+  /** Crates and birds a dash smashed this step (track x, height). */
+  smashed: { x: number; y: number }[];
   won: boolean;
   over: boolean;
 }
 
+/** Turn a combo power on. */
+export function grant(s: State, p: Power) {
+  if (p === 'magnet' || p === 'all') s.magnet = MAGNET_S;
+  if (p === 'shield' || p === 'dashShield' || p === 'all') s.shield = Math.min(2, s.shield + 1);
+  if (p === 'dash' || p === 'dashShield' || p === 'all') s.dash = DASH_S;
+}
+
+/** One more clean pass: count it, and fire a milestone's power. */
+function addCombo(s: State, ev: StepEvents) {
+  s.combo++;
+  s.best = Math.max(s.best, s.combo);
+  ev.combo = true;
+  if (s.tier < COMBO_TIERS.length && s.combo >= COMBO_TIERS[s.tier]) {
+    const p = TIER_POWERS[s.tier];
+    s.tier++;
+    grant(s, p);
+    ev.tier = s.tier;
+    ev.unlocked = p;
+  }
+}
+
+/** A bump: a shield charge takes it, else a heart and the combo. True when the run is over. */
+function bump(s: State, ev: StepEvents): boolean {
+  s.invulnerable = INVULNERABLE_S;
+  if (s.shield > 0) {
+    s.shield--;
+    ev.shielded = true;
+    return false;
+  }
+  s.lives--;
+  s.combo = s.tier = 0;
+  ev.hurt = true;
+  if (s.lives > 0) return false;
+  ev.over = true;
+  return true;
+}
+
 /** Advance the game by `dt` seconds. */
 export function step(s: State, dt: number): StepEvents {
-  const ev: StepEvents = { coin: false, hurt: false, landed: false, won: false, over: false };
+  const ev: StepEvents = {
+    coin: false,
+    hurt: false,
+    shielded: false,
+    landed: false,
+    sprung: false,
+    combo: false,
+    tier: 0,
+    unlocked: null,
+    smashed: [],
+    won: false,
+    over: false,
+  };
   if (s.x >= s.length || s.lives <= 0) return ev;
   s.time += dt;
   s.invulnerable = Math.max(0, s.invulnerable - dt);
   s.duckTime = Math.max(0, s.duckTime - dt);
-  const v = speedAt(s.d, s.x);
+  s.magnet = Math.max(0, s.magnet - dt);
+  const v = speedOf(s);
   const before = s.y;
   s.x += v * dt;
   const left = s.x - PW / 2;
   const right = s.x + PW / 2;
+  // A dash never runs out over a hole: it carries you to the far side.
+  if (s.dash > 0) {
+    const overPit = s.obstacles.some((o) => o.kind === 'pit' && o.x < right && o.x + o.w > left);
+    s.dash = Math.max(overPit ? 0.05 : 0, s.dash - dt);
+  }
 
   if (s.falling) {
     s.vy -= GRAVITY * dt;
@@ -268,6 +472,10 @@ export function step(s: State, dt: number): StepEvents {
     s.x = Math.min(s.x, pit.x + pit.w - PW / 2);
     return s.y < -PIT_DEPTH ? respawn(s, ev) : ev;
   }
+
+  // Under a tunnel's roof, a duck holds.
+  if (ducking(s) && s.obstacles.some((o) => o.kind === 'tunnel' && o.x < right && o.x + o.w > left))
+    s.duckTime = Math.max(s.duckTime, TUNNEL_HOLD);
 
   // Ducking in the air slams you down.
   if (!s.grounded && ducking(s) && s.vy > -SLAM) s.vy = -SLAM;
@@ -279,41 +487,63 @@ export function step(s: State, dt: number): StepEvents {
     s.y = floor;
     s.vy = 0;
     s.grounded = true;
+    s.sprung = false;
   } else {
     s.grounded = false;
     if (s.y < 0) {
       // Over a pit, below the rim: falling in.
       s.falling = true;
       s.pit = pitUnder(s, left, right);
+      s.obstacles[s.pit].done = true;
       return ev;
     }
   }
 
-  // Bumps: the side of a block, or a bar at head height.
-  if (!s.invulnerable) {
-    const top = s.y + heightOf(s);
-    const hit = s.obstacles.some(
-      (o) => o.x < right - 2 && o.x + o.w > left + 2 && ((o.kind === 'block' && s.y < o.h - 3) || (o.kind === 'bar' && top > BAR_GAP)),
-    );
-    if (hit) {
-      s.lives--;
-      ev.hurt = true;
-      if (s.lives <= 0) {
-        ev.over = true;
-        return ev;
+  // A spring under you on the ground launches you high.
+  if (s.grounded && s.y === 0)
+    for (const o of s.obstacles)
+      if (o.kind === 'spring' && s.x >= o.x + o.w / 2 && left < o.x + o.w) {
+        s.vy = SPRING;
+        s.grounded = false;
+        s.sprung = true;
+        s.duckTime = 0;
+        ev.sprung = true;
       }
-      s.invulnerable = INVULNERABLE_S;
+
+  // Bumps: the side of a block, a bar or a tunnel at head height, a bird. A dash smashes through.
+  for (const o of s.obstacles) {
+    if (!touches(s, o, left, right)) continue;
+    if (s.dash > 0) {
+      if (o.kind === 'block' || o.kind === 'bird') {
+        o.smashed = true;
+        ev.smashed.push(o.kind === 'bird' ? { x: birdX(o, s.x), y: o.h + BIRD_H / 2 } : { x: o.x + o.w / 2, y: o.h / 2 });
+      }
+      continue;
     }
+    if (s.invulnerable) continue;
+    o.done = true;
+    if (bump(s, ev)) return ev;
+    break;
   }
 
+  // Obstacles left behind cleanly grow the combo.
+  for (const o of s.obstacles) {
+    if (o.done || o.kind === 'spring' || !passed(s, o)) continue;
+    o.done = true;
+    addCombo(s, ev);
+  }
+
+  const mid = s.y + heightOf(s) / 2;
   for (const c of s.coins) {
-    if (c.taken || c.x < left - COIN_R || c.x > right + COIN_R) continue;
-    if (c.y + COIN_R > s.y && c.y - COIN_R < s.y + heightOf(s)) {
-      c.taken = true;
-      s.collected++;
-      s.score += COIN_POINTS;
-      ev.coin = true;
-    }
+    if (c.taken) continue;
+    const near = s.magnet > 0 && Math.hypot(c.x - s.x, c.y - mid) < MAGNET_R;
+    if (!near && (c.x < left - COIN_R || c.x > right + COIN_R || c.y + COIN_R <= s.y || c.y - COIN_R >= s.y + heightOf(s))) continue;
+    c.taken = true;
+    s.collected++;
+    s.score += COIN_POINTS;
+    ev.coin = true;
+    // A whole group taken: one more for the combo.
+    if (s.coins.every((o) => o.g !== c.g || o.taken)) addCombo(s, ev);
   }
 
   if (s.x >= s.length) {
@@ -323,20 +553,15 @@ export function step(s: State, dt: number): StepEvents {
   return ev;
 }
 
-/** A heart for the pit; back on the ground just past it, safe for a moment. */
+/** A heart (or a shield) for the pit; back on the ground just past it, safe for a moment. */
 function respawn(s: State, ev: StepEvents): StepEvents {
-  s.lives--;
-  ev.hurt = true;
-  if (s.lives <= 0) {
-    ev.over = true;
-    return ev;
-  }
+  if (bump(s, ev)) return ev;
   const pit = s.obstacles[s.pit];
   s.x = pit.x + pit.w + PW;
   s.y = 0;
   s.vy = 0;
   s.falling = false;
   s.grounded = true;
-  s.invulnerable = INVULNERABLE_S;
+  s.sprung = false;
   return ev;
 }

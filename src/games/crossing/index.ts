@@ -3,11 +3,14 @@ import { L } from '../../core/i18n';
 import { byLevel, type Difficulty, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { gestures, keyDir, type Dir } from '../../kits/gesture/gesture';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
+  BIG_FREEZE_S,
   COLS,
   createLevel,
+  JAWS,
   GOAL_ROW,
   HOME_POINTS,
   homesFor,
@@ -22,9 +25,43 @@ import {
   SLOTS,
   START_ROW,
   step,
+  STREAK_TIERS,
+  STREAK_WINDOW,
+  sunk,
   TIME_POINTS,
   timeFor,
+  type KindId,
+  type Lane,
+  type Reward,
 } from './rules';
+
+/** What each kind of level is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [
+    L('Classic', 'Classique'),
+    L('Cars on the road, logs on the river.', 'Des autos sur la route, des billots sur la rivière.'),
+  ],
+  rush: () => [L('Rush hour', 'Heure de pointe'), L('Five lanes of packed, faster traffic.', 'Cinq voies de circulation dense et rapide.')],
+  railway: () => [
+    L('Railway', 'Chemin de fer'),
+    L('Trains thunder by: watch the red signals.', 'Des trains passent en trombe : surveillez les feux.'),
+  ],
+  turtles: () => [
+    L('Turtle bay', 'Baie des tortues'),
+    L('Ride turtles, but some of them dive.', 'Montez sur les tortues, mais certaines plongent.'),
+  ],
+  flood: () => [L('Flood', 'Inondation'), L('The river has swallowed half the road.', 'La rivière a englouti la moitié de la route.')],
+  night: () => [L('Night', 'Nuit'), L('Dark out: you only see what is near.', 'Il fait noir : vous ne voyez que de près.')],
+};
+
+const REWARD_NAMES: Record<Reward, () => string> = {
+  freeze: () => L('Traffic frozen!', 'Circulation gelée!'),
+  shield: () => L('Shield!', 'Bouclier!'),
+  bigFreeze: () => L('Big freeze!', 'Grand gel!'),
+};
+
+/** Seconds before a train shows up that its signal starts blinking. */
+const WARN_S = 2;
 
 const CELL = 32;
 const W = COLS * CELL;
@@ -63,6 +100,10 @@ export const crossing: GameDef = {
         'Chaque abri accueille une bestiole; la haie entre les abris bloque le passage.',
       ),
       L(
+        'Levels vary: trains (a red signal blinks first), turtles that dive, crocodiles whose jaws bite, floods, night.',
+        'Les niveaux varient : trains (un feu rouge clignote avant), tortues qui plongent, crocodiles qui mordent, inondations, nuit.',
+      ),
+      L(
         'Swipe to hop one square. Tap above your critter to hop forward, beside it to hop sideways.',
         'Balayez pour sauter d’une case. Touchez au-dessus de la bestiole pour avancer, à côté pour aller de côté.',
       ),
@@ -80,6 +121,10 @@ export const crossing: GameDef = {
         'Grass strips are safe: wait there for a gap or the right log.',
         'Les bandes de gazon sont sûres : attendez-y une ouverture ou le bon billot.',
       ),
+      L(
+        `Hop forward quickly without stopping: ${STREAK_TIERS[0]} in a row freezes traffic, ${STREAK_TIERS[1]} gives a shield against one hit, ${STREAK_TIERS[2]} a longer freeze.`,
+        `Avancez vite sans vous arrêter : ${STREAK_TIERS[0]} sauts de suite gèlent la circulation, ${STREAK_TIERS[1]} donnent un bouclier contre un coup, ${STREAK_TIERS[2]} un gel plus long.`,
+      ),
     ],
   }),
   stars: (d) => {
@@ -93,6 +138,8 @@ export const crossing: GameDef = {
   pad: () => ({ left: 'dpad' }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     /** Last hop: where it started, for the jump animation, and its direction (the eyes look that way). */
     let from = { x: s.x, row: s.row };
@@ -109,7 +156,11 @@ export const crossing: GameDef = {
     const secondsLeft = () => Math.max(0, Math.ceil(s.limit - s.time));
     const status = () => {
       shown = secondsLeft();
-      ctx.status(`${L('Home', 'Abris')} ${s.homes}/${s.need} · ${shown} s`);
+      ctx.status(
+        [`${L('Home', 'Abris')} ${s.homes}/${s.need}`, `${shown} s`, s.streak > 2 ? L(`streak ${s.streak}`, `série ${s.streak}`) : '']
+          .filter(Boolean)
+          .join(' · '),
+      );
     };
 
     function drawHopper(g: CanvasRenderingContext2D, cx: number, cy: number, scale: number, dir: Dir) {
@@ -148,7 +199,7 @@ export const crossing: GameDef = {
           g.strokeStyle = c.cell;
           g.lineWidth = 1.2;
           g.globalAlpha = 0.6;
-          const off = (((lane.speed * s.time * 0.5) % 2) + 2) % 2;
+          const off = (((lane.speed * s.clock * 0.5) % 2) + 2) % 2;
           for (let k = -1; k < COLS + 1; k += 2) {
             const x = (k + off) * CELL;
             g.beginPath();
@@ -158,7 +209,8 @@ export const crossing: GameDef = {
           }
           g.globalAlpha = 1;
         }
-        if (lane.kind === 'road' && s.lanes[r + 1].kind === 'road') {
+        if (lane.rail) drawRail(g, lane, y);
+        else if (lane.kind === 'road' && s.lanes[r + 1].kind === 'road' && !s.lanes[r + 1].rail) {
           g.strokeStyle = c.cell;
           g.lineWidth = 2;
           g.setLineDash([10, 10]);
@@ -191,10 +243,19 @@ export const crossing: GameDef = {
         const lane = s.lanes[r];
         const y = r * CELL;
         for (const it of lane.items) {
-          const x = itemX(lane, it, s.time) * CELL;
+          const x = itemX(lane, it, s.clock) * CELL;
           const w = it.len * CELL;
+          if (it.type === 'turtle') {
+            drawTurtles(g, x, y, it.len, sunk(it, s.clock));
+            continue;
+          }
+          if (it.type === 'train') {
+            drawTrain(g, x, y, w, lane.speed > 0);
+            continue;
+          }
           if (lane.kind === 'river') {
-            const wood = arena.tone(c.p[0]).lo;
+            const croc = it.type === 'croc';
+            const wood = croc ? arena.tone(c.p[2]).lo : arena.tone(c.p[0]).lo;
             arena.block(g, x + 1, y + 5, w - 2, CELL - 10, wood, 8);
             // Wood grain, and the cut rings at both ends.
             const wt = arena.tone(wood);
@@ -208,6 +269,10 @@ export const crossing: GameDef = {
               g.stroke();
             }
             g.globalAlpha = 1;
+            if (croc) {
+              drawJaws(g, x, y, w, lane.speed > 0);
+              continue;
+            }
             g.fillStyle = wt.hi;
             for (const ex of [x + 7, x + w - 7]) {
               g.beginPath();
@@ -239,12 +304,147 @@ export const crossing: GameDef = {
       }
     }
 
+    /** Train tracks: sleepers and two rails, and a signal at each end that blinks while a train is near. */
+    function drawRail(g: CanvasRenderingContext2D, lane: Lane, y: number) {
+      const c = arena.colors;
+      g.fillStyle = arena.tone(c.p[0]).lo;
+      g.globalAlpha = 0.55;
+      for (let x = 4; x < W; x += 12) g.fillRect(x, y + 4, 5, CELL - 8);
+      g.globalAlpha = 1;
+      g.strokeStyle = c.muted;
+      g.lineWidth = 2;
+      g.beginPath();
+      for (const ry of [y + 10, y + CELL - 10]) {
+        g.moveTo(0, ry);
+        g.lineTo(W, ry);
+      }
+      g.stroke();
+      const it = lane.items[0];
+      const x = itemX(lane, it, s.clock);
+      const v = Math.abs(lane.speed);
+      const until = lane.speed > 0 ? -(x + it.len) / v : (x - COLS) / v;
+      const near = until < WARN_S && (until > 0 || (x < COLS && x + it.len > 0));
+      const on = near && Math.sin(arena.time * 14) > 0;
+      for (const sx of [5, W - 5]) arena.disc(g, sx, y + CELL / 2, 4, on ? c.bad : c.cellAlt);
+    }
+
+    function drawTrain(g: CanvasRenderingContext2D, x: number, y: number, w: number, right: boolean) {
+      const c = arena.colors;
+      const fill = c.p[7];
+      arena.block(g, x + 1, y + 3, w - 2, CELL - 6, fill, 6);
+      // Windows along the carriages, and a lamp on the nose.
+      g.fillStyle = mix(c.p[1], c.paper, 0.55);
+      for (let k = 0.5; k < w / CELL - 0.5; k += 1) g.fillRect(x + k * CELL + 4, y + 9, CELL - 14, CELL - 18);
+      g.fillStyle = arena.tone(fill).edge;
+      for (let k = 1; k < w / CELL; k += 2) g.fillRect(x + k * CELL - 1, y + 4, 2, CELL - 8);
+      arena.disc(g, right ? x + w - 5 : x + 5, y + CELL / 2, 3, c.p[3]);
+    }
+
+    /** A crocodile's head at the end it swims towards: an eye, and jaws snapping. */
+    function drawJaws(g: CanvasRenderingContext2D, x: number, y: number, w: number, right: boolean) {
+      const c = arena.colors;
+      const k = right ? 1 : -1;
+      const tip = right ? x + w - 2 : x + 2;
+      const back = tip - k * JAWS * CELL;
+      const open = 3 + Math.abs(Math.sin(arena.time * 4)) * 4;
+      g.fillStyle = c.bad;
+      g.beginPath();
+      g.moveTo(back, y + CELL / 2);
+      g.lineTo(tip, y + CELL / 2 - open);
+      g.lineTo(tip, y + CELL / 2 + open);
+      g.closePath();
+      g.fill();
+      g.fillStyle = c.paper;
+      for (let t = 0.25; t < 1; t += 0.3) {
+        const tx = back + (tip - back) * t;
+        g.fillRect(tx - 1, y + CELL / 2 - open * t - 1, 2, 2.5);
+        g.fillRect(tx - 1, y + CELL / 2 + open * t - 1.5, 2, 2.5);
+      }
+      arena.disc(g, back - k * 4, y + 9, 3, c.paper);
+      arena.disc(g, back - k * 4, y + 9, 1.4, c.coal);
+    }
+
+    /** A group of turtles, fading under the water as they dive (`under` 0 to 1). */
+    function drawTurtles(g: CanvasRenderingContext2D, x: number, y: number, n: number, under: number) {
+      const c = arena.colors;
+      for (let k = 0; k < n; k++) {
+        const cx = x + (k + 0.5) * CELL;
+        const cy = y + CELL / 2;
+        if (under >= 1) {
+          g.strokeStyle = c.cell;
+          g.lineWidth = 1.2;
+          g.globalAlpha = 0.7;
+          g.beginPath();
+          g.arc(cx, cy, CELL * 0.25 + Math.sin(arena.time * 5 + k) * 2, 0, Math.PI * 2);
+          g.stroke();
+          g.globalAlpha = 1;
+          continue;
+        }
+        g.globalAlpha = 1 - under * 0.7;
+        const shell = under > 0 && Math.sin(arena.time * 12) > 0 ? c.bad : c.good;
+        arena.disc(g, cx + CELL * 0.33, cy, 4, arena.tone(c.good).lo);
+        arena.ball(g, cx, cy, CELL * 0.34 * (1 - under * 0.3), shell);
+        g.strokeStyle = arena.tone(shell).edge;
+        g.lineWidth = 1;
+        g.beginPath();
+        g.moveTo(cx - 5, cy);
+        g.lineTo(cx + 5, cy);
+        g.moveTo(cx, cy - 5);
+        g.lineTo(cx, cy + 5);
+        g.stroke();
+        g.globalAlpha = 1;
+      }
+    }
+
+    /** Night: everything but the far bank fades into the dark, apart from a circle around the critter and the headlights. */
+    function drawNight(g: CanvasRenderingContext2D) {
+      const c = arena.colors;
+      const k = s.cool > 0 && !s.dead ? 1 - s.cool / HOP_S : 1;
+      const cx = (from.x + (s.x - from.x) * k + 0.5) * CELL;
+      const cy = (from.row + (s.row - from.row) * k + 0.5) * CELL;
+      g.fillStyle = c.coal;
+      g.globalAlpha = 0.72;
+      g.beginPath();
+      g.rect(0, CELL, W, H - CELL);
+      g.arc(cx, cy, CELL * 2.3, 0, Math.PI * 2, true);
+      g.fill('evenodd');
+      g.globalAlpha = 1;
+      for (let r = 0; r < ROWS; r++) {
+        const lane = s.lanes[r];
+        if (lane.kind !== 'road') continue;
+        for (const it of lane.items) {
+          const x = itemX(lane, it, s.clock) * CELL;
+          const front = lane.speed > 0 ? x + it.len * CELL : x;
+          if (front < -CELL || front > W + CELL) continue;
+          g.fillStyle = c.p[3];
+          g.globalAlpha = 0.25;
+          g.beginPath();
+          g.moveTo(front, r * CELL + CELL / 2);
+          g.lineTo(front + Math.sign(lane.speed) * CELL * 1.6, r * CELL + 2);
+          g.lineTo(front + Math.sign(lane.speed) * CELL * 1.6, r * CELL + CELL - 2);
+          g.closePath();
+          g.fill();
+          g.globalAlpha = 1;
+          arena.disc(g, front - Math.sign(lane.speed) * 4, r * CELL + CELL / 2, 3, c.p[3]);
+        }
+      }
+    }
+
     function draw() {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
       drawLanes(g);
       drawItems(g);
+      if (s.freeze > 0) {
+        // Frozen traffic: a frosty tint over the lanes.
+        g.fillStyle = c.p[4];
+        g.globalAlpha = 0.14 + 0.05 * Math.sin(arena.time * 8);
+        g.fillRect(0, CELL, W, H - 2 * CELL);
+        g.globalAlpha = 0.9;
+        g.fillRect(0, CELL, W * Math.min(1, s.freeze / BIG_FREEZE_S), 3);
+        g.globalAlpha = 1;
+      }
       if (wreck && s.dead > 0) {
         const cx = (wreck.x + 0.5) * CELL;
         const cy = (wreck.row + 0.5) * CELL;
@@ -269,6 +469,23 @@ export const crossing: GameDef = {
         const hx1 = from.x + (s.x - from.x) * k;
         const fy = from.row + (s.row - from.row) * k;
         drawHopper(g, (hx1 + 0.5) * CELL, (fy + 0.5) * CELL, 1 + Math.sin(Math.PI * k) * 0.25, facing);
+        if (s.shield) {
+          g.strokeStyle = c.p[4];
+          g.lineWidth = arena.lw * 1.2;
+          g.globalAlpha = 0.6 + 0.3 * Math.sin(arena.time * 6);
+          g.beginPath();
+          g.arc((hx1 + 0.5) * CELL, (fy + 0.5) * CELL, CELL * 0.52, 0, Math.PI * 2);
+          g.stroke();
+          g.globalAlpha = 1;
+        }
+      }
+      if (s.kind === 'night' && !ended) drawNight(g);
+      // Streak meter under the far bank: drains until the streak of forward hops runs out.
+      if (s.streak > 1 && !ended) {
+        g.fillStyle = c.accent;
+        g.globalAlpha = 0.9;
+        g.fillRect(0, CELL + 3, W * Math.max(0, s.streakLeft / STREAK_WINDOW), 3);
+        g.globalAlpha = 1;
       }
       // Time left along the bottom: red and pulsing over the last ten seconds.
       const low = s.limit - s.time < 10 && !ended;
@@ -285,9 +502,14 @@ export const crossing: GameDef = {
       const out = hop(s, dir);
       if (!out) return;
       facing = dir;
+      const c0 = arena.colors;
+      if (dir === 0 && s.streak >= 3) comboPop(fx, (before.x + 0.5) * CELL, before.row * CELL, s.streak, c0.accent);
+      if (s.reward) {
+        comboTier(fx, s.tier, s.reward === 'shield' ? c0.p[4] : c0.accent, REWARD_NAMES[s.reward]());
+      }
       if (out === 'move') {
         from = before;
-        sfx('jump', { vol: 0.45, pitch: dir === 0 ? 2 : 0 });
+        if (!(dir === 0 && s.streak >= 3)) sfx('jump', { vol: 0.45, pitch: dir === 0 ? 2 : 0 });
       } else {
         if (out === 'home') sfx('power');
         const col = Math.round(before.x);
@@ -341,8 +563,17 @@ export const crossing: GameDef = {
         if (s.row === row) from = { x: from.x + (s.x - x), row: from.row };
         arena.update(dt);
         homeFlash = Math.max(0, homeFlash - dt);
+        if (ev.shielded) {
+          const c = arena.colors;
+          const wx = (s.x + 0.5) * CELL;
+          const wy = (s.row + 0.5) * CELL;
+          fx.ring(wx, wy, c.p[4], 6, CELL * 1.3, 0.45, arena.lw * 1.5);
+          fx.text(wx, wy - CELL * 0.6, L('Shielded!', 'Protégé!'), c.p[4], 14);
+        }
+        if (ev.streakEnd) status();
         if (ev.died) {
           const c = arena.colors;
+
           wreck = { x: s.x, row: s.row, water: s.lanes[s.row].kind === 'river' };
           const wx = (s.x + 0.5) * CELL;
           const wy = (s.row + 0.5) * CELL;

@@ -5,13 +5,17 @@ import type { GameDef } from '../../core/types';
 import { Arena, type Trace } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
 import { gestures } from '../../kits/gesture/gesture';
-import { sfx } from '../../kits/sound/sound';
+import { comboPop, comboTier } from '../../kits/combo/combo';
+import { haptic, sfx } from '../../kits/sound/sound';
 import { glyphPath } from '../../kits/glyph/glyph';
 import {
-  aliveCount,
   BLOCK,
+  BOSS_HH,
+  BOSS_HW,
+  BOSS_Y,
   CANNON_HW,
   CANNON_Y,
+  COMBO_TIERS,
   createLevel,
   CRITTER_R,
   critterAt,
@@ -19,17 +23,54 @@ import {
   H,
   LAND_Y,
   LIFE_BONUS,
+  leftCount,
   LIVES,
   parFor,
+  RAPID_S,
   shieldCell,
   SHIELD_COLS,
   SHIELD_Y,
   SHOT_HL,
   SHOT_HW,
+  SPREAD_S,
   step,
   TIME_POINTS,
   W,
+  type Critter,
+  type KindId,
+  type Power,
 } from './rules';
+
+/** What each kind of formation is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  block: () => [
+    L('Classic block', 'Bloc classique'),
+    L('Rows and rows of critters, marching in step.', 'Des rangées de bestioles qui marchent au pas.'),
+  ],
+  wedge: () => [
+    L('Wedge', 'Pointe de flèche'),
+    L('An arrowhead: its point lands first.', 'Une pointe de flèche : sa pointe atterrit en premier.'),
+  ],
+  armour: () => [
+    L('Armoured front', 'Front blindé'),
+    L('Helmeted critters take two hits.', 'Les bestioles casquées encaissent deux coups.'),
+  ],
+  swoop: () => [
+    L('Divers', 'Plongeurs'),
+    L('Winged critters swoop down at your cannon.', 'Des bestioles ailées plongent sur votre canon.'),
+  ],
+  mothership: () => [
+    L('Mothership', 'Vaisseau mère'),
+    L('A mothership guards the formation: shoot it down.', 'Un vaisseau mère garde la formation : abattez-le.'),
+  ],
+};
+
+const POWER_NAMES: Record<Power, () => string> = {
+  rapid: () => L('Rapid fire!', 'Tir rapide!'),
+  spread: () => L('Spread shot!', 'Tir triple!'),
+  guard: () => L('Shield!', 'Bouclier!'),
+  bomb: () => L('Smart bomb!', 'Bombe intelligente!'),
+};
 
 export const formation: GameDef = {
   id: 'formation',
@@ -55,8 +96,12 @@ export const formation: GameDef = {
         'Les bestioles ripostent. Un coup coûte un cœur; les abris bloquent les tirs des deux côtés jusqu’à s’effriter.',
       ),
       L(
-        'Only a shot or two of yours can fly at once: make them count. Your shot cancels one of theirs.',
-        'Seulement un ou deux de vos tirs volent à la fois : visez bien. Votre tir annule un des leurs.',
+        'Each card deals a kind: a block, a wedge, an armoured front, divers or a mothership to shoot down too.',
+        'Chaque carte a son genre : un bloc, une pointe, un front blindé, des plongeurs ou un vaisseau mère à abattre aussi.',
+      ),
+      L(
+        'Helmeted critters take two hits. Winged ones swoop at the cannon: dodge them or shoot them for double points.',
+        'Les bestioles casquées encaissent deux coups. Les ailées plongent sur le canon : esquivez-les ou abattez-les pour le double des points.',
       ),
       L(
         'Touch and drag anywhere to slide the cannon; it fires while your finger is down.',
@@ -68,6 +113,14 @@ export const formation: GameDef = {
       ),
     ],
     tips: [
+      L(
+        `Hit ${COMBO_TIERS[0]}, ${COMBO_TIERS[1]}, ${COMBO_TIERS[2]} and ${COMBO_TIERS[3]} in quick succession, without being hit, for rapid fire, a spread shot, a shield, then a smart bomb.`,
+        `Touchez ${COMBO_TIERS[0]}, ${COMBO_TIERS[1]}, ${COMBO_TIERS[2]} puis ${COMBO_TIERS[3]} fois coup sur coup, sans être touché, pour le tir rapide, le tir triple, un bouclier, puis une bombe intelligente.`,
+      ),
+      L(
+        'Only a shot or two of yours can fly at once: make them count. Your shot cancels one of theirs.',
+        'Seulement un ou deux de vos tirs volent à la fois : visez bien. Votre tir annule un des leurs.',
+      ),
       L(
         `Top rows are worth more. Each heart left adds ${LIFE_BONUS}, each second under par ${TIME_POINTS}.`,
         `Les rangées du haut valent plus. Chaque cœur restant ajoute ${LIFE_BONUS}, chaque seconde sous la normale ${TIME_POINTS}.`,
@@ -91,6 +144,8 @@ export const formation: GameDef = {
   pad: () => ({ left: leftRight(), right: [btn(' ', 'fire', L('Fire', 'Tirer'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     let offset = 0;
@@ -109,15 +164,40 @@ export const formation: GameDef = {
           glyphPath(g, k, 0, 0, r),
     );
 
-    const status = () => ctx.status(P(aliveCount(s), ['critter left', 'critters left'], ['bestiole restante', 'bestioles restantes']));
+    const status = () =>
+      ctx.status(
+        [
+          P(leftCount(s), ['critter left', 'critters left'], ['bestiole restante', 'bestioles restantes']),
+          s.combo.count > 1 ? `combo ×${s.combo.count}` : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      );
 
     /** A critter: its glyph as a faceted body, antennae and legs that swap with each march tick, two eyes. */
-    function critter(g: CanvasRenderingContext2D, x: number, y0: number, k: number) {
+    function critter(g: CanvasRenderingContext2D, x: number, y0: number, kc: Critter) {
       const c = arena.colors;
+      const k = kc.k;
       const fill = c.p[k];
       const t = arena.tone(fill);
-      const hop = s.pose ? -1 : 0;
+      const hop = kc.dive ? 0 : s.pose ? -1 : 0;
       const y = y0 + hop;
+      if (kc.type === 'diver') {
+        // Wings: they flap while diving.
+        const flap = kc.dive ? Math.sin(arena.time * 22) * 3 : 0;
+        g.fillStyle = t.hi;
+        g.strokeStyle = t.edge;
+        g.lineWidth = arena.lw * 0.6;
+        for (const side of [-1, 1]) {
+          g.beginPath();
+          g.moveTo(x + side * 7, y - 3);
+          g.lineTo(x + side * (CRITTER_R + 7), y - 7 - flap);
+          g.lineTo(x + side * (CRITTER_R + 4), y + 4 + flap * 0.5);
+          g.closePath();
+          g.fill();
+          g.stroke();
+        }
+      }
       g.strokeStyle = t.edge;
       g.lineWidth = arena.lw * 0.75;
       g.lineCap = 'round';
@@ -152,6 +232,92 @@ export const formation: GameDef = {
         g.beginPath();
         g.arc(x + side * 3.3 + look * 1.1, y + 0.2, 1.2, 0, Math.PI * 2);
         g.fill();
+      }
+      if (kc.type === 'armour') {
+        // A steel helmet over the eyes; cracked once it has taken a hit.
+        const m = arena.tone(c.muted);
+        g.fillStyle = m.base;
+        g.strokeStyle = m.edge;
+        g.lineWidth = arena.lw * 0.7;
+        g.beginPath();
+        g.arc(x, y - 2, CRITTER_R - 0.5, Math.PI * 1.05, Math.PI * 1.95);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        g.fillStyle = m.hi;
+        for (const rx of [-5, 0, 5]) g.fillRect(x + rx - 0.8, y - 7.5, 1.6, 1.6);
+        if (kc.hp < 2) {
+          g.strokeStyle = c.coal;
+          g.lineWidth = arena.lw * 0.5;
+          g.beginPath();
+          g.moveTo(x - 2, y - CRITTER_R + 1);
+          g.lineTo(x + 1, y - 7);
+          g.lineTo(x - 1, y - 4);
+          g.stroke();
+        }
+      }
+    }
+
+    /** The mothership: a saucer with blinking lights, a dome, and its hits left above it. */
+    function drawBoss(g: CanvasRenderingContext2D) {
+      const b = s.boss;
+      if (!b || b.hp <= 0) return;
+      const c = arena.colors;
+      const fill = c.p[6];
+      const t = arena.tone(fill);
+      const y = BOSS_Y + Math.sin(arena.time * 3) * 1.2;
+      g.fillStyle = arena.tone(c.paper).glow;
+      g.strokeStyle = t.edge;
+      g.lineWidth = arena.lw * 0.7;
+      g.beginPath();
+      g.ellipse(b.x, y - 3, BOSS_HW * 0.45, BOSS_HH * 0.9, 0, Math.PI, 0);
+      g.fill();
+      g.stroke();
+      arena.block(g, b.x - BOSS_HW, y - BOSS_HH * 0.4, BOSS_HW * 2, BOSS_HH * 1.3, fill, BOSS_HH * 0.65);
+      for (let i = 0; i < 5; i++) {
+        g.fillStyle = Math.floor(arena.time * 6 + i) % 2 === 0 ? c.accent : t.lo;
+        g.beginPath();
+        g.arc(b.x + (i - 2) * 8, y + 2, 1.8, 0, Math.PI * 2);
+        g.fill();
+      }
+      // Hits left.
+      const bw = BOSS_HW * 2;
+      g.fillStyle = c.cellAlt;
+      g.fillRect(b.x - bw / 2, y - BOSS_HH - 6, bw, 3);
+      g.fillStyle = c.bad;
+      g.fillRect(b.x - bw / 2, y - BOSS_HH - 6, (bw * b.hp) / b.max, 3);
+    }
+
+    /** Power meters on the ground strip, the guard bubble round the cannon, and the combo meter on top. */
+    function drawPowers(g: CanvasRenderingContext2D) {
+      const c = arena.colors;
+      const bars: [number, string][] = [];
+      if (s.rapid > 0) bars.push([s.rapid / RAPID_S, c.accent]);
+      if (s.spread > 0) bars.push([s.spread / SPREAD_S, c.good]);
+      g.globalAlpha = 0.85;
+      bars.forEach(([k, col], i) => {
+        g.fillStyle = col;
+        g.fillRect(8, CANNON_Y + 17 + i * 5, (W - 16) * k, 3);
+      });
+      g.globalAlpha = 1;
+      if (s.guard && ended !== 'shot') {
+        g.fillStyle = arena.tone(c.good).glow;
+        g.strokeStyle = c.good;
+        g.lineWidth = arena.lw * (0.8 + 0.3 * Math.sin(arena.time * 8));
+        g.beginPath();
+        g.arc(s.px, CANNON_Y - 1, CANNON_HW + 7, 0, Math.PI * 2);
+        g.fill();
+        g.stroke();
+      }
+      // Hits in a row, filling up to the next milestone.
+      const n = s.combo.count;
+      if (n > 1 && !ended) {
+        const next = COMBO_TIERS.find((x) => x > n) ?? n;
+        const prev = COMBO_TIERS.findLast((x) => x <= n) ?? 0;
+        g.fillStyle = c.accent;
+        g.globalAlpha = 0.85;
+        g.fillRect(0, 0, next > prev ? (W * (n - prev)) / (next - prev) : W, 3);
+        g.globalAlpha = 1;
       }
     }
 
@@ -198,7 +364,8 @@ export const formation: GameDef = {
       arena.field(g, 0, 0, W, H, 25, 0, false);
       // The landing line warms up as the formation gets close to it.
       const live = s.critters.filter((k) => k.alive);
-      const low = live.length ? Math.max(...live.map((k) => critterAt(s, k).y)) + CRITTER_R : 0;
+      const marching = live.filter((k) => !k.dive);
+      const low = marching.length ? Math.max(...marching.map((k) => critterAt(s, k).y)) + CRITTER_R : 0;
       const near = Math.max(0, Math.min(1, 1 - (LAND_Y - low) / 90));
       g.strokeStyle = near > 0 ? mix(c.muted, c.bad, near) : c.muted;
       g.globalAlpha = 0.6 + 0.4 * near * (0.6 + 0.4 * Math.sin(arena.time * 10));
@@ -219,10 +386,18 @@ export const formation: GameDef = {
       g.stroke();
 
       drawShields(g);
+      drawBoss(g);
 
       for (const k of live) {
         const p = critterAt(s, k);
-        critter(g, p.x, p.y, k.k);
+        if (k.dive && !k.dive.back) {
+          // A glowing streak behind a diver.
+          g.fillStyle = arena.tone(c.p[k.k]).glow;
+          g.beginPath();
+          g.ellipse(p.x, p.y - 12, 6, 14, 0, 0, Math.PI * 2);
+          g.fill();
+        }
+        critter(g, p.x, p.y, k);
       }
 
       // Your shots: a bright slug with a short fading tail.
@@ -256,6 +431,7 @@ export const formation: GameDef = {
       }
       g.lineCap = 'butt';
 
+      drawPowers(g);
       // The cannon (blinking while safe after a hit; gone once shot down).
       if (ended !== 'shot' && (s.safe <= 0 || Math.floor(s.safe * 10) % 2 === 0)) {
         const kick = recoil * recoil * 3;
@@ -298,6 +474,7 @@ export const formation: GameDef = {
         const c = arena.colors;
         const pose = s.pose;
         const bombs = s.bombs.slice();
+        const combo = s.combo.count;
         const ev = step(s, dt);
         arena.update(dt);
         recoil = Math.max(0, recoil - dt * 6);
@@ -311,14 +488,36 @@ export const formation: GameDef = {
           sfx('tick', { vol: 0.28, pitch: [-12, -14, -16, -14][beat++ % 4] });
         }
         for (const p of ev.pops) {
-          if (p.k < 0) {
+          if (p.k === -1) {
             fx.burst(p.x, p.y, c.accent, 14, 150, 3.5, 0.6, 'square', 280, -Math.PI / 2, Math.PI * 1.2);
             fx.burst(p.x, p.y, c.bad, 8, 110, 3, 0.5, 'spark', 0);
             fx.ring(p.x, p.y, c.bad, 6, 40, 0.4, arena.lw * 1.4);
             continue;
           }
+          if (p.dent) {
+            // Armour or the mothership took a hit but holds.
+            sfx('hit', { pitch: 3 });
+            fx.burst(p.x, p.y, c.muted, 6, 90, 2, 0.3, 'spark', 0);
+            fx.ring(p.x, p.y, c.muted, 3, CRITTER_R * 1.6, 0.2, arena.lw * 0.8);
+            continue;
+          }
+          if (p.k === -2) {
+            // The mothership goes down.
+            sfx('boom');
+            haptic(40);
+            fx.shake(6, 0.4);
+            for (let i = 0; i < 4; i++) fx.burst(p.x + (i - 1.5) * 10, p.y, c.p[(6 + i) % 8], 12, 170, 4, 0.8, 'square', 160);
+            fx.ring(p.x, p.y, c.accent, 6, 70, 0.5, arena.lw * 1.5);
+            fx.text(p.x, p.y + 14, `+${p.pts}`, c.accent, 16);
+            continue;
+          }
           const fill = c.p[p.k];
           sfx('pop', { pitch: p.k % 5 });
+          if (!p.pts) {
+            // A diver that rammed the cannon: no points.
+            fx.burst(p.x, p.y, fill, 12, 130, 3.5, 0.5, 'square', 160);
+            continue;
+          }
           fx.burst(p.x, p.y, fill, 14, 130, 3.5, 0.55, 'square', 120);
           fx.burst(p.x, p.y, arena.tone(fill).hi, 6, 90, 2.5, 0.4, 'dot', 0);
           fx.ring(p.x, p.y, fill, 4, CRITTER_R * 2.4, 0.3, arena.lw);
@@ -340,12 +539,31 @@ export const formation: GameDef = {
           }),
         );
         standing = s.shields.map((sh) => sh.cells.slice());
+        if (ev.combo >= 2) {
+          const p = ev.pops.find((q) => q.k !== -1) ?? { x: s.px, y: CANNON_Y - 40 };
+          comboPop(fx, Math.min(W - 16, Math.max(16, p.x)), p.y - 14, ev.combo, c.accent);
+        }
+        if (ev.power) {
+          comboTier(fx, ev.tier, c.accent, POWER_NAMES[ev.power]());
+          if (ev.power === 'bomb') {
+            sfx('boom');
+            fx.flash(c.paper, 0.35, 0.4);
+            fx.ring(s.px, CANNON_Y, c.accent, 10, W, 0.6, arena.lw * 2);
+          } else if (ev.power === 'guard') fx.ring(s.px, CANNON_Y, c.good, 6, CANNON_HW + 10, 0.4, arena.lw * 1.4);
+          else fx.burst(s.px, CANNON_Y - 13, c.accent, 14, 140, 3, 0.5, 'spark', 0, -Math.PI / 2, 1.2);
+        }
+        if (ev.blocked) {
+          sfx('hit', { pitch: 7 });
+          fx.ring(s.px, CANNON_Y, c.good, CANNON_HW + 6, CANNON_HW + 26, 0.4, arena.lw * 1.4);
+          fx.burst(s.px, CANNON_Y - 6, c.good, 10, 120, 2.5, 0.4, 'spark', 0);
+        }
+        if (ev.dove) sfx('jump', { vol: 0.35, pitch: -4 });
         if (ev.hurt) {
           ctx.lives(s.lives, LIVES);
           fx.shake(5, 0.35);
           fx.flash(c.bad, 0.3, 0.35);
         }
-        if (ev.hit || ev.cleared) {
+        if (ev.hit || ev.cleared || combo !== s.combo.count) {
           ctx.score(s.score);
           status();
         }

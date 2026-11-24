@@ -5,14 +5,20 @@ import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { alpha } from '../../kits/arena/color';
 import { outBack, outCubic } from '../../kits/arena/ease';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { gestures, keyDir } from '../../kits/gesture/gesture';
 import { haptic, sfx } from '../../kits/sound/sound';
 import {
+  BLAST_POINTS,
+  BOMB,
+  BOMB_PIECE,
   COLS,
+  COMBO_TIERS,
   createLevel,
   dropDistance,
   GARBAGE,
   goalFor,
+  gravityFor,
   hardDrop,
   LINE_POINTS,
   move,
@@ -21,8 +27,37 @@ import {
   shapeCells,
   softDrop,
   step,
+  type KindId,
+  type Reward,
   type StepEvents,
 } from './rules';
+
+/** What each kind of level is called on the start gate. */
+const KIND_NAMES: Record<KindId, () => [name: string, blurb: string]> = {
+  classic: () => [L('Classic', 'Classique'), L('Clear the rubble, line by line.', 'Déblayez les débris, ligne par ligne.')],
+  well: () => [
+    L('Wells', 'Puits'),
+    L('The rubble’s gaps line up: drop a bar in.', 'Les trous des débris s’alignent : glissez-y une barre.'),
+  ],
+  rising: () => [
+    L('Rising rubble', 'Débris montants'),
+    L('Rubble pushes up from below every few blocks.', 'Des débris montent par le bas tous les quelques blocs.'),
+  ],
+  bombs: () => [
+    L('Bombs', 'Bombes'),
+    L('Clear a bomb’s row to blast the rows next to it.', 'Effacez la rangée d’une bombe : ses voisines sautent.'),
+  ],
+  speed: () => [
+    L('Speed-up', 'Accélération'),
+    L('Starts slow, falls faster with every line.', 'Lent au début, plus rapide à chaque ligne.'),
+  ],
+};
+
+const REWARD_NAMES: Record<Reward, () => string> = {
+  slow: () => L('Slow fall!', 'Chute lente!'),
+  bomb: () => L('Bomb block!', 'Bloc bombe!'),
+  bombs: () => L('Two bombs!', 'Deux bombes!'),
+};
 
 const CELL = 15;
 const FX = 8;
@@ -59,6 +94,10 @@ export const fallingBlocks: GameDef = {
       ),
       L('If a block can’t enter at the top, the run is over.', 'Si un bloc ne peut plus entrer par le haut, la partie est finie.'),
       L(
+        'Some levels have bombs in the rubble (clearing their row blasts the rows beside it), rising rubble, wells or a fall that speeds up.',
+        'Certains niveaux ont des bombes dans les débris (effacer leur rangée fait sauter les voisines), des débris qui montent, des puits ou une chute qui accélère.',
+      ),
+      L(
         'Drag left or right to move, tap to turn, swipe down to drop.',
         'Glissez à gauche ou à droite pour déplacer, touchez pour tourner, balayez vers le bas pour lâcher.',
       ),
@@ -73,6 +112,10 @@ export const fallingBlocks: GameDef = {
         `Effacer plusieurs rangées d’un coup rapporte plus : ${LINE_POINTS.slice(1).join(', ')}.`,
       ),
       L('Dropping a block early earns 2 points per row.', 'Lâcher un bloc tôt rapporte 2 points par rangée.'),
+      L(
+        `Clear lines with block after block for a combo: ${COMBO_TIERS[0]} lines slow the fall, ${COMBO_TIERS[1]} bring a bomb block, ${COMBO_TIERS[2]} two of them. Bombs blast ${BLAST_POINTS} points a row.`,
+        `Effacez des lignes bloc après bloc pour un combo : ${COMBO_TIERS[0]} lignes ralentissent la chute, ${COMBO_TIERS[1]} donnent un bloc bombe, ${COMBO_TIERS[2]} en donnent deux. Chaque rangée soufflée vaut ${BLAST_POINTS} points.`,
+      ),
     ],
   }),
   stars: (d) => [goalFor(d) * 110 + 350, goalFor(d) * 160 + 450],
@@ -87,6 +130,8 @@ export const fallingBlocks: GameDef = {
   }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     let done = false;
@@ -111,11 +156,35 @@ export const fallingBlocks: GameDef = {
     let barLines = 0;
     let linesAt = -10;
 
-    const status = () => ctx.status(P(Math.max(0, s.goal - s.lines), ['line to go', 'lines to go'], ['ligne à faire', 'lignes à faire']));
+    const status = () =>
+      ctx.status(
+        [
+          P(Math.max(0, s.goal - s.lines), ['line to go', 'lines to go'], ['ligne à faire', 'lignes à faire']),
+          s.clears > 1 ? L(`combo ${s.combo}`, `combo ${s.combo}`) : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      );
 
+    /** Clearing locks in a row before the last action (to refresh the status when a combo ends). */
+    let snapClears = 0;
     function remember() {
       snap.set(s.grid);
       prePiece = s.piece;
+      snapClears = s.clears;
+    }
+
+    /** A round bomb with a lit fuse, filling a cell. */
+    function drawBomb(g: CanvasRenderingContext2D, x: number, y: number, size: number) {
+      const c = arena.colors;
+      arena.ball(g, x + size / 2, y + size * 0.56, size * 0.4, c.coal);
+      g.strokeStyle = c.accent;
+      g.lineWidth = Math.max(1, size * 0.09);
+      g.beginPath();
+      g.moveTo(x + size * 0.62, y + size * 0.22);
+      g.quadraticCurveTo(x + size * 0.75, y + size * 0.02, x + size * 0.9, y + size * 0.12);
+      g.stroke();
+      if (Math.sin(arena.time * 16 + x) > 0) arena.disc(g, x + size * 0.9, y + size * 0.12, size * 0.12, c.bad);
     }
 
     function apply(ev: StepEvents, dropped = 0) {
@@ -133,8 +202,9 @@ export const fallingBlocks: GameDef = {
         lockCells = [];
         for (const [cx, cy] of shapeCells(p.k, p.rot)) if (y0 + cy >= 0) lockCells.push((y0 + cy) * COLS + p.x + cx);
         lockAt = arena.time;
-        if (ev.cleared.length) {
-          clearRows = ev.cleared.slice();
+        const gone = [...ev.cleared, ...ev.blasted].sort((a, b) => a - b);
+        if (gone.length) {
+          clearRows = gone;
           clearCells = [];
           for (const r of clearRows)
             for (let col = 0; col < COLS; col++) {
@@ -147,8 +217,16 @@ export const fallingBlocks: GameDef = {
           clearAt = arena.time;
           lockCells = [];
           const n = ev.cleared.length;
-          const my = FY + (clearRows.reduce((a, r) => a + r, 0) / n + 0.5) * CELL;
-          fx.text(FX + (COLS * CELL) / 2, my, `+${LINE_POINTS[n]}`, n > 1 ? c.accent : c.fg, 13 + n * 2);
+          const my = FY + (clearRows.reduce((a, r) => a + r, 0) / clearRows.length + 0.5) * CELL;
+          const pts = LINE_POINTS[Math.min(4, n)] + ev.blasted.length * BLAST_POINTS;
+          fx.text(
+            FX + (COLS * CELL) / 2,
+            my,
+            `+${pts}`,
+            n > 1 || ev.blasted.length ? c.accent : c.fg,
+            13 + Math.min(4, clearRows.length) * 2,
+          );
+          if (s.clears >= 2) comboPop(fx, FX + COLS * CELL - 18, my - 4, s.clears, c.accent);
           if (n > 1) {
             const word = ['', '', L('Double!', 'Double!'), L('Triple!', 'Triple!'), L('Quadruple!', 'Quadruple!')][Math.min(4, n)];
             fx.text(FX + (COLS * CELL) / 2, my - 22, word, c.accent, 15 + n * 2, 1.1);
@@ -160,6 +238,24 @@ export const fallingBlocks: GameDef = {
           }
           linesAt = arena.time;
           status();
+        } else if (snapClears > 1) status();
+        for (const b of ev.booms) {
+          const bx = FX + (b.x + 0.5) * CELL;
+          const by = FY + (b.y + 0.5) * CELL;
+          fx.burst(bx, by, c.bad, 22, 200, 4, 0.7, 'spark', 0);
+          fx.burst(bx, by, c.accent, 12, 140, 3.5, 0.6, 'square', 200);
+          fx.ring(bx, by, c.bad, 6, CELL * 4, 0.45, arena.lw * 1.6);
+          fx.shake(5, 0.35);
+        }
+        if (ev.booms.length) {
+          sfx('boom');
+          haptic(40);
+        }
+        if (ev.tier && ev.reward) comboTier(fx, ev.tier, c.accent, REWARD_NAMES[ev.reward]());
+        if (ev.rose) {
+          sfx('hit', { pitch: -6 });
+          fx.shake(2, 0.2);
+          fx.burst(FX + (COLS * CELL) / 2, FY + ROWS * CELL, c.muted, 12, 110, 3, 0.5, 'square', 200, -Math.PI / 2, Math.PI * 0.8);
         }
       }
       ctx.score(s.score);
@@ -219,7 +315,7 @@ export const fallingBlocks: GameDef = {
       const g = arena.begin();
       if (!g) return;
       const c = arena.colors;
-      const tone = (k: number) => (k === GARBAGE ? c.muted : c.p[k]);
+      const tone = (k: number) => (k === GARBAGE ? c.muted : k === BOMB ? c.cellAlt : c.p[k]);
       arena.field(g, FX, FY, COLS * CELL, ROWS * CELL, CELL, 3);
       // On a loss, the stack greys out from the bottom up.
       const grey = done && !won ? Math.floor(((arena.time - endAt) / 0.9) * ROWS) : -1;
@@ -231,6 +327,7 @@ export const fallingBlocks: GameDef = {
         const y = FY + row * CELL;
         const dead = grey >= 0 && ROWS - row <= grey;
         arena.block(g, x, y, CELL, CELL, dead ? c.muted : tone(k), 2.5, false);
+        if (k === BOMB && !dead) drawBomb(g, x, y, CELL);
         if (k === GARBAGE && !dead) {
           // Rubble: a couple of pits.
           g.fillStyle = arena.tone(c.muted).lo;
@@ -308,7 +405,16 @@ export const fallingBlocks: GameDef = {
           g.globalAlpha = 1;
         }
       }
-      if (!done) {
+      if (!done && s.piece.k === BOMB_PIECE) {
+        // The bomb block: its landing spot and the rows it will blast, then the bomb itself.
+        const { x, y } = s.piece;
+        const land = y + dropDistance(s);
+        g.fillStyle = c.bad;
+        g.globalAlpha = 0.12 + 0.06 * Math.sin(arena.time * 10);
+        g.fillRect(FX, FY + land * CELL, COLS * CELL, Math.min(3, ROWS - land) * CELL);
+        g.globalAlpha = 1;
+        drawBomb(g, FX + x * CELL, FY + y * CELL, CELL);
+      } else if (!done) {
         const { k, rot, x, y } = s.piece;
         const ghost = y + dropDistance(s);
         const t = arena.tone(tone(k));
@@ -340,13 +446,14 @@ export const fallingBlocks: GameDef = {
       arena.block(g, px, FY + 14, pw, 40, c.cellAlt, 6, true, 0);
       const nk = s.queue[0];
       const nc = shapeCells(nk, 0);
+      const bob = Math.sin(arena.time * 3) * 0.8;
+      if (nk === BOMB_PIECE) drawBomb(g, px + pw / 2 - 10, FY + 24 + bob, 20);
       const minX = Math.min(...nc.map(([x]) => x));
       const spanX = Math.max(...nc.map(([x]) => x)) - minX + 1;
       const minY = Math.min(...nc.map(([, y]) => y));
       const spanY = Math.max(...nc.map(([, y]) => y)) - minY + 1;
       const sz = 10;
-      const bob = Math.sin(arena.time * 3) * 0.8;
-      for (const [x, y] of nc)
+      for (const [x, y] of nk === BOMB_PIECE ? [] : nc)
         arena.block(
           g,
           px + pw / 2 - (spanX * sz) / 2 + (x - minX) * sz,
@@ -357,8 +464,24 @@ export const fallingBlocks: GameDef = {
           2,
           false,
         );
-      const barTop = FY + 74;
-      const barH = ROWS * CELL - 96;
+      // What this level's twist is up to: slow fall left, rubble about to rise, or the fall speed.
+      const chip =
+        s.slow > 0
+          ? [L(`SLOW ${s.slow}`, `LENT ${s.slow}`), c.p[4]]
+          : s.rise
+            ? [L(`RISE ${s.rise - (s.pieces % s.rise)}`, `MONTÉE ${s.rise - (s.pieces % s.rise)}`), c.bad]
+            : s.kind === 'speed'
+              ? [`×${(gravityFor(s.d) / s.gravity).toFixed(1)}`, c.accent]
+              : null;
+      if (chip) {
+        g.fillStyle = chip[1];
+        g.font = `800 9px ${arena.family}`;
+        g.fillText(chip[0], px + pw / 2, FY + 66);
+        g.font = `700 9px ${arena.family}`;
+      }
+      const barTop = FY + 84;
+      const barH = ROWS * CELL - 106;
+
       // The bar fills up smoothly after a clear, with a notch per line to go.
       const inner = barH - 6;
       const fill = Math.min(1, barLines / s.goal) * inner;

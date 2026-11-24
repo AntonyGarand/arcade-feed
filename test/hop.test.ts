@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { Rng } from '../src/core/rng';
 import { LEVELS, type Difficulty } from '../src/core/types';
+import { kindsAt } from '../src/core/variety';
 import { hop } from '../src/games/hop';
 import {
   CAM_START,
   createLevel,
+  grant,
+  KINDS,
+  REGROW_S,
+  solid,
   crittersFor,
   goalFor,
   JUMP_H,
@@ -16,15 +21,17 @@ import {
   W,
   wdelta,
   widthFor,
+  type KindId,
   type State,
 } from '../src/games/hop/rules';
+
 import { mountGame } from './support/mount';
 
 const DT = 1 / 60;
 
 /** Play with `steer` choosing the direction each frame. Returns the end state. */
-function play(d: Difficulty, seed: number, steer: (s: State) => -1 | 0 | 1, seconds = 240) {
-  const s = createLevel(d, new Rng(seed));
+function play(d: Difficulty, seed: number, steer: (s: State) => -1 | 0 | 1, seconds = 240, kind?: KindId) {
+  const s = createLevel(d, new Rng(seed), kind);
   let hurt = 0;
   for (let t = 0; t < seconds && !s.won && !s.over; t += DT) {
     s.dir = steer(s);
@@ -54,7 +61,7 @@ describe('hop rules', () => {
     expect([...kinds(1)].sort()).toEqual(['ground', 'normal']);
     expect(kinds(2).has('moving')).toBe(true);
     expect(kinds(3).has('crumble')).toBe(true);
-    for (const d of LEVELS) expect(createLevel(d, new Rng(5)).plats.filter((p) => p.spring != null).length).toBe(springsFor(d));
+    for (const d of LEVELS) expect(createLevel(d, new Rng(5), 'classic').plats.filter((p) => p.spring != null).length).toBe(springsFor(d));
     expect(springsFor(3)).toBeGreaterThan(0);
     expect(createLevel(5, new Rng(5)).critters.length).toBeGreaterThan(0);
   });
@@ -137,6 +144,90 @@ describe('hop rules', () => {
     }
   });
 
+  it('deals the same kind from the same seed, and different kinds across seeds', () => {
+    expect(createLevel(3, new Rng(12)).kind).toBe(createLevel(3, new Rng(12)).kind);
+    const seen = new Set<string>();
+    for (let seed = 0; seed < 50; seed++) seen.add(createLevel(4, new Rng(seed)).kind);
+    expect(seen.size).toBeGreaterThanOrEqual(5);
+    const easy = kindsAt(1, KINDS).map((k) => k.id);
+    for (let seed = 0; seed < 20; seed++) expect(easy).toContain(createLevel(1, new Rng(seed)).kind);
+  });
+
+  it('twists each kind: springs, crumbling ledges, clouds, wind, bats', () => {
+    const count = (kind: KindId, f: (s: State) => number) => f(createLevel(4, new Rng(2), kind));
+    const springs = (s: State) => s.plats.filter((p) => p.spring != null).length;
+    expect(count('springs', springs)).toBeGreaterThan(count('classic', springs));
+    const crumbles = (s: State) => s.plats.filter((p) => p.path && p.kind === 'crumble').length;
+    expect(count('crumbly', crumbles)).toBeGreaterThan(count('classic', crumbles));
+    expect(count('clouds', (s) => s.plats.filter((p) => p.kind === 'cloud').length)).toBeGreaterThan(0);
+    expect(count('windy', (s) => Math.abs(s.wind))).toBeGreaterThan(0);
+    expect(count('swarm', (s) => s.critters.filter((c) => c.v).length)).toBeGreaterThan(0);
+    // No more gems in a spring park than usual, so its score stays in line.
+    const gems = (s: State) => s.coins.filter((c) => c.gem).length;
+    expect(count('springs', gems)).toBeLessThanOrEqual(springsFor(4) + 1);
+  });
+
+  it('clouds come and go; crumbled platforms grow back', () => {
+    const s = createLevel(3, new Rng(4), 'clouds');
+    const cloud = s.plats.find((p) => p.kind === 'cloud')!;
+    const states = new Set(Array.from({ length: 40 }, (_, k) => solid(cloud, k * 0.1)));
+    expect(states).toEqual(new Set([true, false]));
+    // A cloud never follows another cloud or a crumbling platform on the path.
+    const path = s.plats.filter((p) => p.path);
+    const before = path.slice(1).flatMap((p, i) => (p.kind === 'cloud' ? [path[i].kind] : []));
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.filter((k) => k === 'cloud' || k === 'crumble')).toEqual([]);
+    const c = createLevel(3, new Rng(4), 'crumbly');
+    const p = c.plats.find((q) => q.kind === 'crumble')!;
+    c.x = p.x;
+    c.alt = p.alt + 1;
+    c.vy = -100;
+    step(c, DT);
+    expect(p.gone).toBe(true);
+    for (let t = 0; t < REGROW_S + 0.1; t += DT) step(c, DT);
+    expect(p.gone).toBe(false);
+  });
+
+  it('every kind can be climbed by the pilot at every level it is dealt', () => {
+    for (const d of [2, 3, 5] as const) {
+      const [two] = hop.stars(d);
+      for (const { id } of kindsAt(d, KINDS)) {
+        const runs = [1, 2, 3, 4].map((seed) => play(d, seed * 11 + d, pilot, 240, id));
+        expect(runs.filter((r) => r.s.won).length, `${id} level ${d}`).toBeGreaterThanOrEqual(id === 'swarm' ? 3 : 4);
+        expect(Math.max(...runs.map((r) => r.s.score)), `${id} level ${d}`).toBeGreaterThanOrEqual(two);
+      }
+    }
+  });
+
+  it('a chain of climbs grants super jumps, then a shield, then a rocket', () => {
+    const s = createLevel(3, new Rng(6), 'classic');
+    const rewards: string[] = [];
+    const boosts: string[] = [];
+    for (let t = 0; t < 120 && rewards.length < 3 && !s.won && !s.over; t += DT) {
+      s.dir = pilot(s);
+      const ev = step(s, DT);
+      if (ev.reward) rewards.push(ev.reward);
+      if (ev.boost) boosts.push(ev.boost);
+    }
+    expect(rewards).toEqual(['super', 'shield', 'rocket']);
+    expect(boosts).toContain('super');
+    expect(boosts.at(-1)).toBe('rocket');
+    expect(s.shield || s.lives === LIVES).toBe(true);
+  });
+
+  it('a shield takes a fall without costing a heart', () => {
+    const s = createLevel(2, new Rng(3), 'classic');
+    grant(s, 'shield');
+    s.cam = 400;
+    s.alt = 100;
+    s.vy = -50;
+    const ev = step(s, DT);
+    expect(ev.shielded).toBe(true);
+    expect(ev.hurt).toBe(null);
+    expect(s.lives).toBe(LIVES);
+    expect(s.shield).toBe(false);
+  });
+
   it('ends the run when a hopper climbs a little, then keeps running off to one side', () => {
     for (const d of LEVELS) {
       const s = createLevel(d, new Rng(3));
@@ -155,6 +246,7 @@ describe('hop rules', () => {
     for (const d of LEVELS) {
       const m = mountGame(hop, d, 3);
       expect(m.lives).toEqual([LIVES, LIVES]);
+      expect(m.variant?.id).toBe(createLevel(d, new Rng(3)).kind);
       m.run(3);
       expect(m.outcome).toBe('');
       m.inst.destroy?.();

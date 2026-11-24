@@ -3,7 +3,9 @@ import { L } from '../../core/i18n';
 import { btn } from '../../core/pad';
 import { byLevel, type GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
+import { comboPop, comboTier } from '../../kits/combo/combo';
 import { haptic, sfx } from '../../kits/sound/sound';
+import { KIND_NAMES, POWER_NAMES } from './names';
 import {
   BH,
   BLOCK_POINTS,
@@ -11,13 +13,19 @@ import {
   drop,
   floorY,
   goalFor,
+  GOLD_POINTS,
   GROUND,
   H,
   height,
+  landX,
   PERFECT_POINTS,
+  POWER_FLOORS,
   REGROW_EVERY,
   speedFor,
   step,
+  STREAK_TIERS,
+  tolerance,
+  type Trait,
   W,
 } from './rules';
 
@@ -53,14 +61,24 @@ export const tower: GameDef = {
         `A near-perfect drop keeps the full width; ${REGROW_EVERY} in a row grow the block back a little.`,
         `Un lâcher presque parfait garde toute la largeur; ${REGROW_EVERY} de suite font regrandir le bloc un peu.`,
       ),
+      L(
+        'Golden blocks pay a bonus for a perfect drop on them; icy ones skid on; steel ones slide faster but count double.',
+        'Les blocs dorés paient un bonus pour un parfait sur eux; les glacés dérapent; ceux d’acier glissent plus vite mais comptent double.',
+      ),
       L('Miss the tower completely and it’s over.', 'Si le bloc rate complètement la tour, c’est terminé.'),
-      L('Tap anywhere to drop the block.', 'Touchez n’importe où pour lâcher le bloc.'),
-      L('Keyboard: Space, Enter or ↓ to drop, P to pause.', 'Clavier : Espace, Entrée ou ↓ pour lâcher, P pour la pause.'),
+      L(
+        'Tap anywhere (or Space, Enter, ↓) to drop the block; P to pause.',
+        'Touchez n’importe où (ou Espace, Entrée, ↓) pour lâcher le bloc; P pour la pause.',
+      ),
     ],
     tips: [
       L(
-        `Each block is worth ${BLOCK_POINTS}; perfects add ${PERFECT_POINTS} per step of the streak (up to ×5).`,
-        `Chaque bloc vaut ${BLOCK_POINTS}; les parfaits ajoutent ${PERFECT_POINTS} par cran de la série (jusqu’à ×5).`,
+        `Each block is worth ${BLOCK_POINTS}; perfects add ${PERFECT_POINTS} per step of the streak (up to ×5), and ${GOLD_POINTS} more on a golden block.`,
+        `Chaque bloc vaut ${BLOCK_POINTS}; les parfaits ajoutent ${PERFECT_POINTS} par cran de la série (jusqu’à ×5), et ${GOLD_POINTS} de plus sur un bloc doré.`,
+      ),
+      L(
+        `Perfects in a row unlock crane events: ${STREAK_TIERS[0]} rebuild the block wider, ${STREAK_TIERS[1]} slow the crane, ${STREAK_TIERS[2]} switch on a magnet for easy perfects (${POWER_FLOORS} floors each).`,
+        `Des parfaits d’affilée débloquent des événements : ${STREAK_TIERS[0]} rélargissent le bloc, ${STREAK_TIERS[1]} ralentissent la grue, ${STREAK_TIERS[2]} activent un aimant pour des parfaits faciles (${POWER_FLOORS} étages chacun).`,
       ),
       L(
         'Watch the edge of the block below, not the middle: it’s easier to time.',
@@ -70,12 +88,14 @@ export const tower: GameDef = {
   }),
   stars: (d) => {
     const n = goalFor(d);
-    return [n * byLevel(d, [26, 24, 22, 20, 18]), n * byLevel(d, [46, 44, 42, 40, 38])];
+    return [n * byLevel(d, [26, 24, 22, 20, 18]), n * byLevel(d, [48, 50, 51, 46, 42])];
   },
   par: (d) => Math.round(goalFor(d) * (W / speedFor(d)) * 0.9 + 8),
   pad: () => ({ right: [btn(' ', 'drop', L('Drop', 'Lâcher'))] }),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     let ended = false;
     /** After the run, the arena's own frames keep the sliced pieces falling (see `linger`). */
     let lingerAt = 0;
@@ -92,6 +112,8 @@ export const tower: GameDef = {
     /** Camera offset (world y + cam = screen y), eased towards the top of the tower. */
     let cam = 0;
     const camTarget = () => Math.max(0, VIEW_Y - floorY(s.blocks.length));
+    /** Effects are drawn in screen space (so the banner stays put): a world y on screen. */
+    const at = (y: number) => y + cam;
     /** 1 just after a drop, easing to 0 as the block settles; the perfect glow fades the same way. */
     let land = 0;
     let glow = 0;
@@ -100,22 +122,161 @@ export const tower: GameDef = {
 
     const status = () =>
       ctx.status(
-        [`${L('Floor', 'Étage')} ${height(s)}/${s.goal}`, s.streak > 1 ? `${L('perfect', 'parfait')} ×${s.streak}` : '']
+        [
+          `${L('Floor', 'Étage')} ${height(s)}/${s.goal}`,
+          s.streak > 1 ? `${L('perfect', 'parfait')} ×${s.streak}` : '',
+          s.slow > 0 ? L('slow crane', 'grue lente') : '',
+          s.magnet > 0 ? L('magnet', 'aimant') : '',
+        ]
           .filter(Boolean)
           .join(' · '),
       );
 
-    const fill = (floor: number) => arena.colors.p[floor % 8];
+    /** A floor's colour: its palette slot, or the special block's own (gold, ice, steel). */
+    const fill = (floor: number, trait: Trait = 'plain') => {
+      const c = arena.colors;
+      return trait === 'gold' ? c.p[3] : trait === 'ice' ? c.p[5] : trait === 'heavy' ? c.coal : c.p[floor % 8];
+    };
 
-    /** One floor of the tower: a bevelled slab with a row of windows. */
-    function slab(g: CanvasRenderingContext2D, x: number, y: number, w: number, color: string) {
+    /** One floor of the tower: a bevelled slab with a row of windows, marked by its trait. */
+    function slab(g: CanvasRenderingContext2D, x: number, y: number, w: number, color: string, trait: Trait = 'plain') {
+      const c = arena.colors;
       arena.block(g, x, y, w, BH, color, 2.5);
       if (w < 14) return;
       const t = arena.tone(color);
+      if (trait === 'ice') {
+        // Frosty shine streaks instead of windows.
+        g.strokeStyle = c.paper;
+        g.globalAlpha = 0.7;
+        g.lineWidth = 1.6;
+        g.beginPath();
+        for (let k = 8; k < w - 6; k += 18) {
+          g.moveTo(x + k, y + BH - 5);
+          g.lineTo(x + k + 6, y + 4);
+        }
+        g.stroke();
+        g.globalAlpha = 1;
+        return;
+      }
+      if (trait === 'heavy') {
+        // A steel plate: rivets along the top and bottom.
+        g.fillStyle = arena.tone(c.muted).hi;
+        for (let k = x + 5; k < x + w - 3; k += 10) {
+          g.fillRect(k - 1, y + 3.5, 2, 2);
+          g.fillRect(k - 1, y + BH - 6.5, 2, 2);
+        }
+        return;
+      }
       g.fillStyle = t.lo;
       const n = Math.max(1, Math.floor((w - 6) / 14));
       const gap = (w - 6) / n;
       for (let k = 0; k < n; k++) g.fillRect(x + 3 + k * gap + gap / 2 - 3, y + 5, 6, 6);
+      if (trait === 'gold') {
+        // A star in the middle that twinkles.
+        const cx = x + w / 2;
+        const cy = y + BH / 2;
+        const r = 5.5 + Math.sin(arena.time * 6 + x) * 0.6;
+        g.fillStyle = c.paper;
+        g.strokeStyle = t.edge;
+        g.lineWidth = arena.lw * 0.5;
+        g.beginPath();
+        for (let k = 0; k < 10; k++) {
+          const a = -Math.PI / 2 + (k * Math.PI) / 5;
+          const rr = k % 2 ? r * 0.45 : r;
+          g.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+        }
+        g.closePath();
+        g.fill();
+        g.stroke();
+      }
+    }
+
+    /** Wind streaks blowing across the field, and a sock showing which way and how hard. */
+    function drawWind(g: CanvasRenderingContext2D) {
+      const c = arena.colors;
+      const dir = Math.sign(s.wind);
+      const k = Math.abs(s.wind);
+      g.strokeStyle = c.muted;
+      g.lineWidth = arena.lw * 0.6;
+      g.globalAlpha = 0.25 + 0.35 * k;
+      g.beginPath();
+      for (let i = 0; i < 9; i++) {
+        const y = 40 + ((i * 47) % (H - 80));
+        const len = 18 + (i % 3) * 10;
+        const x = ((((i * 71 + arena.time * 160 * k * dir) % (W + 60)) + W + 60) % (W + 60)) - 30;
+        g.moveTo(x, y);
+        g.lineTo(x - dir * len, y);
+      }
+      g.stroke();
+      g.globalAlpha = 1;
+      // The sock, top left: a cone pointing downwind, longer in a strong gust.
+      const px = 22;
+      const py = 22;
+      g.strokeStyle = c.ink;
+      g.lineWidth = arena.lw * 0.8;
+      g.beginPath();
+      g.moveTo(px, py - 6);
+      g.lineTo(px, py + 22);
+      g.stroke();
+      const len = 10 + 16 * k;
+      const flap = Math.sin(arena.time * 12) * 1.5 * k;
+      g.fillStyle = c.bad;
+      g.beginPath();
+      g.moveTo(px, py - 5);
+      g.lineTo(px + dir * len, py - 1 + flap);
+      g.lineTo(px + dir * len, py + 3 + flap);
+      g.lineTo(px, py + 7);
+      g.closePath();
+      g.fill();
+      g.stroke();
+    }
+
+    /** What sets this block apart while it slides: the magnet zone, the melt, the cable, the skid. */
+    function drawSlider(g: CanvasRenderingContext2D, y: number) {
+      const c = arena.colors;
+      const t = s.blocks[s.blocks.length - 1];
+      if (s.magnet > 0) {
+        // The perfect zone glows around where the block's edges should land.
+        const tol = tolerance(s);
+        const off = (t.w - s.w) / 2;
+        g.fillStyle = c.good;
+        g.globalAlpha = 0.25 + 0.1 * Math.sin(arena.time * 8);
+        g.fillRect(t.x + off - tol, y - 4, tol * 2, BH + 4);
+        g.fillRect(t.x + off + s.w - tol, y - 4, tol * 2, BH + 4);
+        g.globalAlpha = 1;
+      }
+      if (s.kind === 'shrink' && s.w0 - s.w > 1) {
+        // The width it started with, dashed.
+        g.strokeStyle = c.muted;
+        g.lineWidth = arena.lw * 0.5;
+        g.setLineDash([2, 3]);
+        g.strokeRect(s.x - (s.w0 - s.w) / 2, y, s.w0, BH);
+        g.setLineDash([]);
+      }
+      if (s.kind === 'crane') {
+        const cx = s.x + s.w / 2;
+        g.strokeStyle = c.ink;
+        g.lineWidth = arena.lw * 0.8;
+        g.beginPath();
+        g.moveTo(W / 2, y - 160);
+        g.lineTo(cx, y - 7);
+        g.moveTo(cx - 9, y);
+        g.lineTo(cx, y - 7);
+        g.lineTo(cx + 9, y);
+        g.stroke();
+        arena.disc(g, cx, y - 7, 2.5, c.muted);
+      }
+      slab(g, s.x, y, s.w, fill(s.blocks.length, s.trait), s.trait);
+      if (s.trait === 'ice') {
+        // Where it would skid to if dropped now.
+        g.strokeStyle = c.p[5];
+        g.lineWidth = arena.lw;
+        g.globalAlpha = 0.7;
+        g.setLineDash([3, 2]);
+        g.strokeRect(landX(s), y + 2, s.w, BH - 2);
+        g.setLineDash([]);
+        g.globalAlpha = 1;
+      }
     }
 
     function draw() {
@@ -185,7 +346,7 @@ export const tower: GameDef = {
       for (const [i, b] of s.blocks.entries()) {
         const y = floorY(i) - (i === last ? HOVER * land : 0);
         if (i === 0) arena.block(g, b.x, y, b.w, BH, c.muted, 2.5);
-        else slab(g, b.x, y, b.w, fill(i));
+        else slab(g, b.x, y, b.w, fill(i, b.trait), b.trait);
       }
       // Perfect glow: the last block shines, then fades.
       if (glow > 0 && last > 0) {
@@ -202,7 +363,7 @@ export const tower: GameDef = {
         g.save();
         g.translate(ch.x + ch.w / 2, ch.y + BH / 2);
         g.rotate(ch.a);
-        arena.block(g, -ch.w / 2, -BH / 2, ch.w, BH, fill(ch.floor), 2, false);
+        arena.block(g, -ch.w / 2, -BH / 2, ch.w, BH, fill(ch.floor, ch.trait), 2, false);
         g.restore();
       }
       // The sliding block, with guides from the edges of the block below.
@@ -221,10 +382,20 @@ export const tower: GameDef = {
         g.stroke();
         g.setLineDash([]);
         g.globalAlpha = 1;
-        slab(g, s.x, y, s.w, fill(s.blocks.length));
+        drawSlider(g, y);
       }
-      arena.overlay(g);
       g.restore();
+      if (s.wind && !s.done) drawWind(g);
+      // Slow motion and the magnet: a row of pips (one per floor left) at the top.
+      let row = 0;
+      for (const [left, col] of [
+        [s.slow, c.p[5]],
+        [s.magnet, c.good],
+      ] as const) {
+        if (left <= 0 || ended) continue;
+        for (let k = 0; k < POWER_FLOORS; k++) arena.disc(g, W / 2 - 16 + k * 11, 12 + row * 11, 4, k < left ? col : c.cellAlt);
+        row++;
+      }
       // Progress to the flag, along the right edge (fixed on screen).
       const bar = H - 60;
       const k = Math.min(1, height(s) / s.goal);
@@ -240,6 +411,7 @@ export const tower: GameDef = {
       g.beginPath();
       g.roundRect(W - 12, 30, 8, bar, 4);
       g.stroke();
+      arena.overlay(g);
       if (wash.a > 0) {
         g.globalAlpha = wash.a;
         g.fillStyle = wash.color;
@@ -257,7 +429,7 @@ export const tower: GameDef = {
       const i = s.blocks.length - 1;
       const b = s.blocks[r.over ? 0 : i];
       const cx = r.over ? W / 2 : b.x + b.w / 2;
-      const y = floorY(i) + BH / 2;
+      const y = at(floorY(i) + BH / 2);
       const rise = Math.min(i, 14);
       if (r.kind === 'perfect') {
         sfx('power', { pitch: Math.min(rise / 2, 6) });
@@ -266,13 +438,22 @@ export const tower: GameDef = {
         fx.ring(cx, y, c.accent, b.w * 0.3, b.w * 0.75, 0.4, arena.lw * 1.4);
         fx.burst(b.x, y, c.paper, 5, 90, 2.5, 0.35, 'spark', 0, Math.PI, 1);
         fx.burst(b.x + b.w, y, c.paper, 5, 90, 2.5, 0.35, 'spark', 0, 0, 1);
-        fx.text(cx, y - 22, `${L('Perfect', 'Parfait')}${s.streak > 1 ? ` ×${s.streak}` : ''}`, c.accent, 15, 0.9);
+        fx.text(cx, y - 22, L('Perfect', 'Parfait'), c.accent, 15, 0.9);
+        comboPop(fx, cx + 44, y - 18, s.streak, c.accent);
+        if (r.gold) {
+          fx.burst(cx, y, c.p[3], 14, 140, 3.5, 0.6, 'spark', 0);
+          fx.text(cx, y - 54, `${L('Gold', 'Or')} +${GOLD_POINTS}`, c.p[3], 13, 1);
+        }
         if (r.grew) fx.text(cx, y - 40, L('Wider!', 'Plus large!'), c.good, 12, 0.9);
+        if (r.power) {
+          comboTier(fx, r.tier, r.power === 'slow' ? c.p[5] : r.power === 'magnet' ? c.good : c.accent, POWER_NAMES[r.power]());
+          if (r.power === 'wide') fx.ring(cx, y, c.accent, b.w * 0.5, b.w, 0.5, arena.lw * 2);
+        }
       } else if (r.kind === 'cut') {
         sfx('hit', { pitch: rise - 4 });
         // Dust where the overhang snapped off.
         for (const ch of s.chunks.slice(-2))
-          if (ch.floor === i) fx.burst(ch.x < b.x ? b.x : b.x + b.w, y, fill(i), 8, 90, 3, 0.4, 'square', 300);
+          if (ch.floor === i) fx.burst(ch.x < b.x ? b.x : b.x + b.w, y, fill(i, b.trait), 8, 90, 3, 0.4, 'square', 300);
         fx.shake(1.5 + Math.min(3, r.cut / 15), 0.2);
       } else {
         sfx('error');

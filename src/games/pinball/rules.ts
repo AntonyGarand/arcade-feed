@@ -1,142 +1,66 @@
-import type { Rng } from '../../core/rng';
-import { byLevel, type Difficulty } from '../../core/types';
+import {
+  BALL_BONUS,
+  BALL_R,
+  COMBO_TIERS,
+  COMBO_WINDOW,
+  type Circle,
+  FLIP_R0,
+  FLIP_R1,
+  FLIP_REST,
+  FRENZY_S,
+  GUARD,
+  GUARD_S,
+  H,
+  HOLD_S,
+  LANE_GAP,
+  LANE_L,
+  LANE_X,
+  LANE_Y0,
+  LANE_Y1,
+  MID,
+  PLUNGER_Y,
+  PTS,
+  type Reward,
+  SAUCER_R,
+  STAR_R,
+  type State,
+  VORTEX_CORE,
+  VORTEX_R,
+  W,
+  dist2,
+  flipperTip,
+  freeSpot,
+  saveFor,
+} from './table';
 
-/** Table in world units: the playfield spans x 4…232 (centre 118), the plunger lane x 232…258. */
-export const W = 262;
-export const H = 420;
-export const BALL_R = 6;
-export const BALLS = 3;
-/** Playfield centre line: the bottom of the table is symmetric around it. */
-export const MID = 118;
-const mirror = (x: number) => 2 * MID - x;
-/** Plunger lane: the ball rests at (LANE_X, PLUNGER_Y). */
-export const LANE_X = 245;
-const LANE_L = 232;
-const LANE_TOP = 150;
-export const PLUNGER_Y = 398;
-/** Top of the table: a half circle over the whole width. */
-export const ARC = { x: 131, y: 131, r: 127 };
-/** Top rollover lanes: their sensors sit between separator posts. */
-export const LANE_Y0 = 38;
-export const LANE_Y1 = 58;
-const LANE_GAP = 24;
-const FLIP_REST = 0.52;
+/** Ball physics on the dealt table (see `table.ts` for the layout). */
 const FLIP_UP = -0.5;
 const FLIP_UP_SPEED = 26;
 const FLIP_DOWN_SPEED = 15;
-/** Flipper capsule radius at the pivot and at the tip. */
-export const FLIP_R0 = 7;
-export const FLIP_R1 = 4;
 const MAX_SPEED = 950;
 const BUMPER_KICK = 280;
 const SLING_KICK = 260;
-/** Seconds the ball waits on the plunger before it launches by itself, and to charge a full pull. */
-const HOLD_S = 1.2;
+/** Seconds to charge a full plunger pull, and the power of a launch nobody pulled. */
 const CHARGE_S = 0.8;
 const AUTO_POWER = 0.6;
 const MAX_MULT = 4;
+/** What each combo milestone unlocks (`COMBO_TIERS`). */
+const REWARDS: readonly Reward[] = ['frenzy', 'save', 'guard', 'jackpot', 'jackpot'];
+/** Seconds the combo ball save lasts. */
+const SAVE_S = 6;
+/** Seconds before a collected star shows up somewhere else (outside a star hunt). */
+const STAR_BACK = 6;
+/** Seconds the saucer and the black hole hold the ball before kicking it out. */
+const SAUCER_HOLD = 0.7;
+const VORTEX_HOLD = 0.5;
+/** Black hole pull at its core (it fades to 0 at `VORTEX_R`). */
+const VORTEX_PULL = 700;
+/** Drifting bumpers: angular speed of their sway. */
+const DRIFT_W = 1.3;
 
-export const PTS = { bumper: 50, sling: 10, target: 250, bank: 1500, lane: 100, lanes: 1000 } as const;
-/** Bonus per ball left unplayed when the goal is reached. */
-export const BALL_BONUS = 2500;
-
-export const goalFor = (d: Difficulty) => byLevel(d, [7000, 7500, 8000, 8500, 9000]);
-const bumpersFor = (d: Difficulty) => byLevel(d, [3, 3, 4, 4, 5]);
-const bumperR = (d: Difficulty) => byLevel(d, [15, 14, 13, 12, 11]);
-const banksFor = (d: Difficulty) => byLevel(d, [1, 1, 2, 2, 2]);
-const bankSize = (d: Difficulty) => byLevel(d, [3, 3, 3, 4, 4]);
-const lanesFor = (d: Difficulty) => byLevel(d, [3, 3, 3, 4, 4]);
-const flipLen = (d: Difficulty) => byLevel(d, [46, 44, 42, 40, 38]);
-const gravityFor = (d: Difficulty) => byLevel(d, [290, 310, 330, 350, 370]);
-/** Seconds after a launch during which a drained ball comes back (once per ball). */
-export const saveFor = (d: Difficulty) => byLevel(d, [10, 8, 6, 5, 4]);
-/** Side outlanes (a drain past the slingshots): closed, one side, then both, with a wider mouth. */
-const outlanesFor = (d: Difficulty) => byLevel(d, [0, 0, 1, 2, 2]);
-/** Radius of the post that splits the inlane from the outlane: a smaller post leaves a wider mouth. */
-const outPostR = (d: Difficulty) => byLevel(d, [3, 3, 3.6, 3.2, 2.4]);
-
-interface Seg {
-  ax: number;
-  ay: number;
-  bx: number;
-  by: number;
-  r: number;
-  kind: 'wall' | 'sling' | 'gate';
-  /** Sling side (0 left, 1 right). */
-  side: number;
-}
-interface Circle {
-  x: number;
-  y: number;
-  r: number;
-}
-interface Target {
-  ax: number;
-  ay: number;
-  bx: number;
-  by: number;
-  down: boolean;
-  bank: number;
-}
-interface Bank {
-  ids: number[];
-  /** Seconds until a cleared bank stands back up (0: standing). */
-  reset: number;
-}
-export interface Flipper {
-  px: number;
-  py: number;
-  len: number;
-  /** 1: left flipper (points right), -1: right flipper. */
-  side: number;
-  a: number;
-  /** Angular speed in the last sub-step (radians per second). */
-  w: number;
-}
-
-export interface State {
-  d: Difficulty;
-  rng: Rng;
-  segs: Seg[];
-  posts: Circle[];
-  bumpers: Circle[];
-  targets: Target[];
-  banks: Bank[];
-  /** Rollover lane centres and their lamps. */
-  lanes: number[];
-  lit: boolean[];
-  /** Outlanes open on the left and right (closed ones are capped). */
-  outlanes: [boolean, boolean];
-  /** Lane the ball is in (-1: none), so a lane lights once per pass. */
-  inLaneSensor: number;
-  flippers: [Flipper, Flipper];
-  /** Flipper buttons held (left, right). */
-  press: [boolean, boolean];
-  /** Buttons as they were last step (a press flips the lane lamps once). */
-  was: [boolean, boolean];
-  bx: number;
-  by: number;
-  vx: number;
-  vy: number;
-  gravity: number;
-  /** Ball resting on the plunger, launching after `hold` seconds unless the plunger is being pulled. */
-  held: boolean;
-  hold: number;
-  charging: boolean;
-  charge: number;
-  /** Ball still in the plunger lane (the lane gate stays open). */
-  inLane: boolean;
-  save: number;
-  saveUsed: boolean;
-  balls: number;
-  mult: number;
-  score: number;
-  goal: number;
-  stuck: number;
-  done: boolean;
-}
-
-type HitKind = 'bumper' | 'sling' | 'target' | 'bank' | 'lane' | 'lanes';
+type HitKind = keyof typeof PTS;
+/** Hits that count towards the combo. */
+const COMBO_HITS: ReadonlySet<HitKind> = new Set(['bumper', 'target', 'lane', 'star', 'saucer']);
 interface Hit {
   kind: HitKind;
   /** Bumper, target, bank, lane or sling index. */
@@ -153,148 +77,15 @@ export interface StepEvents {
   /** The ball drained but the ball save sent it back. */
   saved: boolean;
   drained: boolean;
+  /** A combo milestone reached this step (1-based) and what it unlocked; 0 / null for none. */
+  tier: number;
+  unlocked: Reward | null;
+  /** The saucer or the black hole just kicked the ball back out. */
+  kicked: boolean;
+  /** The black hole swallowed the ball this step. */
+  swallowed: boolean;
   won: boolean;
   over: boolean;
-}
-
-const seg = (ax: number, ay: number, bx: number, by: number, kind: Seg['kind'] = 'wall', r = 0, side = 0): Seg => ({
-  ax,
-  ay,
-  bx,
-  by,
-  r,
-  kind,
-  side,
-});
-
-/** The sling triangle on the left (mirrored for the right): its kick face runs from A to C. */
-export const SLING = { ax: 38, ay: 284, bx: 38, by: 318, cx: 58, cy: 336 };
-const GUIDE = { x: 20, top: 300, knee: 330, ex: 64, ey: 364 };
-const PIVOT = { x: 66, y: 372 };
-const DEFLECT = { x: 22, y0: 248, y1: 280 };
-/** The post at the top left that stops the orbit and turns the ball back into the field. */
-const KICKER = { x: 34, y: 63, r: 9 };
-
-const dist2 = (ax: number, ay: number, bx: number, by: number) => (ax - bx) ** 2 + (ay - by) ** 2;
-
-/** Deal a table: bumpers, drop-target banks and top lanes from the seed; flippers, slings and walls fixed. */
-export function createLevel(d: Difficulty, rng: Rng): State {
-  const segs: Seg[] = [];
-  const posts: Circle[] = [];
-  const open = outlanesFor(d);
-  const one = rng.int(0, 1);
-  const outlanes: [boolean, boolean] = [open === 2 || (open === 1 && one === 0), open === 2 || (open === 1 && one === 1)];
-  // Outer walls, the lane and its gate, then the arched top.
-  segs.push(seg(4, ARC.y, 4, H + 30), seg(258, ARC.y, 258, H + 30), seg(LANE_L, LANE_TOP, LANE_L, H + 30));
-  segs.push(seg(LANE_L, LANE_TOP, 258, ARC.y, 'gate'));
-  const N = 32;
-  for (let i = 0; i < N; i++) {
-    const a0 = Math.PI + (i / N) * Math.PI;
-    const a1 = Math.PI + ((i + 1) / N) * Math.PI;
-    segs.push(seg(ARC.x + Math.cos(a0) * ARC.r, ARC.y + Math.sin(a0) * ARC.r, ARC.x + Math.cos(a1) * ARC.r, ARC.y + Math.sin(a1) * ARC.r));
-  }
-  // Bottom: inlane guides, slings, outlane covers on the easy levels; the left side, then its mirror.
-  for (const side of [0, 1]) {
-    const m = side ? mirror : (x: number) => x;
-    segs.push(seg(m(GUIDE.x), GUIDE.top, m(GUIDE.x), GUIDE.knee), seg(m(GUIDE.x), GUIDE.knee, m(GUIDE.ex), GUIDE.ey));
-    posts.push({ x: m(GUIDE.x), y: GUIDE.top, r: outPostR(d) });
-    // A rubber on the wall turns balls coming down the side into the inlane, not the outlane.
-    segs.push(seg(m(4), DEFLECT.y0, m(DEFLECT.x), DEFLECT.y1));
-    posts.push({ x: m(DEFLECT.x), y: DEFLECT.y1, r: 2 });
-    if (!outlanes[side]) segs.push(seg(m(4), GUIDE.top - 16, m(GUIDE.x), GUIDE.top - 2));
-    const { ax, ay, bx, by, cx, cy } = SLING;
-    segs.push(seg(m(ax), ay, m(bx), by), seg(m(bx), by, m(cx), cy), seg(m(ax), ay, m(cx), cy, 'sling', 0, side));
-    for (const [x, y] of [
-      [ax, ay],
-      [bx, by],
-      [cx, cy],
-    ])
-      posts.push({ x: m(x), y, r: 2.5 });
-  }
-  // Top rollover lanes between separator posts.
-  const nl = lanesFor(d);
-  const lanes: number[] = [];
-  const lx0 = 124 - (nl * LANE_GAP) / 2;
-  for (let i = 0; i <= nl; i++) segs.push(seg(lx0 + i * LANE_GAP, LANE_Y0, lx0 + i * LANE_GAP, LANE_Y1, 'wall', 2.5));
-  for (let i = 0; i < nl; i++) lanes.push(lx0 + (i + 0.5) * LANE_GAP);
-
-  // Drop-target banks: along the left wall, the right wall or across the middle.
-  const targets: Target[] = [];
-  const banks: Bank[] = [];
-  const boxes: [number, number, number, number][] = [];
-  const kinds = rng.shuffle(['L', 'R', 'C']).slice(0, banksFor(d));
-  const n = bankSize(d);
-  for (const k of kinds) {
-    const bank: Bank = { ids: [], reset: 0 };
-    const len = n * 20 - 5;
-    if (k === 'C') {
-      const y = rng.int(246, 258);
-      const x0 = MID - len / 2 + rng.int(-12, 12);
-      for (let i = 0; i < n; i++) targets.push({ ax: x0 + i * 20, ay: y, bx: x0 + i * 20 + 15, by: y, down: false, bank: banks.length });
-      boxes.push([x0, y, x0 + len, y]);
-    } else {
-      const x = k === 'L' ? 8 : LANE_L - 4;
-      const y0 = rng.int(150, 240 - len);
-      for (let i = 0; i < n; i++) targets.push({ ax: x, ay: y0 + i * 20, bx: x, by: y0 + i * 20 + 15, down: false, bank: banks.length });
-      boxes.push([x, y0, x, y0 + len]);
-    }
-    for (let i = 0; i < n; i++) bank.ids.push(targets.length - n + i);
-    banks.push(bank);
-  }
-
-  // Round bumpers: spread out in the upper field, clear of the banks, lanes and each other.
-  const bumpers: Circle[] = [{ ...KICKER }];
-  const br = bumperR(d);
-  for (let tries = 0; bumpers.length < bumpersFor(d) + 1 && tries < 400; tries++) {
-    const x = rng.int(50, 186);
-    const y = rng.int(LANE_Y1 + br + 18, 232);
-    const r = br + (tries % 3 === 0 ? 2 : 0);
-    if (bumpers.some((b) => dist2(x, y, b.x, b.y) < (b.r + r + 2 * BALL_R + 8) ** 2)) continue;
-    if (boxes.some(([x0, y0, x1, y1]) => x > x0 - r - 18 && x < x1 + r + 18 && y > y0 - r - 18 && y < y1 + r + 18)) continue;
-    bumpers.push({ x, y, r });
-  }
-
-  const len = flipLen(d);
-  const flipper = (side: number): Flipper => ({ px: side > 0 ? PIVOT.x : mirror(PIVOT.x), py: PIVOT.y, len, side, a: FLIP_REST, w: 0 });
-  return {
-    d,
-    rng,
-    segs,
-    posts,
-    bumpers,
-    targets,
-    banks,
-    lanes,
-    lit: lanes.map(() => false),
-    outlanes,
-    inLaneSensor: -1,
-    flippers: [flipper(1), flipper(-1)],
-    press: [false, false],
-    was: [false, false],
-    bx: LANE_X,
-    by: PLUNGER_Y,
-    vx: 0,
-    vy: 0,
-    gravity: gravityFor(d),
-    held: true,
-    hold: HOLD_S,
-    charging: false,
-    charge: 0,
-    inLane: true,
-    save: 0,
-    saveUsed: false,
-    balls: BALLS,
-    mult: 1,
-    score: 0,
-    goal: goalFor(d),
-    stuck: 0,
-    done: false,
-  };
-}
-
-/** A flipper's tip. */
-export function flipperTip(f: Flipper) {
-  return { x: f.px + f.side * f.len * Math.cos(f.a), y: f.py + f.len * Math.sin(f.a) };
 }
 
 /** Start pulling the plunger back (key or touch held while the ball waits). */
@@ -373,11 +164,46 @@ function circle(s: State, c: Circle) {
   return { nx, ny };
 }
 
-function addPts(s: State, ev: StepEvents, kind: HitKind, i: number, x: number, y: number) {
-  const pts = PTS[kind] * s.mult;
+function addPts(s: State, ev: StepEvents, kind: HitKind, i: number, x: number, y: number, base: number = PTS[kind]) {
+  // A frenzy doubles every plain hit (not the bank, lane, star-set or jackpot bonuses).
+  const frenzy = s.frenzy > 0 && (COMBO_HITS.has(kind) || kind === 'sling') ? 2 : 1;
+  const pts = base * s.mult * frenzy;
   s.score += pts;
   ev.hits.push({ kind, i, x, y, pts });
+  if (COMBO_HITS.has(kind)) comboHit(s, ev);
 }
+
+/** One more hit in the combo; a milestone turns on its reward. */
+function comboHit(s: State, ev: StepEvents) {
+  s.combo++;
+  s.comboLeft = COMBO_WINDOW;
+  if (s.tier >= COMBO_TIERS.length || s.combo < COMBO_TIERS[s.tier]) return;
+  let r = REWARDS[s.tier++];
+  // One combo ball save per ball: after that, that milestone starts a frenzy instead.
+  if (r === 'save' && s.comboSaved) r = 'frenzy';
+  ev.tier = s.tier;
+  ev.unlocked = r;
+  grant(s, ev, r);
+}
+
+/** Turn a combo reward on: a fresh ball save, a frenzy, the drain guard post, or a jackpot. */
+function grant(s: State, ev: StepEvents, r: Reward) {
+  if (r === 'save') {
+    s.save = SAVE_S;
+    s.saveUsed = false;
+    s.comboSaved = true;
+  } else if (r === 'frenzy') s.frenzy = FRENZY_S;
+  else if (r === 'guard') s.guard = GUARD_S;
+  else {
+    addPts(s, ev, 'jackpot', 0, MID, 200);
+    s.mult = Math.min(MAX_MULT, s.mult + 1);
+  }
+}
+
+const breakCombo = (s: State) => {
+  s.combo = s.tier = 0;
+  s.comboLeft = 0;
+};
 
 /** Turn the lit lane lamps one step (flipper presses steer them, as on a real table). */
 function rotateLanes(s: State, dir: number) {
@@ -405,6 +231,10 @@ function collide(s: State, ev: StepEvents) {
     const c = circle(s, p);
     if (c) bounce(s, c.nx, c.ny, 0.45);
   }
+  if (s.guard > 0) {
+    const c = circle(s, GUARD);
+    if (c) bounce(s, c.nx, c.ny, 0.8);
+  }
   for (let i = 0; i < s.bumpers.length; i++) {
     const b = s.bumpers[i];
     const c = circle(s, b);
@@ -417,7 +247,8 @@ function collide(s: State, ev: StepEvents) {
       const out = Math.max(-vn * 0.6, BUMPER_KICK);
       s.vx += c.nx * out;
       s.vy += c.ny * out;
-      addPts(s, ev, 'bumper', i, b.x + c.nx * b.r, b.y + c.ny * b.r);
+      // A drifting bumper is worth double.
+      addPts(s, ev, 'bumper', i, b.x + c.nx * b.r, b.y + c.ny * b.r, b.amp ? PTS.bumper * 2 : PTS.bumper);
     }
   }
   for (let i = 0; i < s.targets.length; i++) {
@@ -452,10 +283,80 @@ function laneAt(s: State): number {
   return s.lanes.findIndex((x) => Math.abs(s.bx - x) < LANE_GAP / 2 - 2);
 }
 
+/** Run down the combo, frenzy and guard, sway the drifting bumpers and bring collected stars back. */
+function timers(s: State, dt: number) {
+  s.t += dt;
+  if (s.combo && (s.comboLeft -= dt) <= 0) breakCombo(s);
+  s.frenzy = Math.max(0, s.frenzy - dt);
+  s.guard = Math.max(0, s.guard - dt);
+  if (s.saucer) s.saucer.cool = Math.max(0, s.saucer.cool - dt);
+  for (const b of s.bumpers) if (b.amp) b.x = b.x0 + b.amp * Math.sin(s.t * DRIFT_W + b.ph);
+  for (const q of s.stars) {
+    if (q.on || (q.back -= dt) > 0) continue;
+    const at = freeSpot(s, STAR_R);
+    if (at) Object.assign(q, at, { on: true });
+    else q.back = 1;
+  }
+}
+
+/** Ball rolling through a star, into the saucer or the black hole's core. */
+function sensors(s: State, ev: StepEvents) {
+  for (let i = 0; i < s.stars.length; i++) {
+    const q = s.stars[i];
+    if (!q.on || dist2(s.bx, s.by, q.x, q.y) > (STAR_R + BALL_R) ** 2) continue;
+    q.on = false;
+    q.back = s.starSet ? Infinity : STAR_BACK;
+    addPts(s, ev, 'star', i, q.x, q.y);
+    if (s.starSet && s.stars.every((o) => !o.on)) {
+      addPts(s, ev, 'stars', i, q.x, q.y);
+      for (const o of s.stars) o.back = 1.5;
+    }
+  }
+  const sc = s.saucer;
+  if (sc && !sc.cool && dist2(s.bx, s.by, sc.x, sc.y) < SAUCER_R ** 2) {
+    // Each catch scores one step more (up to ×4), then the ball goes back up the table.
+    sc.n++;
+    addPts(s, ev, 'saucer', 0, sc.x, sc.y, PTS.saucer * Math.min(4, sc.n));
+    sc.cool = SAUCER_HOLD + 0.6;
+    const a = (s.rng.next() < 0.5 ? -1 : 1) * (0.35 + s.rng.next() * 0.45);
+    hold(s, sc.x, sc.y, SAUCER_HOLD, a, 480);
+  }
+  const v = s.vortex;
+  if (v && dist2(s.bx, s.by, v.x, v.y) < v.r ** 2) {
+    // Swallowed: the multiplier drops one step and the combo ends; the ball is spat back up.
+    s.mult = Math.max(1, s.mult - 1);
+    breakCombo(s);
+    ev.swallowed = true;
+    hold(s, v.x, v.y, VORTEX_HOLD, (s.rng.next() - 0.5) * 1.4, 420);
+  }
+}
+
+/** Hold the ball at (x, y) for `t` seconds, then kick it out at angle `a` from straight up. */
+function hold(s: State, x: number, y: number, t: number, a: number, speed: number) {
+  s.bx = x;
+  s.by = y;
+  s.vx = s.vy = 0;
+  s.lock = t;
+  s.kick = [Math.sin(a) * speed, -Math.cos(a) * speed];
+}
+
 /** Advance the table by `dt` seconds. */
 export function step(s: State, dt: number): StepEvents {
-  const ev: StepEvents = { hits: [], launched: false, flip: [false, false], saved: false, drained: false, won: false, over: false };
+  const ev: StepEvents = {
+    hits: [],
+    launched: false,
+    flip: [false, false],
+    saved: false,
+    drained: false,
+    tier: 0,
+    unlocked: null,
+    kicked: false,
+    swallowed: false,
+    won: false,
+    over: false,
+  };
   if (s.done) return ev;
+  timers(s, dt);
   for (let k = 0; k < 2; k++) {
     if (s.press[k] && !s.was[k]) {
       ev.flip[k] = true;
@@ -487,8 +388,19 @@ export function step(s: State, dt: number): StepEvents {
       f.a += da;
       f.w = da / h;
     }
-    if (s.held) continue;
+    if (s.held || s.lock > 0) continue;
     s.vy += s.gravity * h;
+    if (s.vortex) {
+      // The black hole pulls harder the closer the ball gets.
+      const dx = s.vortex.x - s.bx;
+      const dy = s.vortex.y - s.by;
+      const dd = Math.hypot(dx, dy) || 1;
+      if (dd < VORTEX_R) {
+        const a = VORTEX_PULL * (1 - dd / VORTEX_R);
+        s.vx += (dx / dd) * a * h;
+        s.vy += (dy / dd) * a * h;
+      }
+    }
     s.bx += s.vx * h;
     s.by += s.vy * h;
     collide(s, ev);
@@ -509,6 +421,8 @@ export function step(s: State, dt: number): StepEvents {
         }
       }
     }
+    sensors(s, ev);
+    if (s.lock > 0) break;
     if (s.inLane && s.bx < LANE_L - 6) s.inLane = false;
     // A weak launch that falls back down the lane rests on the plunger again.
     if (s.inLane && s.bx > LANE_L && s.by >= PLUNGER_Y && s.vy > 0) {
@@ -518,6 +432,15 @@ export function step(s: State, dt: number): StepEvents {
     if (s.by > H + BALL_R || s.bx < -20 || s.bx > W + 20 || s.by < -40) break;
   }
 
+  if (s.lock > 0 && (s.lock -= dt) <= 0) {
+    s.lock = 0;
+    [s.vx, s.vy] = s.kick;
+    // Out of the hole first, so it doesn't catch the ball straight back.
+    const sp = Math.hypot(s.vx, s.vy) || 1;
+    s.bx += (s.vx / sp) * (VORTEX_CORE + 3);
+    s.by += (s.vy / sp) * (VORTEX_CORE + 3);
+    ev.kicked = true;
+  }
   if (s.held) {
     if (s.charging) s.charge = Math.min(1, s.charge + dt / CHARGE_S);
     else if ((s.hold -= dt) <= 0) launch(s, AUTO_POWER + s.rng.next() * 0.3);
@@ -525,7 +448,7 @@ export function step(s: State, dt: number): StepEvents {
   } else {
     if (!s.inLane && s.save > 0) s.save = Math.max(0, s.save - dt);
     // A ball that has come to rest away from a raised flipper gets a nudge.
-    const cradled = s.press.some(Boolean) && s.by > 330;
+    const cradled = (s.press.some(Boolean) && s.by > 330) || s.lock > 0;
     s.stuck = Math.hypot(s.vx, s.vy) < 12 && !cradled ? s.stuck + dt : 0;
     if (s.stuck > 2.5) {
       s.stuck = 0;
@@ -541,6 +464,8 @@ export function step(s: State, dt: number): StepEvents {
     return ev;
   }
   if (!s.held && s.by > H + BALL_R) {
+    breakCombo(s);
+    s.guard = 0;
     if (s.save > 0 && !s.saveUsed) {
       s.saveUsed = true;
       s.save = 0;
@@ -549,7 +474,8 @@ export function step(s: State, dt: number): StepEvents {
       return ev;
     }
     s.balls--;
-    s.saveUsed = false;
+    s.saveUsed = s.comboSaved = false;
+    s.frenzy = 0;
     s.save = 0;
     ev.drained = true;
     if (s.balls <= 0) {

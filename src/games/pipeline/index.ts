@@ -3,20 +3,25 @@ import { L, P } from '../../core/i18n';
 import type { GameDef } from '../../core/types';
 import { Arena } from '../../kits/arena/arena';
 import { mix } from '../../kits/arena/color';
-import { DX, DY, gestures, keyDir, type Dir, type Point } from '../../kits/gesture/gesture';
+import { comboPop, comboTier } from '../../kits/combo/combo';
+import { DX, DY, gestures, keyDir, type Point } from '../../kits/gesture/gesture';
 import { sfx } from '../../kits/sound/sound';
+import { painter } from './draw';
+import { KIND_NAMES, POWER_NAMES } from './names';
 import {
   canPlace,
+  CHAIN_TIERS,
+  COIN_POINTS,
+  coinsFor,
   COLS,
   countdownFor,
   createLevel,
   CROSS_BONUS,
   DRAIN_BONUS,
   flowNow,
+  FREEZE_S,
   goalFor,
   openEnd,
-  opens,
-  opp,
   perPieceFor,
   PIPE_POINTS,
   place,
@@ -24,7 +29,6 @@ import {
   ROWS,
   step,
   UNUSED_POINTS,
-  X,
 } from './rules';
 
 const W = 300;
@@ -66,16 +70,16 @@ export const pipeline: GameDef = {
         'Le niveau est réussi si le flot traverse le nombre de tuyaux visé avant de déborder. Un drain termine le flot avec un bonus.',
       ),
       L(
-        'Tapping a dry pipe replaces it, at a short delay and a few points. Wet pipes stay put.',
-        'Toucher un tuyau sec le remplace, avec un court délai et quelques points en moins. Les tuyaux mouillés restent en place.',
+        'Tapping a dry pipe replaces it (short delay, a few points). Tap Flow to start early for a bonus, or to speed the flow up.',
+        'Toucher un tuyau sec le remplace (court délai, quelques points). Touchez Ouvrir pour lancer le flot plus tôt contre un bonus, ou pour l’accélérer.',
       ),
       L(
-        'Tap Flow to start early for a bonus, or to speed up a running flow.',
-        'Touchez Ouvrir pour lancer le flot plus tôt contre un bonus, ou pour l’accélérer.',
+        'Bolted pieces are fixed: tanks fill slowly and count as two pipes, arrows let the flow through one way only. Coins pay a bonus when the flow passes them.',
+        'Les pièces boulonnées sont fixes : les réservoirs se remplissent lentement et comptent pour deux, les flèches ne laissent passer le flot que dans un sens. Les pièces d’or rapportent une prime au passage du flot.',
       ),
       L(
-        'Keyboard: arrows or WASD to move, Space or Enter to lay, F to flow, P to pause.',
-        'Clavier : flèches ou WASD pour bouger, Espace ou Entrée pour poser, F pour ouvrir, P pour la pause.',
+        `Lay pieces that join the chain in a row: ${CHAIN_TIERS[0]} freeze the flow ${FREEZE_S} s, ${CHAIN_TIERS[1]} deal a perfect piece, ${CHAIN_TIERS[2]} double the flow’s points. A piece off the chain breaks the combo.`,
+        `Posez d’affilée des pièces qui prolongent la chaîne : ${CHAIN_TIERS[0]} gèlent le flot ${FREEZE_S} s, ${CHAIN_TIERS[1]} donnent une pièce parfaite, ${CHAIN_TIERS[2]} doublent les points du flot. Une pièce hors de la chaîne brise le combo.`,
       ),
     ],
     tips: [
@@ -87,15 +91,23 @@ export const pipeline: GameDef = {
         `${PIPE_POINTS} per pipe, ${CROSS_BONUS} for going through a cross both ways, ${DRAIN_BONUS} for the drain.`,
         `${PIPE_POINTS} par tuyau, ${CROSS_BONUS} pour traverser une croix dans les deux sens, ${DRAIN_BONUS} pour le drain.`,
       ),
+      L(`Each coin is worth ${COIN_POINTS}.`, `Chaque pièce d’or vaut ${COIN_POINTS}.`),
+      L(
+        'Keyboard: arrows or WASD to move, Space or Enter to lay, F to flow, P to pause.',
+        'Clavier : flèches ou WASD pour bouger, Espace ou Entrée pour poser, F pour ouvrir, P pour la pause.',
+      ),
     ],
   }),
+  // Three stars take a long chain and half the coins (or a chain combo's double points).
   stars: (d) => {
     const n = goalFor(d);
-    return [(n + 2) * PIPE_POINTS + 50, (n + 5) * PIPE_POINTS + 100];
+    return [(n + 2) * PIPE_POINTS + 50, (n + 5) * PIPE_POINTS + 100 + (coinsFor(d) * COIN_POINTS) / 2];
   },
   par: (d) => Math.round(countdownFor(d) * 0.6 + (goalFor(d) + 3) * perPieceFor(d)),
   create(ctx) {
     const s = createLevel(ctx.difficulty, ctx.rng);
+    const [kindName, kindBlurb] = KIND_NAMES[s.kind]();
+    ctx.variant({ id: s.kind, name: kindName, blurb: kindBlurb });
     const arena = new Arena(ctx.root, W, H, () => draw());
     const fx = arena.fx;
     const start = openEnd(s);
@@ -108,6 +120,7 @@ export const pipeline: GameDef = {
     let ended = false;
     let lastStatus = '';
     let lastScore = -1;
+    let chainShown = 0;
 
     const btn = { x: W - PAD - 100, y: BAR_Y, w: 100, h: BAR_H };
     const inBtn = (p: Point) => p.x >= btn.x && p.x <= btn.x + btn.w && p.y >= btn.y && p.y <= btn.y + btn.h;
@@ -123,9 +136,11 @@ export const pipeline: GameDef = {
       const text = [
         !s.started
           ? L(`flow in ${Math.ceil(s.countdown)} s`, `écoulement dans ${Math.ceil(s.countdown)} s`)
-          : s.fast
-            ? L('fast flow', 'flot rapide')
-            : L('flowing', 'ça coule'),
+          : s.freeze > 0
+            ? L('frozen', 'gelé')
+            : s.fast
+              ? L('fast flow', 'flot rapide')
+              : L('flowing', 'ça coule'),
         s.count >= s.goal
           ? L('goal reached', 'objectif atteint')
           : P(s.goal - s.count, ['pipe to go', 'pipes to go'], ['tuyau à remplir', 'tuyaux à remplir']),
@@ -134,144 +149,8 @@ export const pipeline: GameDef = {
       if (s.score !== lastScore) ctx.score((lastScore = s.score));
     }
 
-    /** Trace a pipe channel from the edge on side `a` towards side `b` (straight or a quarter bend), `f` of the way. */
-    function trace(g: CanvasRenderingContext2D, x: number, y: number, a: Dir, b: Dir, f: number): Point {
-      const h = CS / 2;
-      g.beginPath();
-      if (b === opp(a)) {
-        const sx = x + DX[a] * h;
-        const sy = y + DY[a] * h;
-        const ex = sx + (DX[b] - DX[a]) * h * f;
-        const ey = sy + (DY[b] - DY[a]) * h * f;
-        g.moveTo(sx, sy);
-        g.lineTo(ex, ey);
-        return { x: ex, y: ey };
-      }
-      const ox = x + (DX[a] + DX[b]) * h;
-      const oy = y + (DY[a] + DY[b]) * h;
-      const a0 = Math.atan2(-DY[b], -DX[b]);
-      let dl = Math.atan2(-DY[a], -DX[a]) - a0;
-      if (dl > Math.PI) dl -= Math.PI * 2;
-      if (dl < -Math.PI) dl += Math.PI * 2;
-      g.arc(ox, oy, h, a0, a0 + dl * f, dl < 0);
-      return { x: ox + Math.cos(a0 + dl * f) * h, y: oy + Math.sin(a0 + dl * f) * h };
-    }
-
-    /** Pipe metal: a neutral between the text and the board, so pipes stand out in every theme. */
-    const metal = () => mix(arena.colors.fg, arena.colors.cellAlt, arena.dark ? 0.5 : 0.62);
-
-    /** A flange where a pipe meets the edge of its cell on side `d`. */
-    function flange(g: CanvasRenderingContext2D, x: number, y: number, d: Dir) {
-      const c = arena.colors;
-      const h = CS / 2;
-      const along = CS * 0.12;
-      const across = CS * 0.6;
-      const fx0 = x + DX[d] * (h - along / 2 - 1);
-      const fy0 = y + DY[d] * (h - along / 2 - 1);
-      const w = DX[d] ? along : across;
-      const hh = DX[d] ? across : along;
-      g.fillStyle = metal();
-      g.strokeStyle = c.ink;
-      g.lineWidth = arena.lw * 0.7;
-      g.beginPath();
-      g.roundRect(fx0 - w / 2, fy0 - hh / 2, w, hh, 1.5);
-      g.fill();
-      g.stroke();
-    }
-
-    /** One channel: ink casing, metal body, flanges, a dark bore, then liquid over `wet` of it (from side `a`). */
-    function channel(g: CanvasRenderingContext2D, x: number, y: number, a: Dir, b: Dir, wet: number) {
-      const c = arena.colors;
-      const m = metal();
-      g.lineCap = 'butt';
-      trace(g, x, y, a, b, 1);
-      g.strokeStyle = c.ink;
-      g.lineWidth = CS * 0.48;
-      g.stroke();
-      g.strokeStyle = m;
-      g.lineWidth = CS * 0.48 - arena.lw * 1.6;
-      g.stroke();
-      flange(g, x, y, a);
-      flange(g, x, y, b);
-      trace(g, x, y, a, b, 1);
-      g.strokeStyle = arena.tone(m).lo;
-      g.lineWidth = CS * 0.24;
-      g.stroke();
-      if (wet <= 0) return;
-      const front = trace(g, x, y, a, b, Math.min(1, wet));
-      g.strokeStyle = c.accent;
-      g.lineWidth = CS * 0.24;
-      g.stroke();
-      // A light glint running along the liquid.
-      trace(g, x, y, a, b, Math.min(1, wet));
-      g.strokeStyle = arena.tone(c.accent).hi;
-      g.lineWidth = CS * 0.06;
-      g.setLineDash([CS * 0.12, CS * 0.2]);
-      g.lineDashOffset = -arena.time * CS * 0.8;
-      g.stroke();
-      g.setLineDash([]);
-      g.lineDashOffset = 0;
-      if (wet < 1) {
-        // A bubbling front.
-        g.fillStyle = arena.tone(c.accent).hi;
-        g.beginPath();
-        g.arc(front.x, front.y, CS * (0.13 + 0.02 * Math.sin(arena.time * 18)), 0, Math.PI * 2);
-        g.fill();
-      }
-    }
-
-    /** The sides of a non-cross piece. */
-    const sides = (p: number) => ([0, 1, 2, 3] as Dir[]).filter((d) => opens(p, d));
-
-    /** A piece centred on (x, y); `cell` (when on the board) supplies how wet it is. */
-    function piece(g: CanvasRenderingContext2D, x: number, y: number, p: number, cell = -1) {
-      const live = cell >= 0 && s.started && s.flow.at === cell;
-      const wet = cell >= 0 ? s.wet[cell] : 0;
-      const t = live ? Math.min(1, s.flow.t) : 1;
-      if (p === X) {
-        // Vertical channel under the horizontal one (a little bridge).
-        for (const a of [0, 1] as const) {
-          const flowing = live && s.flow.from >= 0 && s.flow.from % 2 === a;
-          const from = flowing ? (s.flow.from as Dir) : a;
-          channel(g, x, y, from, opp(from), flowing ? t : wet & (a ? 1 : 2) ? 1 : 0);
-        }
-        return;
-      }
-      const [a, b] = sides(p);
-      if (live && s.flow.from >= 0) channel(g, x, y, s.flow.from as Dir, s.flow.from === a ? b : a, t);
-      else channel(g, x, y, a, b, wet ? 1 : 0);
-    }
-
-    function stub(g: CanvasRenderingContext2D, i: number, d: Dir, wet: number) {
-      const c = arena.colors;
-      const x = cx(i);
-      const y = cy(i);
-      g.lineCap = 'butt';
-      g.beginPath();
-      g.moveTo(x, y);
-      g.lineTo(x + DX[d] * (CS / 2), y + DY[d] * (CS / 2));
-      g.strokeStyle = c.ink;
-      g.lineWidth = CS * 0.48;
-      g.stroke();
-      g.strokeStyle = metal();
-      g.lineWidth = CS * 0.48 - arena.lw * 1.6;
-      g.stroke();
-      flange(g, x, y, d);
-      g.beginPath();
-      g.moveTo(x, y);
-      g.lineTo(x + DX[d] * (CS / 2), y + DY[d] * (CS / 2));
-      g.strokeStyle = arena.tone(metal()).lo;
-      g.lineWidth = CS * 0.24;
-      g.stroke();
-      if (wet > 0) {
-        g.beginPath();
-        g.moveTo(x, y);
-        g.lineTo(x + DX[d] * (CS / 2) * wet, y + DY[d] * (CS / 2) * wet);
-        g.strokeStyle = c.accent;
-        g.lineWidth = CS * 0.24;
-        g.stroke();
-      }
-    }
+    const paint = painter(arena, s, CS);
+    const { piece } = paint;
 
     function draw() {
       const g = arena.begin();
@@ -300,19 +179,19 @@ export const pipeline: GameDef = {
           g.restore();
         } else if (i === s.source) {
           arena.block(g, x + 2, y + 2, CS - 4, CS - 4, c.accent, 6);
-          stub(g, i, s.srcDir, s.started ? (s.flow.at === i ? Math.min(1, s.flow.t) : 1) : 0);
+          paint.stub(g, cx(i), cy(i), s.srcDir, s.started ? (s.flow.at === i ? Math.min(1, s.flow.t) : 1) : 0);
           // Valve wheel, ringed by the time left before it opens.
           arena.disc(g, cx(i), cy(i), CS * 0.17, c.paper);
           if (!s.started) {
             g.strokeStyle = c.fg;
             g.lineWidth = arena.lw * 1.2;
             g.beginPath();
-            g.arc(cx(i), cy(i), CS * 0.3, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * s.countdown) / countdownFor(s.d));
+            g.arc(cx(i), cy(i), CS * 0.3, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, s.countdown / s.clock));
             g.stroke();
           }
         } else if (i === s.drain) {
           arena.block(g, x + 2, y + 2, CS - 4, CS - 4, c.good, 6);
-          stub(g, i, s.drainDir, 0);
+          paint.stub(g, cx(i), cy(i), s.drainDir, 0);
           arena.disc(g, cx(i), cy(i), CS * 0.2, c.coal);
           g.strokeStyle = c.paper;
           g.lineWidth = arena.lw * 0.6;
@@ -326,7 +205,8 @@ export const pipeline: GameDef = {
           g.save();
           g.translate(cx(i) + wob, cy(i));
           g.scale(scale, scale);
-          arena.block(g, -CS / 2 + 1.5, -CS / 2 + 1.5, CS - 3, CS - 3, tile, 5, true, 0.6);
+          arena.block(g, -CS / 2 + 1.5, -CS / 2 + 1.5, CS - 3, CS - 3, s.fixed[i] ? c.cellAlt : tile, 5, true, 0.6);
+          if (s.fixed[i]) paint.bolts(g, 0, 0);
           if (s.wet[i]) {
             g.fillStyle = arena.tone(c.accent).glow;
             g.beginPath();
@@ -336,6 +216,22 @@ export const pipeline: GameDef = {
           piece(g, 0, 0, s.pipe[i], i);
           g.restore();
         }
+        if (s.coin[i]) paint.coin(g, cx(i), cy(i), s.pipe[i] !== 0);
+      }
+      // Frozen (a combo reward): frost over the flow's front, with the time left.
+      if (s.freeze > 0 && !ended) {
+        const i = s.flow.at;
+        g.globalAlpha = 0.5;
+        g.fillStyle = c.p[5];
+        g.beginPath();
+        g.roundRect(cx(i) - CS / 2 + 2, cy(i) - CS / 2 + 2, CS - 4, CS - 4, arena.r(5));
+        g.fill();
+        g.globalAlpha = 1;
+        g.strokeStyle = c.p[5];
+        g.lineWidth = arena.lw * 1.4;
+        g.beginPath();
+        g.arc(cx(i), cy(i), CS * 0.42, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * s.freeze) / FREEZE_S);
+        g.stroke();
       }
       if (!ended) {
         // The open end of the chain pulses; the cursor shows the next piece where it would go.
@@ -385,6 +281,7 @@ export const pipeline: GameDef = {
       piece(g, 0, 0, s.queue[0]);
       g.restore();
       g.globalAlpha = 1;
+      drawChain(g, big);
       const small = 36;
       for (let k = 1; k < s.queue.length; k++) {
         const x = PAD + big + 8 + (k - 1) * (small + 4);
@@ -416,15 +313,48 @@ export const pipeline: GameDef = {
         g.font = `600 11px ${arena.family}`;
         g.fillText(L('Flow now', 'Ouvrir'), mx, btn.y + 45);
         g.globalAlpha = 0.5;
-        g.fillRect(btn.x + 8, btn.y + btn.h - 7, (btn.w - 16) * (s.countdown / countdownFor(s.d)), 2.5);
+        g.fillRect(btn.x + 8, btn.y + btn.h - 7, (btn.w - 16) * Math.min(1, s.countdown / s.clock), 2.5);
         g.globalAlpha = 1;
       } else {
         g.fillStyle = live ? c.fg : c.muted;
         g.font = `700 22px ${arena.family}`;
         g.fillText(`${Math.min(s.count, 99)}/${s.goal}`, mx, btn.y + 22);
         g.font = `600 11px ${arena.family}`;
-        g.fillText(s.fast || s.done ? L('pipes', 'tuyaux') : L('Faster »', 'Accélérer »'), mx, btn.y + 45);
+        const label =
+          s.freeze > 0 && !s.done
+            ? L(`Frozen ${Math.ceil(s.freeze)} s`, `Gelé ${Math.ceil(s.freeze)} s`)
+            : s.fast || s.done
+              ? L('pipes', 'tuyaux')
+              : L('Faster »', 'Accélérer »');
+        g.fillText(label, mx, btn.y + 45);
       }
+      if (s.double) {
+        // Flow points ×2 (a combo reward) for the rest of the run.
+        arena.disc(g, btn.x + btn.w - 4, btn.y + 4, 11, c.p[3]);
+        g.fillStyle = c.coal;
+        g.font = `900 10px ${arena.family}`;
+        g.fillText('×2', btn.x + btn.w - 4, btn.y + 4.5);
+      }
+    }
+
+    /** The chain combo, on the queue head: pieces joined in a row and the way to the next milestone. */
+    function drawChain(g: CanvasRenderingContext2D, big: number) {
+      if (!s.chain) return;
+      const c = arena.colors;
+      const next = CHAIN_TIERS[s.tier] as number | undefined;
+      const prev = s.tier ? CHAIN_TIERS[s.tier - 1] : 0;
+      const bx = PAD + big - 6;
+      const by = BAR_Y + 6;
+      arena.disc(g, bx, by, 10, c.accent);
+      g.fillStyle = c.coal;
+      g.font = `800 9px ${arena.family}`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(`×${s.chain}`, bx, by + 0.5);
+      g.fillStyle = c.cellAlt;
+      g.fillRect(PAD + 6, BAR_Y + big - 6, big - 12, 2.5);
+      g.fillStyle = c.accent;
+      g.fillRect(PAD + 6, BAR_Y + big - 6, (big - 12) * (next ? (s.chain - prev) / (next - prev) : 1), 2.5);
     }
 
     function lay(cell: number) {
@@ -440,6 +370,14 @@ export const pipeline: GameDef = {
       } else {
         laid.set(cell, arena.time);
         fx.ring(cx(cell), cy(cell), c.accent, CS * 0.3, CS * 0.7, 0.3, arena.lw);
+        if (s.chain !== chainShown && s.chain > chainShown) comboPop(fx, cx(cell), cy(cell) - CS * 0.3, s.chain, c.accent);
+        else if (chainShown >= 3 && !s.chain) fx.text(cx(cell), cy(cell) - CS * 0.4, L('Chain broken', 'Chaîne brisée'), c.muted, 11, 0.7);
+        chainShown = s.chain;
+        if (s.unlocked) {
+          comboTier(fx, s.fired, c.p[3], POWER_NAMES[s.unlocked]());
+          if (s.unlocked === 'perfect') fx.ring(PAD + BAR_H / 2, BAR_Y + BAR_H / 2, c.p[3], 8, BAR_H * 0.8, 0.5, arena.lw * 1.4);
+          if (s.unlocked === 'freeze') fx.ring(cx(s.flow.at), cy(s.flow.at), c.p[5], CS * 0.2, CS * 1.4, 0.5, arena.lw * 1.4);
+        }
         if (res === 'replaced') {
           sfx('error', { pitch: 4, vol: 0.7 });
           fx.burst(cx(cell), cy(cell), c.muted, 10, 110, 3, 0.45, 'square', 200);
@@ -484,7 +422,13 @@ export const pipeline: GameDef = {
       if (ev.entered.length) sfx('tick', { pitch: Math.min(14, s.count * 0.5), vol: 0.5 });
       for (const i of ev.entered) {
         fx.burst(cx(i), cy(i), c.accent, 5, 50, 2.5, 0.35, 'dot', 0);
-        fx.text(cx(i), cy(i) - 8, `+${PIPE_POINTS}`, c.fg, 10, 0.6);
+        const n = (s.res[i] ? 2 : 1) * (s.double ? 2 : 1);
+        fx.text(cx(i), cy(i) - 8, `+${PIPE_POINTS * n}`, s.double ? c.p[3] : c.fg, 10, 0.6);
+      }
+      for (const i of ev.coins) {
+        sfx('coin');
+        fx.burst(cx(i), cy(i), c.p[3], 10, 110, 3, 0.5, 'spark', 0);
+        fx.text(cx(i), cy(i) - CS * 0.45, `+${COIN_POINTS}`, c.p[3], 14);
       }
       if (ev.cross) {
         sfx('power');
