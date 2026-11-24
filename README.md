@@ -1,6 +1,6 @@
 # arcade feed
 
-An endless, scroll-snapping feed of one-level arcade games, in English and Québec French. Sister project of [puzzle feed](https://puzzle.garand.dev): same shell, look and themes, but each card is a short real-time (or turn-based) arcade level scored with stars. Static site, no backend; profile and stats live in `localStorage`.
+An endless, scroll-snapping feed of one-level arcade games, in English and Québec French. Sister project of [puzzle feed](https://puzzle.garand.dev): same shell, look and themes, but each card is a short real-time arcade level scored with stars (turn-based games go to puzzle feed, see [Which feed?](#which-feed)). Static site, no backend; profile and stats live in `localStorage`.
 
 ## Development
 
@@ -20,6 +20,19 @@ The Android app (on the F-Droid repo at https://fdroid.garand.dev) bundles the s
 3. Scrolling away, hiding the tab, opening a sheet, or P / Esc **pauses**; coming back shows Resume.
 4. The game calls `ctx.win()` or `ctx.lose()`. Stars come from the final score (`GameDef.stars(d)` gives the ★★ and ★★★ thresholds; any clear earns ★). The result panel shows score, best, time; Again replays the same seed, Next scrolls on (auto after a clear).
 5. Auto-levelling (Easy → Master): up after two ★★★ clears in a row or three clears with ★★+, down after two losses or skips in a row. Picking a level locks it.
+
+## Which feed?
+
+A game belongs here, in **arcade feed**, if any of these is true:
+
+1. **Clock**: a timer or countdown can end the level or set the score.
+2. **Things move on their own**: the state changes without player input (falling, flowing, enemies, scrolling).
+3. **Timing or reflexes**: when you act matters (a timed reveal, sequence playback, tap windows).
+4. **Physical skill**: the result comes from continuous aim or power through a physics simulation.
+
+Otherwise it's a **puzzle** and belongs in [puzzle feed](https://puzzle.garand.dev): turn-based, discrete moves, and the board waits forever. Move limits, lives, random refills and hidden info are fine in puzzles.
+
+Tie-break: if every animation were instant and the player took an hour per move, would the game play the same? If yes, it's a puzzle. The same genre may exist in both feeds only if the arcade version adds a real-time element (Memory here flashes its tiles for a moment; puzzle feed's Swap is plain match-3, so Swap, Clusters, Doubles and Crates moved there).
 
 ## Games
 
