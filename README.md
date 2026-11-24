@@ -1,6 +1,6 @@
 # arcade feed
 
-An endless, scroll-snapping feed of one-level arcade games, in English and Québec French. Sister project of [puzzle feed](https://puzzle.garand.dev): same shell, look and themes, but each card is a short real-time (or turn-based) arcade level scored with stars. Static site, no backend; profile and stats live in `localStorage`.
+An endless, scroll-snapping feed of one-level arcade games, in English and Québec French. Sister project of [puzzle feed](https://puzzle.garand.dev): same shell, look and themes, but each card is a short real-time arcade level scored with stars (turn-based games go to puzzle feed, see [Which feed?](#which-feed)). Static site, no backend; profile and stats live in `localStorage`.
 
 ## Development
 
@@ -21,12 +21,23 @@ The Android app (on the F-Droid repo at https://fdroid.garand.dev) bundles the s
 4. The game calls `ctx.win()` or `ctx.lose()`. Stars come from the final score (`GameDef.stars(d)` gives the ★★ and ★★★ thresholds; any clear earns ★). The result panel shows score, best, time; Again replays the same seed, Next scrolls on (auto after a clear).
 5. Auto-levelling (Easy → Master): up after two ★★★ clears in a row or three clears with ★★+, down after two losses or skips in a row. Picking a level locks it.
 
+## Which feed?
+
+A game belongs here, in **arcade feed**, if any of these is true:
+
+1. **Clock**: a timer or countdown can end the level or set the score.
+2. **Things move on their own**: the state changes without player input (falling, flowing, enemies, scrolling).
+3. **Timing or reflexes**: when you act matters (a timed reveal, sequence playback, tap windows).
+4. **Physical skill**: the result comes from continuous aim or power through a physics simulation.
+
+Otherwise it's a **puzzle** and belongs in [puzzle feed](https://puzzle.garand.dev): turn-based, discrete moves, and the board waits forever. Move limits, lives, random refills and hidden info are fine in puzzles.
+
+Tie-break: if every animation were instant and the player took an hour per move, would the game play the same? If yes, it's a puzzle. The same genre may exist in both feeds only if the arcade version adds a real-time element (Memory here flashes its tiles for a moment; puzzle feed's Swap is plain match-3, so Swap, Clusters, Doubles and Crates moved there).
+
 ## Games
 
 | Category     | Game (id)                         | One level                                                                        |
 | ------------ | --------------------------------- | -------------------------------------------------------------------------------- |
-| Match        | Swap (`swap`)                     | match-3: reach a target score within a move limit                                |
-| Match        | Clusters (`clusters`)             | pop same-colour groups until at most a few blocks are left                       |
 | Match        | Marble Chain (`chain`)            | pop a rolling marble chain by shooting 3 of a kind before it reaches the hole    |
 | Aim & bounce | Bricks (`bricks`)                 | break every brick with a paddle and three lives                                  |
 | Aim & bounce | Pegs (`pegs`)                     | shoot balls through a peg field to clear the orange pegs                         |
@@ -54,9 +65,8 @@ The Android app (on the F-Droid repo at https://fdroid.garand.dev) bundles the s
 | Stack & drop | Falling Blocks (`falling-blocks`) | clear a number of lines from a rubble start without topping out                  |
 | Stack & drop | Fruit Merge (`merge`)             | drop and merge pieces up to a target size before the jar overflows               |
 | Stack & drop | Tower (`tower`)                   | time each drop to stack a tower to a target height                               |
-| Think        | Doubles (`doubles`)               | slide and combine tiles up to a target within a move limit                       |
 | Think        | Mines (`mines`)                   | open every safe cell of a no-guess mine field against the clock                  |
-| Think        | Crates (`crates`)                 | push every crate onto a goal within a move limit                                 |
+| Think        | Memory (`memory`)                 | tap back the tiles that flashed, round after round, before the clock runs out    |
 | Think        | Echo (`echo`)                     | repeat a growing sequence of pads for a number of rounds                         |
 | Think        | Dig (`dig`)                       | dig tunnels to lead a share of the water into the pipe, avoiding rock and sludge |
 | Think        | Pipeline (`pipeline`)             | lay pipes so the flow passes enough of them before it spills                     |

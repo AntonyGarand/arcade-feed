@@ -54,19 +54,6 @@ const ART: Partial<Record<string, () => Part[]>> = {
     circle(52, 34, 3.8, PAPER),
     rect(27, 49, 26, 5.5, PAPER, 2.75),
   ],
-  swap: () => [
-    ...[
-      [0, 4, 1, 2, 2, 3],
-      [3, 6, 1, 2, 1, 5],
-      [2, 3, 0, 4, 1, 2],
-    ].flatMap(([k1, n1, k2, n2, k3, n3], row) => [
-      gem(25, 14 + row * 16, k1, n1),
-      gem(40, 14 + row * 16, k2, n2),
-      gem(55, 14 + row * 16, k3, n3),
-    ]),
-    path('M33 23.5Q40 19.5 47 23.5', 'none', 'stroke-width:2.2'),
-    path('M44.5 20.5L47 23.5L43.4 24.6', 'none', 'stroke-width:2.2'),
-  ],
   pegs: () => [
     path('M34 4H46L43 11H37Z', PAPER),
     trail('M40 11Q46 22 50 30Q53 38 47 46'),
@@ -143,15 +130,6 @@ const ART: Partial<Record<string, () => Part[]>> = {
     circle(68, 14, 1.6, INK),
     circle(68, 42, 4, P(7)),
     path('M68 38Q70 35 72.5 35.5', 'none', 'stroke-width:2'),
-  ],
-  clusters: () => [
-    ...[
-      [2, 2, 7, 7, 4],
-      [2, 6, 6, 7, 4],
-      [6, 6, 4, 4, 4],
-      [2, 7, 7, 6, 6],
-    ].flatMap((row, r) => row.map((n, c) => block(15, 8, 10, c, r, P(n)))),
-    path('M71 50V58M67 54H75', 'none'),
   ],
   bubbles: () => [
     ...[1, 7, 4, 1, 5].map((n, i) => circle(16 + i * 12, 9, 5.5, P(n))),
@@ -283,22 +261,6 @@ const ART: Partial<Record<string, () => Part[]>> = {
     rect(23, 40, 34, 8, P(4), 1.5),
     rect(21, 48, 38, 8, P(2), 1.5),
   ],
-  doubles: () => [
-    rect(14, 4, 52, 52, PAPER, 5),
-    ...(
-      [
-        [0, 0, 2, 4],
-        [2, 0, 4, 1],
-        [1, 1, 8, 7],
-        [0, 2, 2, 4],
-        [2, 2, 16, 5],
-      ] as const
-    ).flatMap(([c, r, v, n]) => [
-      rect(17 + c * 16, 7 + r * 16, 14, 14, P(n), 3),
-      num(24 + c * 16, 14.5 + r * 16, String(v), v > 9 ? 8 : 10),
-    ]),
-    path('M72 24V36M68.5 32.5L72 36L75.5 32.5', 'none'),
-  ],
   mines: () => [
     ...[0, 1, 2, 3].flatMap((r) => [0, 1, 2, 3].map((c) => rect(18 + c * 11, 8 + r * 11, 11, 11, r + c < 3 ? PAPER : P(6), 1.5))),
     num(34.5, 24, '1'),
@@ -307,15 +269,12 @@ const ART: Partial<Record<string, () => Part[]>> = {
     path('M54 50.5V42.5', 'none', 'stroke-width:1.6'),
     path('M54 42.5L60 44.8L54 47Z', P(1)),
   ],
-  crates: () => [
-    rect(2, 3, 76, 7, P(2), 1.5),
-    rect(2, 50, 76, 7, P(2), 1.5),
-    path('M56 22H72V38H56Z', 'none', 'stroke-dasharray:3 3'),
-    trail('M49 30H54'),
-    rect(30, 22, 16, 16, P(1), 2),
-    path('M30 22L46 38M46 22L30 38', 'none'),
-    circle(19, 30, 7, P(4)),
-    circle(22, 28, 1.7, INK),
+  memory: () => [
+    ...[0, 1, 2, 3].flatMap((r) =>
+      [0, 1, 2, 3].map((c) => rect(19 + c * 11, 7 + r * 11, 9.5, 9.5, [1, 6, 7, 13].includes(r * 4 + c) ? P(5) : PAPER, 2)),
+    ),
+    path('M66 42L66 54M60 48H72', 'none'),
+    circle(66, 48, 2.6, P(5)),
   ],
   echo: () => [
     rect(18, 4, 21, 24, P(2), 5),

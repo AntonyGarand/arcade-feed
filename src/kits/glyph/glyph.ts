@@ -1,5 +1,5 @@
 /**
- * Shapes that tell colour-matched pieces apart without relying on colour (Swap gems, Fruit Merge
+ * Shapes that tell colour-matched pieces apart without relying on colour (Marble Chain marbles, Fruit Merge
  * sizes): glyph `k` always pairs with palette colour `k`, so the shape is a second cue.
  */
 const GLYPHS = 8;
